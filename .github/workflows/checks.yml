@@ -1,0 +1,48 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# The suite is fully hermetic: an in-memory database double and a fake
+# API-Football client stand in for MySQL and the upstream feed, so no
+# services or secrets are required.
+jobs:
+  verify:
+    name: Tests, SQL contract, secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # >=18.17 is the documented floor (native fetch); 22 is what cPanel ships.
+        node-version: ['18.x', '20.x', '22.x']
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies from the lockfile
+        run: npm ci
+
+      - name: Syntax check every JavaScript file
+        run: npm run lint:syntax
+
+      - name: Verify schema.sql and queries.js agree
+        run: npm run test:sql
+
+      - name: Verify no secret or upstream host ships in public/
+        run: npm run lint:secrets
+
+      - name: Run the test suite
+        run: npm test

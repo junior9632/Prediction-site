@@ -60,7 +60,8 @@ npm run test:sql            # static check: schema.sql vs every query in queries
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
 npm run health              # non-zero exit when the DB or the data source is down
-node scripts/check-no-secrets.js   # verifies no key/secret is shipped in public/
+npm run lint:secrets        # verifies no key/secret is shipped in public/
+npm run lint:syntax         # node --check over every JavaScript file in the repo
 ```
 
 ### Look at the UI without MySQL or an API key
@@ -252,6 +253,17 @@ npm test          # 54 tests, ~1s, no database or network required
 | 10 | A started/finished match cannot be selected | `acceptance 10: a match that already started cannot be selected` |
 | 11 | 2+ total goals settles WON | `acceptance 11: total goals of 2 or more settles WON` (+ service level) |
 | 12 | 0–1 total goals settles LOST | `acceptance 12: total goals of 0 or 1 settles LOST` (+ service level, void/postponed) |
+
+### Continuous integration
+
+`.github/workflows/checks.yml` runs on every push and pull request to `main`, on Node 18, 20 and
+22 (`>=18.17` is the documented floor for native `fetch`; 22 is what cPanel currently ships). Each
+job runs, in order: `npm ci`, `lint:syntax`, `test:sql`, `lint:secrets`, `npm test`.
+
+The workflow needs **no services and no secrets** — the suite is hermetic, so a green run is proof
+of the engine and HTTP contracts, not of a live MySQL or API-Football connection. Those still have
+to be verified on the host with `npm run db:setup` and `npm run sync:all` (see
+`docs/DEPLOYMENT-CPANEL.md`).
 
 ---
 
