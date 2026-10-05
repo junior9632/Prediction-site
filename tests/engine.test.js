@@ -641,3 +641,63 @@ test('settings: out of range and contradictory updates are rejected', async () =
     settingsService.invalidateCache();
   }
 });
+/* ------------------------------------------------------------------ */
+/* Review scenarios — the exact products named in the product spec    */
+/* ------------------------------------------------------------------ */
+
+const WINDOW = { minTotalOdds: 2.0, maxTotalOdds: 4.0, minSelections: 2, maxSelections: 6 };
+
+test('review 4: 1.30 x 1.50 = 1.95 is below the window and must be rejected', () => {
+  const result = ticketBuilder.buildTicket([candidate(1, '1.30'), candidate(2, '1.50')], WINDOW);
+  assert.equal(result.status, ticketBuilder.STATUS.NO_QUALIFYING_TICKET);
+  assert.equal(result.report.reason, 'ALL_COMBINATIONS_BELOW_MINIMUM');
+  assert.equal(result.report.lowestPossibleOdds, '1.95');
+  assert.equal(result.selections.length, 0);
+});
+
+test('review 5: 1.40 x 1.50 = 2.10 qualifies inside the window', () => {
+  const result = ticketBuilder.buildTicket([candidate(1, '1.40'), candidate(2, '1.50')], WINDOW);
+  assert.equal(result.status, ticketBuilder.STATUS.QUALIFIED);
+  assert.equal(result.totalOddsExact, '2.1000');
+  assert.equal(result.totalOddsDisplay, '2.10');
+  assert.equal(result.selections.length, 2);
+});
+
+test('review 6: 1.50 x 1.50 x 1.50 = 3.375 is an acceptable, qualified combination', () => {
+  const result = ticketBuilder.buildTicket(
+    [candidate(1, '1.50'), candidate(2, '1.50'), candidate(3, '1.50')],
+    WINDOW,
+  );
+  // A three-leg product of 3.375 sits inside the window, so it must be tested
+  // and must qualify. The engine then publishes the STRONGEST qualified
+  // combination (spec item 11), which here is a two-leg 2.25 — same candidate
+  // set, higher estimated probability, fewer legs.
+  assert.equal(result.status, ticketBuilder.STATUS.QUALIFIED);
+  assert.ok(
+    result.report.combinationsTested >= 4,
+    `all 4 reachable combinations must be tested, got ${result.report.combinationsTested}`,
+  );
+  assert.ok(
+    result.report.qualifiedCombinations >= 4,
+    `the 3.375 three-leg combo must qualify too, got ${result.report.qualifiedCombinations}`,
+  );
+  // whatever is published must equal the exact product of its own legs
+  const product = result.selections.reduce(
+    (acc, s) => decimal.multiply(acc, s.odds.oddScaled),
+    decimal.scaledFromNumber(1),
+  );
+  assert.equal(decimal.format(product, decimal.SCALE_DIGITS), result.totalOddsExact);
+});
+
+test('review 6b: a three-leg accumulator is published when only three legs reach 2.00', () => {
+  // 1.30 x 1.30 = 1.69 (below the window) but 1.30^3 = 2.197 (inside it), so
+  // the only qualifying combination is the three-leg one.
+  const result = ticketBuilder.buildTicket(
+    [candidate(1, '1.30'), candidate(2, '1.30'), candidate(3, '1.30')],
+    WINDOW,
+  );
+  assert.equal(result.status, ticketBuilder.STATUS.QUALIFIED);
+  assert.equal(result.selections.length, 3);
+  assert.equal(result.totalOddsExact, '2.1970');
+  assert.equal(result.totalOddsDisplay, '2.20');
+});

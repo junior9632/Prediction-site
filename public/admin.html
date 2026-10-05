@@ -24,6 +24,7 @@
   </header>
 
   <div class="admin-shell">
+    <div class="side-overlay hidden" id="sideOverlay" aria-hidden="true"></div>
     <aside class="admin-side" id="sideNav">
       <div class="nav-group">
         <div class="nav-label">Operations</div>
@@ -49,7 +50,12 @@
     <main class="admin-main">
       <div class="container" style="max-width:none;padding:0;">
         <div class="admin-topbar">
-          <h2 id="viewTitle">Dashboard</h2>
+          <span class="row" style="gap:10px;min-width:0;">
+            <button class="side-toggle" id="sideToggle" type="button" aria-label="Open admin navigation" aria-expanded="false" aria-controls="sideNav">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+            </button>
+            <h2 id="viewTitle">Dashboard</h2>
+          </span>
           <span class="tiny muted" id="serverTime"></span>
         </div>
         <div id="viewRoot"><div class="skeleton block"></div><div class="skeleton line"></div><div class="skeleton line"></div></div>

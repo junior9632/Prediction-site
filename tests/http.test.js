@@ -495,3 +495,25 @@ test('security: no API key, secret or upstream host is shipped to the browser', 
     }
   }
 });
+
+test('responsive: the admin console stays navigable on small screens', () => {
+  // The sidebar is display:none below 900px. Without a drawer + toggle an
+  // administrator on a phone could only ever reach the default view, so the
+  // markup, the styles and the wiring must all exist together.
+  const adminHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'admin.html'), 'utf8');
+  const adminJs = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'admin.js'), 'utf8');
+  const css = fs.readFileSync(path.join(PUBLIC_DIR, 'css', 'style.css'), 'utf8');
+
+  for (const id of ['id="sideNav"', 'id="sideToggle"', 'id="sideOverlay"']) {
+    assert.ok(adminHtml.includes(id), `admin.html must render ${id}`);
+  }
+  assert.match(css, /@media \(max-width: 899\.98px\)[\s\S]*?\.admin-side\.open/, 'the drawer needs a small-screen rule');
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*?\.side-toggle \{ display: none/, 'the hamburger must vanish on desktop');
+  assert.ok(adminJs.includes('bindSideNav'), 'admin.js must wire the drawer');
+  assert.ok(adminJs.includes('closeSideNav()'), 'switching view must close the drawer');
+
+  // and the public pages keep their mobile bottom bar, hidden on desktop
+  const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  assert.ok(indexHtml.includes('class="bottom-nav"'), 'public pages need the mobile bottom nav');
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*?\.bottom-nav \{ display: none/, 'bottom nav is mobile only');
+});

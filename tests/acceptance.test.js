@@ -554,3 +554,69 @@ test('settlement: an all-void ticket is VOID with no payout claim', async () => 
     restore();
   }
 });
+
+test('acceptance 13: a later bookmaker price move never rewrites a stored ticket', async () => {
+  // TEST 12 from the product spec: the ticket snapshot said 1.28; the API
+  // later quotes 1.35 for the same fixture and bookmaker. The historical
+  // ticket must still show 1.28.
+  const { scn, store, restore } = installDay();
+  try {
+    const api = new FakeApi(scn);
+    const started = await ticketService.startGeneration({
+      adminId: ADMIN.id,
+      source: 'admin_ui',
+      date: scn.ticketDate,
+      api,
+    });
+    const progress = await waitForRun(started.runId);
+    assert.equal(progress.status, 'QUALIFIED', String(progress.error || ''));
+
+    const before = store.selections.map((s) => String(s.odd_raw)).sort();
+    assert.deepEqual(before, ['1.28', '1.30', '1.32']);
+    const moved = store.selections[0];
+    const movedFixtureId = Number(moved.fixture_id);
+    const originalRaw = String(moved.odd_raw);
+
+    /* --- a later sync writes the new bookmaker price over the odds row --- */
+    const now = new Date();
+    await db.upsertOdds({
+      fixtureId: movedFixtureId,
+      bookmakerId: Number(moved.bookmaker_id),
+      bookmakerName: moved.bookmaker_name,
+      marketKey: 'over_1_5',
+      marketLabel: 'Over 1.5 Goals',
+      betName: 'Over/Under',
+      valueName: 'Over 1.5',
+      goalLine: '1.50',
+      direction: 'over',
+      oddDecimal: '1.35',
+      oddRaw: '1.35',
+      isVerified: true,
+      validationState: 'VERIFIED',
+      rejectReason: null,
+      oddsUpdatedAt: now,
+      fetchedAt: now,
+    });
+    const oddsRows = store.odds.filter((o) => Number(o.fixture_id) === movedFixtureId);
+    assert.ok(
+      oddsRows.some((o) => String(o.odd_raw) === '1.35'),
+      'the odds table must reflect the new price',
+    );
+
+    /* --- the historical ticket is untouched --- */
+    const ticket = await ticketService.getTicketForDate(new Date(`${scn.ticketDate}T12:00:00Z`));
+    assert.ok(ticket, 'the ticket for the day must still be served');
+    const leg = ticket.selections.find((s) => Number(s.fixtureId) === movedFixtureId);
+    assert.ok(leg, 'the moved fixture must still be a leg of the ticket');
+    assert.equal(String(leg.odds.value), originalRaw, 'the snapshot raw price must survive');
+    assert.equal(leg.odds.display, '1.28');
+    assert.equal(ticket.totalOdds, '2.20', 'the ticket total must not drift either');
+    assert.deepEqual(
+      store.selections.map((s) => String(s.odd_raw)).sort(),
+      before,
+      'the snapshot rows must be byte identical',
+    );
+  } finally {
+    restore();
+  }
+});

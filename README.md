@@ -55,7 +55,7 @@ Useful commands:
 
 ```bash
 npm run dev                 # node --watch server.js
-npm test                    # 56 unit + service + HTTP acceptance tests (no DB needed)
+npm test                    # 62 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
@@ -225,7 +225,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 56 tests, ~1s, no database or network required
+npm test          # 62 tests, ~1.5s, no database or network required
 ```
 
 | File | Covers |
@@ -253,6 +253,9 @@ npm test          # 56 tests, ~1s, no database or network required
 | 10 | A started/finished match cannot be selected | `acceptance 10: a match that already started cannot be selected` |
 | 11 | 2+ total goals settles WON | `acceptance 11: total goals of 2 or more settles WON` (+ service level) |
 | 12 | 0–1 total goals settles LOST | `acceptance 12: total goals of 0 or 1 settles LOST` (+ service level, void/postponed) |
+| 13 | A later price move never rewrites a stored ticket | `acceptance 13: a later bookmaker price move never rewrites a stored ticket` |
+| 14 | The admin console stays usable on a phone | `responsive: the admin console stays navigable on small screens` |
+| 15 | The exact spec products behave (1.95 / 2.10 / 3.375) | `review 4`, `review 5`, `review 6`, `review 6b` in `tests/engine.test.js` |
 
 ### Continuous integration
 

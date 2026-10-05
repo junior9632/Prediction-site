@@ -413,8 +413,36 @@
     logs: { title: 'System Logs', load: loadLogs },
   };
 
+  /* ---- mobile drawer: the sidebar collapses below 900px ---- */
+  function closeSideNav() {
+    const nav = $('#sideNav');
+    const toggle = $('#sideToggle');
+    const overlay = $('#sideOverlay');
+    if (!nav || !toggle || !overlay) return;
+    nav.classList.remove('open');
+    overlay.classList.add('hidden');
+    toggle.setAttribute('aria-expanded', 'false');
+  }
+
+  function bindSideNav() {
+    const nav = $('#sideNav');
+    const toggle = $('#sideToggle');
+    const overlay = $('#sideOverlay');
+    if (!nav || !toggle || !overlay) return;
+    toggle.addEventListener('click', () => {
+      const open = nav.classList.toggle('open');
+      overlay.classList.toggle('hidden', !open);
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    overlay.addEventListener('click', closeSideNav);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeSideNav();
+    });
+  }
+
   function setView(name) {
     currentView = VIEWS[name] ? name : 'dashboard';
+    closeSideNav();
     document.querySelectorAll('.side-link').forEach((b) => b.classList.toggle('active', b.dataset.view === currentView));
     $('#viewTitle').textContent = VIEWS[currentView].title;
     if (location.hash !== `#${currentView}`) history.replaceState(null, '', `#${currentView}`);
@@ -437,6 +465,7 @@
       window.location.replace('/login.html');
     };
     document.querySelectorAll('.side-link').forEach((btn) => btn.addEventListener('click', () => setView(btn.dataset.view)));
+    bindSideNav();
     setView((location.hash || '#dashboard').replace('#', ''));
   }
 
