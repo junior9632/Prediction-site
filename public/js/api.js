@@ -348,3 +348,14 @@ const App = (() => {
 })();
 
 window.App = App;
+
+/* ----------------------- PWA service worker ------------------------- */
+// Registered from an external file because CSP forbids inline scripts.
+// The worker never caches /api/ — live tickets and odds only.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      /* a failed registration must never break the page */
+    });
+  });
+}

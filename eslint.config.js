@@ -108,6 +108,24 @@ module.exports = [
     rules: RULES,
   },
   {
+    files: ['public/sw.js'],
+    languageOptions: {
+      ecmaVersion: 2019,
+      sourceType: 'script',
+      globals: {
+        self: 'readonly',
+        caches: 'readonly',
+        fetch: 'readonly',
+        Response: 'readonly',
+        URL: 'readonly',
+        Promise: 'readonly',
+        console: 'readonly',
+      },
+    },
+    linterOptions: { reportUnusedDisableDirectives: 'off' },
+    rules: { ...RULES, 'no-implicit-globals': 'off' },
+  },
+  {
     files: ['public/js/**/*.js'],
     languageOptions: {
       ecmaVersion: 2019, // the documented frontend floor: vanilla ES2019

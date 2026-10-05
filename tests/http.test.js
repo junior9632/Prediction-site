@@ -628,3 +628,51 @@ test('member accounts: register -> login -> me -> change password -> logout', as
   const robots = await get('/robots.txt');
   assert.match(robots.text, /Disallow: \/account/);
 });
+
+test('PWA: manifest, service worker and offline page — API traffic is never cached', async () => {
+  const manifest = await get('/manifest.webmanifest');
+  assert.equal(manifest.status, 200);
+  assert.match(manifest.headers.get('content-type'), /manifest\+json/);
+  const parsed = JSON.parse(manifest.text);
+  assert.equal(parsed.short_name, 'GoalPredict');
+  assert.equal(parsed.display, 'standalone');
+  assert.ok(parsed.icons.length >= 2, 'any + maskable icons');
+
+  const sw = await get('/sw.js');
+  assert.equal(sw.status, 200);
+  // The honesty rule, enforced in code: /api/ requests pass straight through.
+  assert.match(sw.text, /url\.pathname\.startsWith\('\/api\/'\)/);
+  assert.match(sw.text, /never intercept or cache API traffic/i);
+  assert.ok(!/cache\.put\([^)]*api/i.test(sw.text), 'no code path caches an API response');
+
+  const offline = await get('/offline.html');
+  assert.equal(offline.status, 200);
+  assert.match(offline.text, /never shows cached tickets/i);
+
+  // registration ships in the shared api.js (CSP forbids inline scripts)
+  const apiJs = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'api.js'), 'utf8');
+  assert.match(apiJs, /serviceWorker.*register\('\/sw\.js'\)/s);
+
+  // every page head links the manifest
+  for (const page of ['index.html', 'ticket.html', 'history.html', 'analytics.html', 'predictions.html', 'legal.html', 'account.html']) {
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, page), 'utf8');
+    assert.ok(html.includes('manifest.webmanifest'), `${page} links the manifest`);
+  }
+});
+
+test('analytics page: flat-stake ROI and monthly chart are rendered from real data only', async () => {
+  // the public stats endpoint ships the flat-stake record the page renders
+  const stats = await get('/api/analytics');
+  assert.equal(stats.status, 200);
+  assert.ok('flatStake' in stats.json.data, 'flat-stake record is part of the public payload');
+  assert.ok(Array.isArray(stats.json.data.monthly));
+
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'analytics.html'), 'utf8');
+  assert.ok(html.includes('id="roiCards"'), 'ROI section exists');
+  assert.ok(html.includes('id="monthlyChart"'), 'chart section exists');
+
+  const js = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'analytics.js'), 'utf8');
+  assert.match(js, /renderRoi/);
+  assert.match(js, /renderMonthlyChart/);
+  assert.match(js, /losses included|negative ROI is shown/i, 'honesty note ships with the code');
+});

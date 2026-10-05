@@ -2,7 +2,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Analytics — GoalPredict</title>
 <meta property="og:title" content="Analytics — GoalPredict"><meta property="og:description" content="Hit rate, streaks and performance statistics for all published Over 1.5 Goals tickets."><meta property="og:type" content="website"><meta name="twitter:card" content="summary">
-<meta name="theme-color" content="#04080f"><link rel="icon" type="image/svg+xml" href="/img/favicon.svg"><link rel="stylesheet" href="/css/style.css"></head><body>
+<meta name="theme-color" content="#04080f"><link rel="icon" type="image/svg+xml" href="/img/favicon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/css/style.css"></head><body>
 <header class="site-header">
   <div class="container header-inner">
     <a class="brand" href="/">
@@ -26,6 +26,10 @@
 <main class="page"><div class="container">
   <div class="section-head" style="margin-top:20px;"><h2 class="section-title">Performance analytics</h2><span class="tiny muted" id="generatedAt"></span></div>
   <div class="stat-cards" id="statCards"></div>
+  <section class="section"><div class="card"><div class="card-head"><h2 class="card-title">Flat-stake record</h2><span class="tiny muted">1 unit on every settled ticket — losses included</span></div><div class="card-body"><div class="stat-cards" id="roiCards"></div></div></div></section>
+
+  <section class="section"><div class="card"><div class="card-head"><h2 class="card-title">Monthly win rate</h2><span class="tiny muted">settled tickets only</span></div><div class="card-body" id="monthlyChart"></div></div></section>
+
   <section class="section"><div class="card"><div class="card-head"><h2 class="card-title">Monthly statistics</h2></div><div class="table-wrap" id="monthlyTable"></div></div></section>
   <section class="section"><div class="card"><div class="card-head"><h2 class="card-title">Streaks &amp; market record</h2></div><div class="card-body"><div class="stat-cards" id="streakCards"></div></div></div></section>
   <p class="tiny muted">All figures are computed from settled results and the immutable odds snapshots stored in the database.</p>
