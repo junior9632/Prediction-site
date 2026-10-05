@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.local
+*.log
+logs/
+storage/
+.DS_Store
+Thumbs.db
+coverage/
+.nyc_output/
+tmp/
+cpanel_nodejs/
