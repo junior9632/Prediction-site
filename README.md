@@ -55,14 +55,27 @@ Useful commands:
 
 ```bash
 npm run dev                 # node --watch server.js
+npm run db:migrate -- --status   # applied vs pending migrations (read-only)
 npm test                    # 62 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
 npm run health              # non-zero exit when the DB or the data source is down
 npm run lint:secrets        # verifies no key/secret is shipped in public/
+npm run lint:js             # ESLint (correctness rules only, fetched via npx)
 npm run lint:syntax         # node --check over every JavaScript file in the repo
 ```
+
+### Full local stack with Docker (optional)
+
+```bash
+docker compose up           # MySQL 8 + app on http://localhost:3000 (admin / local-dev-password)
+docker compose up db        # just MySQL; then run `npm run dev` on the host
+docker compose down -v      # stop and wipe the database volume
+```
+
+First boot applies the schema + migrations and seeds the admin automatically.
+Docker is for local development only — production stays on cPanel.
 
 ### Look at the UI without MySQL or an API key
 
@@ -110,7 +123,9 @@ server/
                               logService, analyticsService, ticketService, notifyService
   prediction/                 over15, confidence, risk, quality, correlation,
                               ticketBuilder, pipeline
-  database/                   schema.sql, connection.js (pool), queries.js (all SQL)
+  database/                   schema.sql (baseline), migrations/ (versioned, applied
+                              once + checksummed), migrate.js, connection.js (pool),
+                              queries.js (all SQL)
   middleware/                 auth, adminAuth (+CSRF), rateLimit, requestLogger, errorHandler
   utils/                      decimal (exact odds maths), numbers, time, logger,
                               errors, asyncHandler, validate, fixtureStatus

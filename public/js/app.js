@@ -149,7 +149,7 @@
           if (btn) btn.disabled = false;
           setTimeout(() => window.location.reload(), 1200);
         }
-      } catch (err) {
+      } catch (_) {
         clearInterval(polling);
       }
     }, 900);

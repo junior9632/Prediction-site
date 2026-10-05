@@ -81,7 +81,7 @@
           }
           setTimeout(() => VIEWS[currentView].load(), 1500);
         }
-      } catch (err) {
+      } catch (_) {
         clearInterval(pollTimer);
       }
     }, 900);

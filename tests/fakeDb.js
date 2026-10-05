@@ -295,7 +295,7 @@ function install(overrides = {}) {
     if (/^SELECT \* FROM system_logs/.test(s)) {
       const where = s.slice(s.indexOf('WHERE 1=1'), s.indexOf('ORDER BY'));
       const filters = [...where.matchAll(/AND (\w+) = \?/g)].map((m) => m[1]);
-      let rows = store.systemLogs.filter((row, _i) => true);
+      let rows = store.systemLogs.slice();
       filters.forEach((field, idx) => {
         rows = rows.filter((row) => String(row[field]) === String(params[idx]));
       });
@@ -359,7 +359,7 @@ function install(overrides = {}) {
       const row = store.generationLogs.find((g) => g.id === id);
       if (row) {
         // the stored rows use the real column names, so keep them verbatim
-        const fields = (s.match(/SET (.+) WHERE/) || [, ''])[1].split(',').map((f) => f.trim().split(' = ')[0]);
+        const fields = (s.match(/SET (.+) WHERE/) || [null, ''])[1].split(',').map((f) => f.trim().split(' = ')[0]);
         fields.forEach((field, i) => {
           row[field] = params[i];
         });
@@ -465,7 +465,7 @@ function install(overrides = {}) {
       const id = Number(params[params.length - 1]);
       const row = store.apiSyncLogs.find((r) => Number(r.id) === id);
       if (row) {
-        const fields = (s.match(/SET (.+) WHERE/) || [, ''])[1].split(',').map((f) => f.trim().split(' = ')[0]);
+        const fields = (s.match(/SET (.+) WHERE/) || [null, ''])[1].split(',').map((f) => f.trim().split(' = ')[0]);
         fields.forEach((field, i) => {
           row[field] = params[i];
         });

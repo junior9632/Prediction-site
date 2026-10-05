@@ -1,7 +1,7 @@
 /* GoalPredict — admin login */
 'use strict';
 (function () {
-  const { API, escapeHtml, icons } = App;
+  const { API, icons } = App;
   const $ = (s) => document.querySelector(s);
 
   document.addEventListener('DOMContentLoaded', () => {

@@ -20,7 +20,6 @@ const db = require('../database/queries');
 const decimal = require('../utils/decimal');
 const time = require('../utils/time');
 const logger = require('../utils/logger');
-const config = require('../config');
 const { AppError } = require('../utils/errors');
 const settingsService = require('./settingsService');
 const oddsService = require('./oddsService');
@@ -692,7 +691,7 @@ async function persistNoTicket({ ticketDate, result, settings, adminId, generati
     generatedByAdminId: adminId,
     generatedAt: now,
     published: true,
-    resultNote: pipeline.describeNoTicket(result.report || {}, result.counters || {}),
+    resultNote: pipeline.describeNoTicket(result.report || {}),
   });
   const ticketRow = await db.getTicketById(ticketId);
   return { ticketId, publicTicket: formatTicketForPublic(ticketRow, [], { now, report: result.report, counters: result.counters }) };
@@ -745,7 +744,7 @@ function buildReport({ ticketDate, counters, result, settings, reverify, bulkSyn
     reason: qualified ? null : (result.report && result.report.reason) || 'NO_COMBO_IN_RANGE',
     message: qualified
       ? 'TICKET QUALIFIED'
-      : pipeline.describeNoTicket(result.report || {}, counters),
+      : pipeline.describeNoTicket(result.report || {}),
     reverify: reverify || null,
     oddsSync: bulkSync ? { rowsWritten: bulkSync.rowsWritten, endpointCalls: bulkSync.endpointCalls } : null,
     alternatives: qualified ? serializableAlternatives(result.alternatives) : [],

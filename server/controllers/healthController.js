@@ -20,7 +20,7 @@ const health = asyncHandler(async (_req, res) => {
     // the pool lives in the connection layer, not in the repository layer
     await connection.ping();
     await db.countTickets({});
-  } catch (err) {
+  } catch (_) {
     database = 'unavailable';
   }
   const breaker = apiFootball.breakerState();

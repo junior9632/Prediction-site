@@ -38,6 +38,9 @@ jobs:
       - name: Syntax check every JavaScript file
         run: npm run lint:syntax
 
+      - name: Lint (ESLint, correctness rules only)
+        run: npm run lint:js
+
       - name: Verify schema.sql and queries.js agree
         run: npm run test:sql
 

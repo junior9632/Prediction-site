@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------
+# Local development only — production runs on cPanel (see docs/).
+#
+#   docker compose up            # MySQL 8 + the app on http://localhost:3000
+#   docker compose up db         # just the database (then: npm run dev)
+#   docker compose down -v       # stop and wipe the database volume
+#
+# First boot applies schema.sql + migrations and seeds the first admin
+# automatically (admin / local-dev-password, see environment below).
+# An API_FOOTBALL_KEY is NOT required to boot; without one the site shows
+# DATA SOURCE TEMPORARILY UNAVAILABLE exactly as it would in production.
+# For a pure frontend look without Docker at all: `npm run preview:ui`.
+# ---------------------------------------------------------------------
+
+services:
+  db:
+    image: mysql:8.0
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: local-root
+      MYSQL_DATABASE: football_predictions
+      MYSQL_USER: predictions
+      MYSQL_PASSWORD: local-dev
+    ports:
+      - "3306:3306"
+    volumes:
+      - dbdata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-plocal-root"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm ci && npm run db:setup && npm run dev"
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      HOST: 0.0.0.0
+      APP_URL: http://localhost:3000
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_USER: predictions
+      DB_PASSWORD: local-dev
+      DB_NAME: football_predictions
+      JWT_SECRET: local-dev-jwt-secret-not-for-production-0123456789abcdef
+      COOKIE_SECURE: "0"
+      ADMIN_USERNAME: admin
+      ADMIN_EMAIL: admin@localhost.dev
+      ADMIN_PASSWORD: local-dev-password
+      # Optional: export these on the host to test the real feed / alerts
+      API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  dbdata:
+  node_modules:

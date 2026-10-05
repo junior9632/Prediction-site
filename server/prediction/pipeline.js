@@ -456,7 +456,7 @@ function validateFinalSelections(selections, settings, now = new Date()) {
 }
 
 /** Human readable summary of why a run produced no ticket. */
-function describeNoTicket(report = {}, counters = {}) {
+function describeNoTicket(report = {}) {
   const reasons = {
     INSUFFICIENT_CANDIDATES: 'Not enough verified Over 1.5 candidates passed the quality, confidence and risk filters.',
     CORRELATION_LIMITS: 'Correlation protection reduced the candidate pool below the minimum number of selections.',

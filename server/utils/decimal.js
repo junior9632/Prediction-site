@@ -40,7 +40,7 @@ function toScaled(value) {
   if (negative) s = s.slice(1);
   const [intPart, fracPart = ''] = s.split('.');
 
-  let frac = fracPart.slice(0, SCALE_DIGITS).padEnd(SCALE_DIGITS, '0');
+  const frac = fracPart.slice(0, SCALE_DIGITS).padEnd(SCALE_DIGITS, '0');
   // round half-up when the source has more precision than our scale
   if (fracPart.length > SCALE_DIGITS) {
     const nextDigit = Number(fracPart[SCALE_DIGITS]);

@@ -11,7 +11,6 @@
 
 const db = require('../database/queries');
 const numbers = require('../utils/numbers');
-const time = require('../utils/time');
 const logger = require('../utils/logger');
 
 const log = logger.child('stats');
