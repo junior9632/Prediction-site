@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard — GoalPredict</title>
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#04080f">
+  <link rel="icon" type="image/svg+xml" href="/img/favicon.svg">
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .dashboard-wrap{max-width:1180px;margin:0 auto;padding:28px 20px 70px}
+    .dash-heading{display:flex;justify-content:space-between;align-items:center;gap:18px;margin:12px 0 24px}
+    .dash-heading h1{font-size:clamp(26px,4vw,38px);margin:0;letter-spacing:-.04em}
+    .dash-heading p{color:var(--muted);margin:7px 0 0}
+    .dash-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
+    .dash-card{grid-column:span 4;min-width:0}
+    .dash-card.wide{grid-column:span 8}
+    .dash-card.full{grid-column:1/-1}
+    .dash-card .card-body{height:100%}
+    .profile-row{display:flex;align-items:center;gap:14px}
+    .avatar{width:58px;height:58px;border-radius:18px;display:grid;place-items:center;background:var(--cyan-soft);border:1px solid rgba(34,211,238,.3);color:var(--cyan);font-weight:900;font-size:21px}
+    .quick-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .quick-link{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2);font-weight:700}
+    .quick-link:hover{border-color:rgba(34,211,238,.45);color:var(--cyan)}
+    @media(max-width:800px){.dash-card,.dash-card.wide{grid-column:1/-1}.dash-heading{align-items:flex-start;flex-direction:column}}
+  </style>
+</head>
+<body>
+<header class="site-header"><div class="container header-inner">
+  <a class="brand" href="/"><span class="brand-mark"><img src="/img/logo.svg" alt="" style="width:30px;height:30px"></span><span><span class="brand-name">Goal<em>Predict</em></span><span class="brand-tag">Member Dashboard</span></span></a>
+  <nav class="main-nav" aria-label="Primary"><a href="/">Home</a><a href="/ticket.html">Today's Ticket</a><a href="/history.html">Ticket History</a><a href="/analytics.html">Analytics</a><a href="/predictions.html">Predictions</a></nav>
+  <div class="header-actions"><a class="btn btn-ghost btn-sm" href="/account.html">Account settings</a><button class="btn btn-primary btn-sm" id="logoutBtn" type="button">Sign out</button></div>
+</div></header>
+<main class="dashboard-wrap">
+  <div class="dash-heading"><div><span class="badge badge-cyan">Member workspace</span><h1 style="margin-top:12px">Welcome back, <span id="welcomeName">there</span></h1><p>Your account, prediction activity and the latest platform updates in one place.</p></div><a class="btn btn-primary" href="/ticket.html">View today's ticket →</a></div>
+  <div class="dash-grid">
+    <section class="card dash-card wide"><div class="card-head"><h2 class="card-title">Your profile</h2><a class="small" href="/account.html">Manage account ↗</a></div><div class="card-body"><div class="profile-row"><div class="avatar" id="avatar">GP</div><div><strong id="profileName">—</strong><div class="small muted" id="profileEmail">—</div><div class="tiny muted" id="memberSince" style="margin-top:5px">Member account</div></div></div><div class="divider" style="margin:18px 0;border-top:1px solid var(--line)"></div><p class="small muted">Keep your sign-in details secure. GoalPredict publishes only qualifying picks supported by verified data; some days may have no qualifying ticket.</p></div></section>
+    <section class="card dash-card"><div class="card-head"><h2 class="card-title">Account security</h2></div><div class="card-body"><div class="badge badge-green">Signed in</div><p class="small muted" style="margin:12px 0 16px">Your session is active. You can update your password from account settings.</p><a class="btn btn-ghost btn-block" href="/account.html">Security & settings</a></div></section>
+    <section class="card dash-card"><div class="card-head"><h2 class="card-title">Explore GoalPredict</h2></div><div class="card-body"><div class="quick-links"><a class="quick-link" href="/ticket.html">Today's ticket <span>↗</span></a><a class="quick-link" href="/history.html">Results history <span>↗</span></a><a class="quick-link" href="/analytics.html">Performance <span>↗</span></a><a class="quick-link" href="/predictions.html">Fixtures <span>↗</span></a></div></div></section>
+    <section class="card dash-card wide"><div class="card-head"><h2 class="card-title">Latest platform status</h2></div><div class="card-body"><div class="row" style="justify-content:space-between;gap:12px"><span class="small muted">Today's ticket</span><strong id="ticketStatus">Checking…</strong></div><p class="small muted" id="ticketMessage" style="margin-top:10px">We are checking the latest published status.</p><a class="btn btn-ghost" href="/ticket.html" style="margin-top:14px">Open ticket details</a></div></section>
+    <section class="card dash-card"><div class="card-head"><h2 class="card-title">Responsible play</h2></div><div class="card-body"><p class="small muted">Predictions are statistical analysis, not guarantees. Never stake money you cannot afford to lose.</p><a class="small" href="/legal.html">Read our policies →</a></div></section>
+  </div>
+</main>
+<footer class="site-footer"><div class="container"><p class="footer-note">© GoalPredict · <a href="/legal.html">Legal & Responsible Play</a></p></div></footer>
+<script src="/js/api.js"></script><script src="/js/dashboard.js"></script>
+</body></html>
