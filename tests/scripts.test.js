@@ -9,9 +9,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
+
+/** The file-name patterns the test runner discovers when given no path argument. */
+const DISCOVERED_PATTERNS = [
+  /(^|[\\/])test\.(js|cjs|mjs)$/,
+  /(^|[\\/])test-.+\.(js|cjs|mjs)$/,
+  /\.(test|-test|_test)\.(js|cjs|mjs)$/,
+];
+
+const isDiscovered = (file) => DISCOVERED_PATTERNS.some((re) => re.test(file));
 
 function run(script) {
   try {
@@ -38,4 +48,38 @@ test('scripts: no secret, key or upstream host ships in public/', () => {
   const result = run('check-no-secrets.js');
   assert.equal(result.code, 0, result.stdout);
   assert.match(result.stdout, /no secrets found/i);
+});
+
+test('package.json: the test script runs on Node 18 and 20, not just 22', () => {
+  const { scripts, engines } = require('../package.json');
+
+  // Glob positionals were only added to `node --test` in Node 21. On 18 and 20
+  // the pattern is treated as a literal path, the runner reports
+  // "Could not find '.../tests/**/*.test.js'" and exits 1 before a single test
+  // executes. package.json advertises support for >=18.17, so the script has
+  // to use the form that has behaved identically since Node 18: no path
+  // argument at all, letting the runner apply its own default discovery.
+  assert.ok(!scripts.test.includes('*'), `test script must not use a glob: ${scripts.test}`);
+  assert.equal(scripts.test, 'node --test');
+  assert.match(engines.node, /18/);
+});
+
+test('package.json: default discovery picks up the tests but never the helpers', () => {
+  const files = fs.readdirSync(path.join(ROOT, 'tests'));
+  const discovered = files.filter(isDiscovered);
+
+  // Every test file must be found by the default patterns, otherwise dropping
+  // the path argument would silently stop running it.
+  assert.deepEqual(
+    discovered.sort(),
+    files.filter((f) => f.endsWith('.test.js')).sort(),
+  );
+  assert.ok(discovered.length >= 4, `expected the test files, found ${discovered.join(', ')}`);
+
+  // fakeDb.js and synthetic.js are fixtures, not tests. If either were ever
+  // executed as a test file the run would fail on a bare require, which is
+  // exactly what `node --test tests/` (the directory form) does.
+  assert.ok(files.includes('fakeDb.js') && files.includes('synthetic.js'));
+  assert.ok(!isDiscovered('fakeDb.js'), 'fakeDb.js must not match a discovery pattern');
+  assert.ok(!isDiscovered('synthetic.js'), 'synthetic.js must not match a discovery pattern');
 });

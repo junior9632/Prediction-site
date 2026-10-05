@@ -55,7 +55,7 @@ Useful commands:
 
 ```bash
 npm run dev                 # node --watch server.js
-npm test                    # 54 unit + service + HTTP acceptance tests (no DB needed)
+npm test                    # 56 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
@@ -225,7 +225,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 54 tests, ~1s, no database or network required
+npm test          # 56 tests, ~1s, no database or network required
 ```
 
 | File | Covers |
@@ -235,7 +235,7 @@ npm test          # 54 tests, ~1s, no database or network required
 | `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
 | `tests/fakeDb.js` | in-memory double for `server/database/connection.js`; the SQL still comes from `queries.js` |
 | `tests/synthetic.js` | fictional fixtures, odds payloads, form rows and an API-Football double |
-| `tests/scripts.test.js` | runs `scripts/validate-sql.js` and `scripts/check-no-secrets.js` and fails when they do |
+| `tests/scripts.test.js` | runs `scripts/validate-sql.js` and `scripts/check-no-secrets.js` and fails when they do; also guards the `test` script itself (see below) |
 
 ### Acceptance criteria → test map
 
@@ -264,6 +264,16 @@ The workflow needs **no services and no secrets** — the suite is hermetic, so 
 of the engine and HTTP contracts, not of a live MySQL or API-Football connection. Those still have
 to be verified on the host with `npm run db:setup` and `npm run sync:all` (see
 `docs/DEPLOYMENT-CPANEL.md`).
+
+> **Why `"test": "node --test"` has no file pattern.** Glob positionals were only added to
+> `node --test` in **Node 21**. On Node 18 and 20 a pattern such as `"tests/**/*.test.js"` is
+> treated as a *literal path*, so the runner prints `Could not find ...` and exits 1 without
+> running a single test — while looking perfectly fine on a developer's Node 22 machine. With no
+> path argument the runner applies its own default discovery, which has behaved the same since
+> Node 18 and does not depend on shell expansion (so it also works on Windows). Do not use the
+> directory form `node --test tests/` either: that executes every `.js` file in the directory,
+> including the `fakeDb.js` and `synthetic.js` fixtures. `tests/scripts.test.js` fails the build
+> if either mistake is reintroduced.
 
 ---
 
