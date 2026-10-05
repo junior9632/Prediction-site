@@ -17,7 +17,7 @@ const config = require('./config');
 const logger = require('./utils/logger');
 const { AppError } = require('./utils/errors');
 const { requestLogger } = require('./middleware/requestLogger');
-const { optionalAuth } = require('./middleware/auth');
+const { optionalAuth, requireAuth, requireAdmin } = require('./middleware/auth');
 const { apiLimiter } = require('./middleware/rateLimit');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
@@ -110,6 +110,15 @@ function createApp() {
   app.use('/api/auth', authRoutes);
   app.use('/api/admin', adminRoutes);
 
+  /* ------------------------ protected frontend ---------------------- */
+  // HTML is protected at the server boundary as well as in the browser.
+  // This prevents an unauthenticated visitor from loading a private page
+  // directly by URL (for example /dashboard.html), not merely hiding links.
+  app.get('/dashboard', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
+  app.get('/dashboard.html', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
+  app.get('/admin', requireAdmin, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
+  app.get('/admin.html', requireAdmin, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
+
   /* --------------------------- frontend ---------------------------- */
   app.use(
     express.static(PUBLIC_DIR, {
@@ -123,7 +132,7 @@ function createApp() {
   );
 
   // friendly URLs (no .html needed)
-  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'account', 'login', 'admin'];
+  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'account', 'login'];
   for (const page of pages) {
     app.get(`/${page}`, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, `${page}.html`)));
   }
