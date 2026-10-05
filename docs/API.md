@@ -197,7 +197,10 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 | `POST /api/auth/admin/logout` | — | clears the cookies |
 | `POST /api/auth/admin/change-password` | `{currentPassword, newPassword}` | authenticated; minimum length enforced |
 | `GET /api/auth/me` | — | `{type: "admin"|"user"|"anonymous", account}` |
-| `POST /api/auth/register`, `POST /api/auth/login` | `{…}` | optional reader accounts (not required by the product) |
+| `POST /api/auth/register` | `{email, username, password}` | `201 {id, username, email}`; optional reader account (never required to read the site); rate limited |
+| `POST /api/auth/login` | `{login, password}` | `200 {user, token, csrfToken}` + the same cookie pair as the admin login; lockout after repeated failures |
+| `POST /api/auth/logout` | — | clears the session cookies for any session type (admin or user) |
+| `POST /api/auth/change-password` | `{currentPassword, newPassword}` | authenticated user session; CSRF required for cookie sessions |
 
 ---
 

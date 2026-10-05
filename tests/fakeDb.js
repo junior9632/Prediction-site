@@ -32,6 +32,7 @@ function install(overrides = {}) {
     results: overrides.results || [],
     systemLogs: overrides.systemLogs || [],
     apiSyncLogs: overrides.apiSyncLogs || [],
+    users: overrides.users || [],
     ids: 1000,
   };
 
@@ -46,6 +47,10 @@ function install(overrides = {}) {
     if (/^SELECT \* FROM admins WHERE id = \?/.test(s)) return store.admins.filter((a) => a.id === Number(params[0]));
     if (/^SELECT \* FROM admins WHERE email = \? OR username = \?/.test(s)) {
       return store.admins.filter((a) => a.email === params[0] || a.username === params[0]);
+    }
+    if (/^SELECT \* FROM users WHERE id = \?/.test(s)) return store.users.filter((u) => u.id === Number(params[0]));
+    if (/^SELECT \* FROM users WHERE email = \? OR username = \?/.test(s)) {
+      return store.users.filter((u) => u.email === params[0] || u.username === params[0]);
     }
     if (/^SELECT \* FROM settings/.test(s)) return store.settings;
     if (/^SELECT \* FROM leagues/.test(s)) return store.leagues;
@@ -331,6 +336,48 @@ function install(overrides = {}) {
 
   async function execute(sql, params = []) {
     const s = String(sql).replace(/\s+/g, ' ').trim();
+    if (/^INSERT INTO users/.test(s)) {
+      const id = nextId();
+      store.users.push({
+        id,
+        email: params[0],
+        username: params[1],
+        password_hash: params[2],
+        role: params[3] || 'user',
+        is_active: params[4] === undefined ? 1 : Number(params[4]),
+        failed_logins: 0,
+        locked_until: null,
+        last_login_at: null,
+        last_login_ip: null,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      });
+      return { insertId: id, affectedRows: 1 };
+    }
+    if (/^UPDATE users SET failed_logins = 0/.test(s)) {
+      const row = store.users.find((u) => u.id === Number(params[2]));
+      if (row) {
+        row.failed_logins = 0;
+        row.locked_until = null;
+        row.last_login_at = params[0];
+        row.last_login_ip = params[1];
+      }
+      return { affectedRows: row ? 1 : 0 };
+    }
+    if (/^UPDATE users SET failed_logins = failed_logins \+ 1/.test(s)) {
+      const row = store.users.find((u) => u.id === Number(params[2]));
+      if (row) {
+        row.failed_logins = Number(row.failed_logins || 0) + 1;
+        row.locked_until = params[0];
+        row.last_login_ip = params[1];
+      }
+      return { affectedRows: row ? 1 : 0 };
+    }
+    if (/^UPDATE users SET password_hash = \?/.test(s)) {
+      const row = store.users.find((u) => u.id === Number(params[1]));
+      if (row) row.password_hash = params[0];
+      return { affectedRows: row ? 1 : 0 };
+    }
     if (/^INSERT INTO generation_logs/.test(s)) {
       const id = nextId();
       store.generationLogs.push({

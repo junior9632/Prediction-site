@@ -123,7 +123,7 @@ function createApp() {
   );
 
   // friendly URLs (no .html needed)
-  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'login', 'admin'];
+  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'account', 'login', 'admin'];
   for (const page of pages) {
     app.get(`/${page}`, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, `${page}.html`)));
   }
@@ -132,7 +132,7 @@ function createApp() {
     res
       .type('text/plain')
       .send(
-        `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /login\nDisallow: /api/\n\nSitemap: ${config.appUrl}/sitemap.xml\n`
+        `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /login\nDisallow: /account\nDisallow: /api/\n\nSitemap: ${config.appUrl}/sitemap.xml\n`
       );
   });
 

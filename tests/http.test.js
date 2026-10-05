@@ -554,3 +554,77 @@ test('compliance & SEO: legal page, robots.txt and sitemap.xml are served', asyn
     assert.match(html, /og:title/, `${page} must have Open Graph metadata`);
   }
 });
+
+test('member accounts: register -> login -> me -> change password -> logout', async () => {
+  // register (public, rate limited route)
+  const reg = await post('/api/auth/register', {
+    email: 'fan@test.local',
+    username: 'ticketfan',
+    password: 'super-secret-99',
+  });
+  assert.equal(reg.status, 201);
+  assert.equal(reg.json.data.username, 'ticketfan');
+
+  // duplicate registration is refused without user enumeration detail
+  const dup = await post('/api/auth/register', {
+    email: 'fan@test.local',
+    username: 'ticketfan2',
+    password: 'super-secret-99',
+  });
+  assert.equal(dup.status, 409);
+
+  // login returns the account + a token and sets the auth cookies
+  const login = await post('/api/auth/login', { login: 'ticketfan', password: 'super-secret-99' });
+  assert.equal(login.status, 200);
+  assert.equal(login.json.data.user.username, 'ticketfan');
+  assert.ok(login.json.data.token, 'a bearer token is issued');
+  assert.ok(login.json.data.csrfToken, 'a csrf token is issued for cookie sessions');
+  const setCookie = login.headers.get('set-cookie') || '';
+  assert.match(setCookie, /HttpOnly/i, 'the session cookie is httpOnly');
+  const userToken = login.json.data.token;
+
+  // wrong password is generic + counted
+  const bad = await post('/api/auth/login', { login: 'ticketfan', password: 'wrong-password-1' });
+  assert.equal(bad.status, 401);
+  assert.equal(bad.json.error.code, 'INVALID_CREDENTIALS');
+
+  // me reflects the user session incl. the membership date
+  const me = await get('/api/auth/me', { token: userToken });
+  assert.equal(me.status, 200);
+  assert.equal(me.json.data.type, 'user');
+  assert.equal(me.json.data.account.username, 'ticketfan');
+  assert.ok(me.json.data.account.memberSince, 'memberSince is published for the account page');
+
+  // a user can change their own password (bearer session: no CSRF needed)
+  const changed = await post(
+    '/api/auth/change-password',
+    { currentPassword: 'super-secret-99', newPassword: 'even-more-secret-11' },
+    { token: userToken },
+  );
+  assert.equal(changed.status, 200);
+  const relogin = await post('/api/auth/login', { login: 'ticketfan', password: 'even-more-secret-11' });
+  assert.equal(relogin.status, 200);
+
+  // ... but a user can NEVER touch admin endpoints
+  const forbidden = await get('/api/admin/overview', { token: userToken });
+  assert.ok([401, 403].includes(forbidden.status), 'user tokens are rejected by admin routes');
+  const adminPw = await post(
+    '/api/auth/admin/change-password',
+    { currentPassword: 'x', newPassword: 'y'.repeat(12) },
+    { token: userToken },
+  );
+  assert.ok([401, 403].includes(adminPw.status));
+
+  // generic logout clears the cookie for any session type
+  const out = await post('/api/auth/logout', {}, { token: userToken });
+  assert.equal(out.status, 200);
+  assert.equal(out.json.data.loggedOut, true);
+
+  // the account page is served and carries the member UI + robots exclusion
+  const page = await get('/account');
+  assert.equal(page.status, 200);
+  assert.match(page.text, /Create a free account/);
+  assert.match(page.text, /noindex/);
+  const robots = await get('/robots.txt');
+  assert.match(robots.text, /Disallow: \/account/);
+});

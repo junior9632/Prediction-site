@@ -332,7 +332,7 @@ const App = (() => {
       if (logoutBtn) {
         logoutBtn.addEventListener('click', async () => {
           try {
-            await API.post('/auth/admin/logout', {});
+            await API.post('/auth/logout', {});
           } catch (_) {
             /* ignore */
           }

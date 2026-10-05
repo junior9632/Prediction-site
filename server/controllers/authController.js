@@ -107,14 +107,19 @@ const adminLogin = asyncHandler(async (req, res) => {
   res.json({ ok: true, data: { admin: publicAdmin(row), token, csrfToken: csrf } });
 });
 
-/** POST /api/auth/admin/logout */
-const adminLogout = asyncHandler(async (req, res) => {
+/** POST /api/auth/logout — any session type (admin or user). */
+const logout = asyncHandler(async (req, res) => {
   if (req.auth && req.auth.type === 'admin') {
     await logService.audit(req, 'ADMIN_LOGOUT', { adminId: req.auth.id });
+  } else if (req.auth && req.auth.type === 'user') {
+    await logService.write({ level: 'info', channel: 'auth', event: 'USER_LOGOUT', actorType: 'user', actorId: req.auth.id, ipAddress: req.ip });
   }
   auth.clearAuthCookie(res);
   res.json({ ok: true, data: { loggedOut: true } });
 });
+
+/** POST /api/auth/admin/logout — kept as an alias of the generic logout. */
+const adminLogout = logout;
 
 /** POST /api/auth/admin/change-password */
 const changePassword = asyncHandler(async (req, res) => {
@@ -137,6 +142,27 @@ const changePassword = asyncHandler(async (req, res) => {
   res.json({ ok: true, data: { changed: true } });
 });
 
+/** POST /api/auth/change-password — public user account. */
+const userChangePassword = asyncHandler(async (req, res) => {
+  if (!req.auth || req.auth.type !== 'user') throw AppError.unauthorized();
+  const { currentPassword, newPassword } = assertValid(
+    {
+      currentPassword: { type: 'string', required: true, maxLength: 200 },
+      newPassword: { type: 'string', required: true, minLength: 8, maxLength: 200 },
+    },
+    req.body || {}
+  );
+  const row = await db.getUserById(req.auth.id);
+  if (!row) throw AppError.unauthorized();
+  const ok = await bcrypt.compare(currentPassword, row.password_hash);
+  if (!ok) throw AppError.badRequest('Current password is incorrect', 'INVALID_CREDENTIALS');
+  if (currentPassword === newPassword) throw AppError.badRequest('New password must be different', 'SAME_PASSWORD');
+
+  await db.updateUserPassword(Number(row.id), await hashPassword(newPassword));
+  await logService.write({ level: 'info', channel: 'auth', event: 'USER_PASSWORD_CHANGED', actorType: 'user', actorId: Number(row.id), ipAddress: req.ip });
+  res.json({ ok: true, data: { changed: true } });
+});
+
 /** GET /api/auth/me */
 const me = asyncHandler(async (req, res) => {
   if (!req.auth) throw AppError.unauthorized();
@@ -151,7 +177,14 @@ const me = asyncHandler(async (req, res) => {
     ok: true,
     data: {
       type: 'user',
-      account: { id: Number(row.id), username: row.username, email: row.email, role: row.role },
+      account: {
+        id: Number(row.id),
+        username: row.username,
+        email: row.email,
+        role: row.role,
+        memberSince: time.toIso(row.created_at),
+        lastLoginAt: time.toIso(row.last_login_at),
+      },
     },
   });
 });
@@ -195,4 +228,4 @@ const userLogin = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { adminLogin, adminLogout, changePassword, me, register, userLogin, hashPassword };
+module.exports = { adminLogin, adminLogout, logout, changePassword, userChangePassword, me, register, userLogin, hashPassword };

@@ -110,7 +110,7 @@ public/                       the entire frontend (static, no build step)
   admin.html                  admin console (10 views, sidebar layout)
   css/style.css               design system: dark navy panels, cyan accents
   js/api.js                   fetch wrapper + CSRF + shared render helpers
-  js/{app,ticket,history,analytics,predictions,login,admin}.js
+  js/{app,ticket,history,analytics,predictions,account,login,admin}.js
   img/{logo,favicon}.svg
 server/
   config/index.js             typed environment configuration
