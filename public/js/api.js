@@ -324,7 +324,14 @@ const App = (() => {
         if (loginBtn) loginBtn.classList.toggle('hidden', isAuthed);
         if (adminBtn && isAuthed) adminBtn.textContent = me.type === 'admin' ? 'Dashboard' : 'Admin';
         if (signed) signed.classList.toggle('hidden', !isAuthed);
-        if (nameNode && me) nameNode.textContent = me.account ? me.account.username : '';
+        if (nameNode && me) {
+          nameNode.textContent = me.account ? me.account.username : (me.admin ? me.admin.username : 'Account');
+          nameNode.href = me.type === 'admin' ? '/admin.html' : '/dashboard';
+          nameNode.setAttribute('aria-label', me.type === 'admin' ? 'Open admin dashboard' : 'Open member dashboard');
+        }
+        if (adminBtn && me && me.type !== 'admin') {
+          adminBtn.classList.add('hidden');
+        }
       };
 
       session.me().then(paint).catch(paint);
