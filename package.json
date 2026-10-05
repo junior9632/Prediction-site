@@ -1,0 +1,50 @@
+{
+  "name": "football-predictions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI-assisted football prediction platform. Single market: OVER 1.5 GOALS. Real verified bookmaker odds only, manual daily ticket generation, combined odds target 2.00-4.00.",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "db:migrate": "node scripts/db-migrate.js",
+    "db:seed": "node scripts/db-seed.js",
+    "db:setup": "npm run db:migrate && npm run db:seed",
+    "sync:fixtures": "node scripts/cron-sync-fixtures.js",
+    "sync:odds": "node scripts/cron-sync-odds.js",
+    "sync:results": "node scripts/cron-sync-results.js",
+    "sync:all": "node scripts/cron-sync-all.js",
+    "ticket:generate": "node scripts/generate-ticket-cli.js",
+    "health": "node scripts/cron-health-check.js",
+    "test": "node --test",
+    "test:sql": "node scripts/validate-sql.js",
+    "preview:ui": "node tools/uipreview.js",
+    "lint:secrets": "node scripts/check-no-secrets.js",
+    "lint:syntax": "find . -path ./node_modules -prune -o -name '*.js' -print0 | xargs -0 -n1 node --check"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "compression": "^1.8.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "mysql2": "^3.11.5"
+  },
+  "keywords": [
+    "football",
+    "predictions",
+    "over-1.5-goals",
+    "api-football",
+    "express",
+    "mysql",
+    "cpanel"
+  ],
+  "license": "UNLICENSED"
+}

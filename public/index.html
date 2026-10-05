@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>GoalPredict — AI Football Predictions · Daily Over 1.5 Goals</title>
+  <meta name="description" content="AI-assisted football predictions for a single market: Over 1.5 Goals. Real verified bookmaker odds, combined daily odds 2.00-4.00, manual ticket generation.">
+  <meta name="theme-color" content="#04080f">
+  <link rel="icon" type="image/svg+xml" href="/img/favicon.svg">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7l3.5 2.6-1.3 4.1h-4.4L8.5 9.6 12 7z"/><path d="M12 3v4M4.5 9.5l4 .1M19.5 9.5l-4 .1M7 19l2.8-3.3M17 19l-2.8-3.3"/></svg>
+        </span>
+        <span>
+          <span class="brand-name">Goal<em>Predict</em></span>
+          <span class="brand-tag">Smarter Football Picks</span>
+        </span>
+      </a>
+      <nav class="main-nav" aria-label="Primary">
+        <a href="/" class="active">Home</a>
+        <a href="/ticket.html">Today's Ticket</a>
+        <a href="/history.html">Ticket History</a>
+        <a href="/analytics.html">Analytics</a>
+        <a href="/predictions.html">Predictions</a>
+      </nav>
+      <div class="header-actions">
+        <a class="btn btn-ghost btn-sm" href="/login.html" data-auth-login>Login</a>
+        <a class="btn btn-primary btn-sm" href="/admin.html" data-auth-admin>Admin</a>
+        <span class="row hidden" data-auth-signed>
+          <span class="small muted" data-auth-name></span>
+          <button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="container">
+      <section class="hero">
+        <div>
+          <span class="hero-eyebrow">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+            One market. Mastered.
+          </span>
+          <h1>AI Football Predictions<br><span class="accent">Daily Over 1.5 Goals</span></h1>
+          <p class="hero-sub">Every pick is backed by real bookmaker prices, verified on our servers seconds before publication. Combined daily odds stay inside the 2.00&nbsp;–&nbsp;4.00 window — and a ticket is published only when the data genuinely supports it.</p>
+          <div class="hero-points">
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg> Real odds</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg> Verified bookmakers</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg> Trusted data</span>
+            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg> Manual daily ticket</span>
+          </div>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="orb">
+            <svg viewBox="0 0 24 24" fill="none" stroke="rgba(232,242,251,.85)" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7l3.5 2.6-1.3 4.1h-4.4L8.5 9.6 12 7z"/><path d="M12 3v4M4.5 9.5l4 .1M19.5 9.5l-4 .1M7 19l2.8-3.3M17 19l-2.8-3.3"/></svg>
+          </div>
+        </div>
+      </section>
+
+      <section class="stat-strip" aria-label="Today at a glance">
+        <div class="stat-card">
+          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9a2 2 0 0 0 2-2V5h14v2a2 2 0 0 0 0 4v2a2 2 0 0 0 0 4v2H5v-2a2 2 0 0 0-2-2z" transform="translate(0 1)"/><path d="M13 6v2M13 11v2M13 16v2"/></svg></span>
+          <span><span class="stat-label">Today's Ticket</span><br><span class="stat-value" id="statMarket">—</span></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-icon blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg></span>
+          <span><span class="stat-label">Total Odds</span><br><span class="stat-value cyan" id="statOdds">—</span></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg></span>
+          <span><span class="stat-label">Selections</span><br><span class="stat-value" id="statPicks">—</span></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-icon amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4"/></svg></span>
+          <span><span class="stat-label">Confidence</span><br><span class="stat-value" id="statConfidence">—</span></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-icon green" id="statStatusIcon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 5-5.5"/></svg></span>
+          <span><span class="stat-label">Status</span><br><span class="stat-value green" id="statStatus">—</span></span>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="card">
+          <div class="card-head">
+            <h2 class="card-title">Today's Accumulator</h2>
+            <span class="small muted" id="accGenerated">—</span>
+          </div>
+          <div class="acc-summary" id="accSummary">
+            <div class="acc-cell"><div class="k">Market</div><div class="v">Over 1.5 Goals</div></div>
+            <div class="acc-cell"><div class="k">Selections</div><div class="v" id="accPicks">—</div></div>
+            <div class="acc-cell"><div class="k">Total Odds</div><div class="v cyan" id="accOdds">—</div></div>
+            <div class="acc-cell"><div class="k">Confidence</div><div class="v" id="accConfidence">—</div></div>
+            <div class="acc-cell"><div class="k">Status</div><div class="v" id="accStatusWrap">—</div></div>
+          </div>
+          <div class="pick-list" id="pickList"></div>
+          <div id="noTicketBox" class="hidden">
+            <div class="card-body">
+              <div class="alert warn" id="noTicketAlert">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v5M12 18.5v.5"/></svg>
+                <div>
+                  <strong id="noTicketTitle">No qualifying ticket</strong>
+                  <div id="noTicketMessage">No valid Over 1.5 combination was found within the 2.00-4.00 target range.</div>
+                </div>
+              </div>
+              <div class="diag-grid section" id="diagGrid"></div>
+            </div>
+          </div>
+          <div class="card-foot hidden" id="generateFoot">
+            <button class="btn btn-primary btn-block btn-lg" type="button" id="btnGenerate">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+              Generate Today's Ticket
+            </button>
+            <p class="tiny muted center" style="margin:8px 0 0;">Manual process — the ticket is rebuilt from live verified odds on every run.</p>
+            <div class="progress-box section hidden" id="progressBox"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h2 class="section-title">How the engine works</h2></div>
+        <div class="stat-cards">
+          <div class="mini-card">
+            <div class="k">Verified odds only</div>
+            <div class="v cyan">1.5</div>
+            <div class="d">Only the full-time Over 1.5 goals line is tradable. Every price passes 14 validation checks and is frozen into an immutable snapshot.</div>
+          </div>
+          <div class="mini-card">
+            <div class="k">Confidence from data</div>
+            <div class="v">0-100</div>
+            <div class="d">Poisson goal model + each team's real Over 1.5 history + the league goal environment, cross-checked against the market price.</div>
+          </div>
+          <div class="mini-card">
+            <div class="k">Odds window</div>
+            <div class="v green">2.00-4.00</div>
+            <div class="d">The accumulator must land inside the window. Nothing is forced, nothing is padded — no qualifying ticket is a valid result.</div>
+          </div>
+          <div class="mini-card">
+            <div class="k">Manual publication</div>
+            <div class="v">OFF</div>
+            <div class="d">Automatic ticket generation is permanently disabled. An administrator generates and publishes each daily ticket by hand.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2 class="section-title">Latest settled tickets</h2>
+          <a class="small" href="/history.html">View full history →</a>
+        </div>
+        <div class="card"><div id="recentResults"></div></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div>
+        <div class="row" style="margin-bottom:8px;">
+          <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7l3.5 2.6-1.3 4.1h-4.4L8.5 9.6 12 7z"/></svg></span>
+          <span class="brand-name">Goal<em>Predict</em></span>
+        </div>
+        <p class="footer-note">AI-assisted analysis of a single betting market: Over 1.5 Goals. Odds are published exactly as quoted by real bookmakers and verified on our servers before publication.</p>
+      </div>
+      <div>
+        <div class="footer-links">
+          <a href="/">Home</a>
+          <a href="/ticket.html">Today's Ticket</a>
+          <a href="/history.html">History</a>
+          <a href="/analytics.html">Analytics</a>
+          <a href="/predictions.html">Predictions</a>
+          <a href="/login.html">Admin login</a>
+        </div>
+        <p class="footer-note" style="margin-top:10px;">Football data &amp; odds: API-Football Pro. Settlement uses the 90-minute score.</p>
+      </div>
+      <div>
+        <div class="responsible">
+          <strong>Play responsibly.</strong> Predictions are statistical analysis, not guarantees. Past performance never guarantees future results. Only stake what you can afford to lose. 18+.
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <nav class="bottom-nav" aria-label="Mobile">
+    <a href="/" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Home</a>
+    <a href="/ticket.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9a2 2 0 0 0 2-2V5h14v2a2 2 0 0 0 0 4v2a2 2 0 0 0 0 4v2H5v-2a2 2 0 0 0-2-2z" transform="translate(0 1)"/></svg>Ticket</a>
+    <a href="/history.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 8v4l3 2"/></svg>History</a>
+    <a href="/admin.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>Admin</a>
+  </nav>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
