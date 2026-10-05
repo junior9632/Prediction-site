@@ -162,10 +162,17 @@ async function getPublicStats() {
   const overview = await getOverview();
   const flat = await computeFlatStake().catch(() => null);
   return {
+    // Aggregate performance only — the analytics page renders every one of
+    // these counters, so the public shape must stay complete.
     tickets: {
       total: overview.tickets.total,
+      qualified: overview.tickets.qualified,
+      noTicketDays: overview.tickets.noTicketDays,
       won: overview.tickets.won,
       lost: overview.tickets.lost,
+      void: overview.tickets.void,
+      pending: overview.tickets.pending,
+      settled: overview.tickets.settled,
       winRate: overview.tickets.winRate,
       avgOdds: overview.tickets.avgOdds,
       highestOdds: overview.tickets.highestOdds,
@@ -173,6 +180,11 @@ async function getPublicStats() {
     },
     selections: {
       total: overview.selections.total,
+      won: overview.selections.won,
+      lost: overview.selections.lost,
+      voided: overview.selections.voided,
+      pending: overview.selections.pending,
+      settled: overview.selections.settled,
       winRate: overview.selections.winRate,
     },
     over15: overview.over15,

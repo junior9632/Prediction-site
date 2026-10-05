@@ -335,6 +335,51 @@ test('operations: logs are readable and a sync cannot run without a data source'
   assert.equal(ctx.store.tickets.length, ticketsBefore, 'a sync can never create a ticket');
 });
 
+test('contract: every field the frontend renders is present in the payload', async () => {
+  // analytics.html reads all of these counters directly
+  const analytics = await get('/api/analytics');
+  assert.equal(analytics.status, 200);
+  const a = analytics.json.data;
+  for (const key of ['total', 'qualified', 'noTicketDays', 'won', 'lost', 'void', 'pending', 'settled', 'winRate', 'avgOdds', 'highestOdds', 'lowestOdds']) {
+    assert.ok(key in a.tickets, `analytics.tickets.${key} is rendered by the page`);
+  }
+  for (const key of ['total', 'won', 'lost', 'voided', 'pending', 'settled', 'winRate']) {
+    assert.ok(key in a.selections, `analytics.selections.${key} is rendered by the page`);
+  }
+  for (const key of ['settled', 'won', 'lost', 'voided', 'winRate']) assert.ok(key in a.over15, `over15.${key}`);
+  for (const key of ['currentWinningStreak', 'currentLosingStreak', 'longestWinningStreak', 'longestLosingStreak']) {
+    assert.ok(key in a.streaks, `streaks.${key}`);
+  }
+  assert.ok(a.monthly.length >= 1);
+  for (const key of ['month', 'tickets', 'qualified', 'won', 'lost', 'voided', 'selections', 'avgOdds', 'winRate']) {
+    assert.ok(key in a.monthly[0], `monthly.${key}`);
+  }
+
+  // predictions.html reads these from every item
+  const predictions = await get(`/api/predictions?date=${ticketDate}&limit=5`);
+  const item = predictions.json.data.items[0];
+  for (const key of ['fixtureId', 'kickoffAt', 'league', 'homeTeam', 'awayTeam', 'eligible', 'rejectReason', 'confidence', 'quality', 'risk', 'expectedGoals', 'odds']) {
+    assert.ok(key in item, `predictions item.${key}`);
+  }
+  for (const key of ['available', 'value', 'bookmaker']) assert.ok(key in item.odds, `predictions odds.${key}`);
+  assert.ok('total' in item.expectedGoals);
+
+  const detail = await get(`/api/predictions/${item.fixtureId}`);
+  assert.equal(detail.status, 200);
+  assert.ok(detail.json.data.prediction);
+  assert.ok(Array.isArray(detail.json.data.scoreBreakdown));
+
+  // history.html reads these from every ticket
+  const history = await get('/api/tickets/history?limit=5');
+  const past = history.json.data.items.find((t) => t.status === 'QUALIFIED');
+  for (const key of ['date', 'status', 'result', 'selectionCount', 'totalOdds', 'settledOdds', 'selections']) {
+    assert.ok(key in past, `history item.${key}`);
+  }
+  for (const key of ['homeTeam', 'awayTeam', 'league', 'kickoffAt', 'odds', 'result', 'score']) {
+    assert.ok(key in past.selections[0], `history selection.${key}`);
+  }
+});
+
 test('security: admin routes reject anonymous and non admin callers', async () => {
   const anonymous = await get('/api/admin/overview');
   assert.equal(anonymous.status, 401);
