@@ -123,13 +123,32 @@ function createApp() {
   );
 
   // friendly URLs (no .html needed)
-  const pages = ['ticket', 'history', 'analytics', 'predictions', 'login', 'admin'];
+  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'login', 'admin'];
   for (const page of pages) {
     app.get(`/${page}`, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, `${page}.html`)));
   }
 
   app.get('/robots.txt', (_req, res) => {
-    res.type('text/plain').send('User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/admin\n');
+    res
+      .type('text/plain')
+      .send(
+        `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /login\nDisallow: /api/\n\nSitemap: ${config.appUrl}/sitemap.xml\n`
+      );
+  });
+
+  // Public, indexable pages only — admin/login are deliberately excluded.
+  app.get('/sitemap.xml', (_req, res) => {
+    const publicPages = ['', 'ticket', 'history', 'analytics', 'predictions', 'legal'];
+    const today = new Date().toISOString().slice(0, 10);
+    const urls = publicPages
+      .map(
+        (p) =>
+          `  <url><loc>${config.appUrl}/${p}</loc><lastmod>${today}</lastmod><changefreq>${p === 'legal' ? 'monthly' : 'daily'}</changefreq></url>`
+      )
+      .join('\n');
+    res
+      .type('application/xml')
+      .send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`);
   });
 
   /* --------------------------- errors ------------------------------ */

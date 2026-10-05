@@ -106,8 +106,8 @@ server/
                               analytics, auth, admin
   controllers/                request validation + response shaping only
   services/                   apiFootball, fixtureService, oddsService, statsService,
-                              contextService, syncService, resultService,
-                              settingsService, logService, analyticsService, ticketService
+                              contextService, syncService, resultService, settingsService,
+                              logService, analyticsService, ticketService, notifyService
   prediction/                 over15, confidence, risk, quality, correlation,
                               ticketBuilder, pipeline
   database/                   schema.sql, connection.js (pool), queries.js (all SQL)
@@ -193,6 +193,8 @@ Every variable is documented in [`.env.example`](.env.example). The important on
 | `TRUST_PROXY` | `1` on cPanel (the app sits behind a proxy) |
 | `ADMIN_USERNAME/ADMIN_EMAIL/ADMIN_PASSWORD` | first administrator, created by `npm run db:seed` |
 | `ENABLE_INTERNAL_SCHEDULER` | keep `0` on cPanel and use cron instead |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | optional: announce published tickets / NO QUALIFYING TICKET days and operational alerts via a Telegram bot (server side only) |
+| `NOTIFY_WEBHOOK_URL` | optional: POST the same events as JSON to any webhook |
 | `ODDS_FRESHNESS_MINUTES`, `MIN_TOTAL_ODDS`, `MAX_TOTAL_ODDS`, `MIN_CONFIDENCE`, `MAX_RISK`, `MIN_DATA_QUALITY`, `MAX_SELECTIONS` | fallback defaults; the `settings` table overrides them at runtime |
 
 Documentation:

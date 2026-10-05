@@ -20,7 +20,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const fakeDb = require('./fakeDb');
-const { buildScenario, FakeApi } = require('./synthetic');
+const { buildScenario, FakeApi, todayUtc } = require('./synthetic');
 
 const auth = require('../server/middleware/auth');
 const settingsService = require('../server/services/settingsService');
@@ -217,8 +217,13 @@ test('acceptance 9: the admin dashboard endpoints describe the same run', async 
   assert.equal(overview.json.data.settings.autoTicketGeneration, false);
   assert.equal(overview.json.data.settings.market.key, 'over_1_5');
   assert.deepEqual(overview.json.data.settings.oddsWindow, { min: 2, max: 4 });
-  assert.equal(overview.json.data.dataToday.fixtures, 3);
-  assert.equal(overview.json.data.dataToday.fixturesWithVerifiedOdds, 3);
+  // The synthetic scenario anchors kickoffs to 12:00 UTC "today", but after
+  // ~11:00 UTC it rolls them to the next UTC day so they stay in the future.
+  // dataToday counts the current UTC day only, so the expected count depends
+  // on which day the scenario landed on.
+  const expectedTodayCount = ticketDate === todayUtc() ? 3 : 0;
+  assert.equal(overview.json.data.dataToday.fixtures, expectedTodayCount);
+  assert.equal(overview.json.data.dataToday.fixturesWithVerifiedOdds, expectedTodayCount);
   assert.ok(overview.json.data.dataSource);
 
   const report = await get(`/api/admin/generation-report?date=${ticketDate}`, { token: bearer });
@@ -516,4 +521,36 @@ test('responsive: the admin console stays navigable on small screens', () => {
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   assert.ok(indexHtml.includes('class="bottom-nav"'), 'public pages need the mobile bottom nav');
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*?\.bottom-nav \{ display: none/, 'bottom nav is mobile only');
+});
+
+test('compliance & SEO: legal page, robots.txt and sitemap.xml are served', async () => {
+  // friendly URL + static file
+  const legal = await get('/legal');
+  assert.equal(legal.status, 200);
+  assert.match(legal.text, /Legal &amp; Responsible Play/);
+  assert.match(legal.text, /18 or over/i);
+  assert.match(legal.text, /not a bookmaker/i);
+  assert.match(legal.text, /begambleaware\.org/i);
+
+  const robots = await get('/robots.txt');
+  assert.equal(robots.status, 200);
+  assert.match(robots.text, /Disallow: \/admin/);
+  assert.match(robots.text, /Disallow: \/api\//);
+  assert.match(robots.text, /Sitemap: .+\/sitemap\.xml/);
+
+  const sitemap = await get('/sitemap.xml');
+  assert.equal(sitemap.status, 200);
+  assert.match(sitemap.headers.get('content-type'), /xml/);
+  assert.match(sitemap.text, /<urlset/);
+  assert.match(sitemap.text, /\/ticket<\/loc>/);
+  assert.match(sitemap.text, /\/legal<\/loc>/);
+  assert.doesNotMatch(sitemap.text, /admin|login/, 'private pages are never in the sitemap');
+
+  // every public page carries the responsible-gambling footer + legal link
+  for (const page of ['ticket.html', 'history.html', 'analytics.html', 'predictions.html']) {
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, page), 'utf8');
+    assert.ok(html.includes('/legal.html'), `${page} must link to the legal page`);
+    assert.match(html, /18\+/, `${page} must show the 18+ notice`);
+    assert.match(html, /og:title/, `${page} must have Open Graph metadata`);
+  }
 });

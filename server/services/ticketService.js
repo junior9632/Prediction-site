@@ -28,6 +28,7 @@ const fixtureService = require('./fixtureService');
 const contextService = require('./contextService');
 const pipeline = require('../prediction/pipeline');
 const logService = require('./logService');
+const notifyService = require('./notifyService');
 const fixtureStatus = require('../utils/fixtureStatus');
 const { ApiFootballUnavailable, apiFootball: defaultApi } = require('./apiFootball');
 
@@ -219,6 +220,11 @@ async function runGeneration(params = {}) {
       });
     }
     if (!api.isAvailable()) {
+      void notifyService.alert('DATA_SOURCE_UNAVAILABLE', {
+        ticketDate,
+        reason: 'CIRCUIT_OPEN',
+        detail: 'API-Football is unreachable (circuit breaker open) — no ticket was generated',
+      });
       return await finalize(RUN_STATES.DATA_SOURCE_UNAVAILABLE, {
         error: 'API-Football is unreachable (circuit breaker open)',
         report: { reason: 'CIRCUIT_OPEN', message: 'DATA SOURCE TEMPORARILY UNAVAILABLE', breaker: api.breakerState() },
@@ -385,6 +391,8 @@ async function runGeneration(params = {}) {
         actorId: adminId,
         context: { ticketId: persisted.ticketId, totalOdds: report.totalOdds, picks: report.selectedPicks },
       });
+      // Fire-and-forget: a notification failure must never undo a published ticket.
+      void notifyService.ticketPublished(persisted.publicTicket);
       return await finalize(RUN_STATES.QUALIFIED, {
         ticketId: persisted.ticketId,
         ticket: persisted.publicTicket,
@@ -414,6 +422,7 @@ async function runGeneration(params = {}) {
       actorId: adminId,
       context: { reason: report.reason, candidates: counters.finalCandidates },
     });
+    void notifyService.noQualifyingTicket(persisted.publicTicket);
     return await finalize(RUN_STATES.NO_QUALIFYING_TICKET, {
       ticketId: persisted.ticketId,
       ticket: persisted.publicTicket,
@@ -432,6 +441,7 @@ async function runGeneration(params = {}) {
       actorId: adminId,
       context: { runId, ticketDate, code: err.code },
     });
+    void notifyService.alert('GENERATION_ERROR', { ticketDate, error: err.message, code: err.code || null });
     return await finalize(RUN_STATES.ERROR, { error: err.message, code: err.code || 'GENERATION_ERROR' });
   }
 }

@@ -14,6 +14,7 @@ process.env.CRON_CONTEXT = '1';
 const pool = require('../server/database/connection');
 const syncService = require('../server/services/syncService');
 const logService = require('../server/services/logService');
+const notifyService = require('../server/services/notifyService');
 
 (async () => {
   const report = { database: 'ok', dataSource: 'unknown', checkedAt: new Date().toISOString() };
@@ -39,6 +40,8 @@ const logService = require('../server/services/logService');
     await logService
       .write({ level: 'critical', channel: 'cron', event: 'HEALTH_CHECK_FAILED', message: JSON.stringify(report) })
       .catch(() => {});
+    // Telegram/webhook alert so a dead DB or data source is noticed quickly.
+    await notifyService.alert('HEALTH_CHECK_FAILED', report).catch(() => {});
     process.exitCode = 1;
   }
 })()
