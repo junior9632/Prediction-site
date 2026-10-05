@@ -1,7 +1,8 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Ticket History — GoalPredict</title>
-<meta name="theme-color" content="#04080f"><link rel="icon" type="image/svg+xml" href="/img/favicon.svg"><link rel="stylesheet" href="/css/style.css"></head><body>
+<meta property="og:title" content="Ticket History — GoalPredict"><meta property="og:description" content="Every published Over 1.5 Goals ticket, settled from real full-time scores. Wins and losses, nothing hidden."><meta property="og:type" content="website"><meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#04080f"><link rel="icon" type="image/svg+xml" href="/img/favicon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/css/style.css"></head><body>
 <header class="site-header">
   <div class="container header-inner">
     <a class="brand" href="/">
@@ -16,9 +17,9 @@
       <a href="/predictions.html">Predictions</a>
     </nav>
     <div class="header-actions">
-      <a class="btn btn-ghost btn-sm" href="/login.html" data-auth-login>Login</a>
+      <a class="btn btn-ghost btn-sm" href="/account.html" data-auth-login>Login</a>
       <a class="btn btn-primary btn-sm" href="/admin.html" data-auth-admin>Admin</a>
-      <span class="row hidden" data-auth-signed><span class="small muted" data-auth-name></span><button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button></span>
+      <span class="row hidden" data-auth-signed><a class="small muted" href="/account.html" data-auth-name></a><button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button></span>
     </div>
   </div>
 </header>
@@ -32,6 +33,12 @@
   <div class="card"><div id="historyList"></div></div>
   <div class="pager" id="pager"></div>
 </div></main>
+<footer class="site-footer">
+  <div class="container">
+    <p class="footer-note"><strong>18+ · Play responsibly.</strong> Predictions are statistical analysis, not guarantees. Only stake what you can afford to lose.
+      <a href="/legal.html">Legal &amp; Responsible Play</a> · <a href="https://www.begambleaware.org" target="_blank" rel="noopener noreferrer">BeGambleAware</a></p>
+  </div>
+</footer>
 <nav class="bottom-nav" aria-label="Mobile">
   <a href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Home</a>
   <a href="/ticket.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9a2 2 0 0 0 2-2V5h14v2a2 2 0 0 0 0 4v2a2 2 0 0 0 0 4v2H5v-2a2 2 0 0 0-2-2z" transform="translate(0 1)"/></svg>Ticket</a>

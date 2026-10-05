@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Admin Login — GoalPredict</title>
-<meta name="theme-color" content="#04080f"><link rel="icon" type="image/svg+xml" href="/img/favicon.svg"><link rel="stylesheet" href="/css/style.css"></head><body>
+<meta name="theme-color" content="#04080f"><link rel="icon" type="image/svg+xml" href="/img/favicon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/css/style.css"></head><body>
 <header class="site-header">
   <div class="container header-inner">
     <a class="brand" href="/">
@@ -16,9 +16,9 @@
       <a href="/predictions.html">Predictions</a>
     </nav>
     <div class="header-actions">
-      <a class="btn btn-ghost btn-sm" href="/login.html" data-auth-login>Login</a>
+      <a class="btn btn-ghost btn-sm" href="/account.html" data-auth-login>Login</a>
       <a class="btn btn-primary btn-sm" href="/admin.html" data-auth-admin>Admin</a>
-      <span class="row hidden" data-auth-signed><span class="small muted" data-auth-name></span><button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button></span>
+      <span class="row hidden" data-auth-signed><a class="small muted" href="/account.html" data-auth-name></a><button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button></span>
     </div>
   </div>
 </header>
@@ -32,6 +32,7 @@
       <button class="btn btn-primary btn-block btn-lg" type="submit" id="submitBtn">Sign in</button>
     </form>
     <p class="tiny muted center" style="margin:12px 0 0;">Sessions are stored in a secure httpOnly cookie. Brute force attempts lock the account.</p>
+    <p class="tiny muted center" style="margin:8px 0 0;">Not an administrator? <a href="/account.html">Member sign in</a>.</p>
   </div></div>
 </div></main>
 <nav class="bottom-nav" aria-label="Mobile">

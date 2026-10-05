@@ -20,7 +20,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const fakeDb = require('./fakeDb');
-const { buildScenario, FakeApi } = require('./synthetic');
+const { buildScenario, FakeApi, todayUtc } = require('./synthetic');
 
 const auth = require('../server/middleware/auth');
 const settingsService = require('../server/services/settingsService');
@@ -217,8 +217,13 @@ test('acceptance 9: the admin dashboard endpoints describe the same run', async 
   assert.equal(overview.json.data.settings.autoTicketGeneration, false);
   assert.equal(overview.json.data.settings.market.key, 'over_1_5');
   assert.deepEqual(overview.json.data.settings.oddsWindow, { min: 2, max: 4 });
-  assert.equal(overview.json.data.dataToday.fixtures, 3);
-  assert.equal(overview.json.data.dataToday.fixturesWithVerifiedOdds, 3);
+  // The synthetic scenario anchors kickoffs to 12:00 UTC "today", but after
+  // ~11:00 UTC it rolls them to the next UTC day so they stay in the future.
+  // dataToday counts the current UTC day only, so the expected count depends
+  // on which day the scenario landed on.
+  const expectedTodayCount = ticketDate === todayUtc() ? 3 : 0;
+  assert.equal(overview.json.data.dataToday.fixtures, expectedTodayCount);
+  assert.equal(overview.json.data.dataToday.fixturesWithVerifiedOdds, expectedTodayCount);
   assert.ok(overview.json.data.dataSource);
 
   const report = await get(`/api/admin/generation-report?date=${ticketDate}`, { token: bearer });
@@ -516,4 +521,158 @@ test('responsive: the admin console stays navigable on small screens', () => {
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   assert.ok(indexHtml.includes('class="bottom-nav"'), 'public pages need the mobile bottom nav');
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*?\.bottom-nav \{ display: none/, 'bottom nav is mobile only');
+});
+
+test('compliance & SEO: legal page, robots.txt and sitemap.xml are served', async () => {
+  // friendly URL + static file
+  const legal = await get('/legal');
+  assert.equal(legal.status, 200);
+  assert.match(legal.text, /Legal &amp; Responsible Play/);
+  assert.match(legal.text, /18 or over/i);
+  assert.match(legal.text, /not a bookmaker/i);
+  assert.match(legal.text, /begambleaware\.org/i);
+
+  const robots = await get('/robots.txt');
+  assert.equal(robots.status, 200);
+  assert.match(robots.text, /Disallow: \/admin/);
+  assert.match(robots.text, /Disallow: \/api\//);
+  assert.match(robots.text, /Sitemap: .+\/sitemap\.xml/);
+
+  const sitemap = await get('/sitemap.xml');
+  assert.equal(sitemap.status, 200);
+  assert.match(sitemap.headers.get('content-type'), /xml/);
+  assert.match(sitemap.text, /<urlset/);
+  assert.match(sitemap.text, /\/ticket<\/loc>/);
+  assert.match(sitemap.text, /\/legal<\/loc>/);
+  assert.doesNotMatch(sitemap.text, /admin|login/, 'private pages are never in the sitemap');
+
+  // every public page carries the responsible-gambling footer + legal link
+  for (const page of ['ticket.html', 'history.html', 'analytics.html', 'predictions.html']) {
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, page), 'utf8');
+    assert.ok(html.includes('/legal.html'), `${page} must link to the legal page`);
+    assert.match(html, /18\+/, `${page} must show the 18+ notice`);
+    assert.match(html, /og:title/, `${page} must have Open Graph metadata`);
+  }
+});
+
+test('member accounts: register -> login -> me -> change password -> logout', async () => {
+  // register (public, rate limited route)
+  const reg = await post('/api/auth/register', {
+    email: 'fan@test.local',
+    username: 'ticketfan',
+    password: 'super-secret-99',
+  });
+  assert.equal(reg.status, 201);
+  assert.equal(reg.json.data.username, 'ticketfan');
+
+  // duplicate registration is refused without user enumeration detail
+  const dup = await post('/api/auth/register', {
+    email: 'fan@test.local',
+    username: 'ticketfan2',
+    password: 'super-secret-99',
+  });
+  assert.equal(dup.status, 409);
+
+  // login returns the account + a token and sets the auth cookies
+  const login = await post('/api/auth/login', { login: 'ticketfan', password: 'super-secret-99' });
+  assert.equal(login.status, 200);
+  assert.equal(login.json.data.user.username, 'ticketfan');
+  assert.ok(login.json.data.token, 'a bearer token is issued');
+  assert.ok(login.json.data.csrfToken, 'a csrf token is issued for cookie sessions');
+  const setCookie = login.headers.get('set-cookie') || '';
+  assert.match(setCookie, /HttpOnly/i, 'the session cookie is httpOnly');
+  const userToken = login.json.data.token;
+
+  // wrong password is generic + counted
+  const bad = await post('/api/auth/login', { login: 'ticketfan', password: 'wrong-password-1' });
+  assert.equal(bad.status, 401);
+  assert.equal(bad.json.error.code, 'INVALID_CREDENTIALS');
+
+  // me reflects the user session incl. the membership date
+  const me = await get('/api/auth/me', { token: userToken });
+  assert.equal(me.status, 200);
+  assert.equal(me.json.data.type, 'user');
+  assert.equal(me.json.data.account.username, 'ticketfan');
+  assert.ok(me.json.data.account.memberSince, 'memberSince is published for the account page');
+
+  // a user can change their own password (bearer session: no CSRF needed)
+  const changed = await post(
+    '/api/auth/change-password',
+    { currentPassword: 'super-secret-99', newPassword: 'even-more-secret-11' },
+    { token: userToken },
+  );
+  assert.equal(changed.status, 200);
+  const relogin = await post('/api/auth/login', { login: 'ticketfan', password: 'even-more-secret-11' });
+  assert.equal(relogin.status, 200);
+
+  // ... but a user can NEVER touch admin endpoints
+  const forbidden = await get('/api/admin/overview', { token: userToken });
+  assert.ok([401, 403].includes(forbidden.status), 'user tokens are rejected by admin routes');
+  const adminPw = await post(
+    '/api/auth/admin/change-password',
+    { currentPassword: 'x', newPassword: 'y'.repeat(12) },
+    { token: userToken },
+  );
+  assert.ok([401, 403].includes(adminPw.status));
+
+  // generic logout clears the cookie for any session type
+  const out = await post('/api/auth/logout', {}, { token: userToken });
+  assert.equal(out.status, 200);
+  assert.equal(out.json.data.loggedOut, true);
+
+  // the account page is served and carries the member UI + robots exclusion
+  const page = await get('/account');
+  assert.equal(page.status, 200);
+  assert.match(page.text, /Create a free account/);
+  assert.match(page.text, /noindex/);
+  const robots = await get('/robots.txt');
+  assert.match(robots.text, /Disallow: \/account/);
+});
+
+test('PWA: manifest, service worker and offline page — API traffic is never cached', async () => {
+  const manifest = await get('/manifest.webmanifest');
+  assert.equal(manifest.status, 200);
+  assert.match(manifest.headers.get('content-type'), /manifest\+json/);
+  const parsed = JSON.parse(manifest.text);
+  assert.equal(parsed.short_name, 'GoalPredict');
+  assert.equal(parsed.display, 'standalone');
+  assert.ok(parsed.icons.length >= 2, 'any + maskable icons');
+
+  const sw = await get('/sw.js');
+  assert.equal(sw.status, 200);
+  // The honesty rule, enforced in code: /api/ requests pass straight through.
+  assert.match(sw.text, /url\.pathname\.startsWith\('\/api\/'\)/);
+  assert.match(sw.text, /never intercept or cache API traffic/i);
+  assert.ok(!/cache\.put\([^)]*api/i.test(sw.text), 'no code path caches an API response');
+
+  const offline = await get('/offline.html');
+  assert.equal(offline.status, 200);
+  assert.match(offline.text, /never shows cached tickets/i);
+
+  // registration ships in the shared api.js (CSP forbids inline scripts)
+  const apiJs = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'api.js'), 'utf8');
+  assert.match(apiJs, /serviceWorker.*register\('\/sw\.js'\)/s);
+
+  // every page head links the manifest
+  for (const page of ['index.html', 'ticket.html', 'history.html', 'analytics.html', 'predictions.html', 'legal.html', 'account.html']) {
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, page), 'utf8');
+    assert.ok(html.includes('manifest.webmanifest'), `${page} links the manifest`);
+  }
+});
+
+test('analytics page: flat-stake ROI and monthly chart are rendered from real data only', async () => {
+  // the public stats endpoint ships the flat-stake record the page renders
+  const stats = await get('/api/analytics');
+  assert.equal(stats.status, 200);
+  assert.ok('flatStake' in stats.json.data, 'flat-stake record is part of the public payload');
+  assert.ok(Array.isArray(stats.json.data.monthly));
+
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'analytics.html'), 'utf8');
+  assert.ok(html.includes('id="roiCards"'), 'ROI section exists');
+  assert.ok(html.includes('id="monthlyChart"'), 'chart section exists');
+
+  const js = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'analytics.js'), 'utf8');
+  assert.match(js, /renderRoi/);
+  assert.match(js, /renderMonthlyChart/);
+  assert.match(js, /losses included|negative ROI is shown/i, 'honesty note ships with the code');
 });

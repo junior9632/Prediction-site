@@ -55,14 +55,27 @@ Useful commands:
 
 ```bash
 npm run dev                 # node --watch server.js
+npm run db:migrate -- --status   # applied vs pending migrations (read-only)
 npm test                    # 62 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
 npm run health              # non-zero exit when the DB or the data source is down
 npm run lint:secrets        # verifies no key/secret is shipped in public/
+npm run lint:js             # ESLint (correctness rules only, fetched via npx)
 npm run lint:syntax         # node --check over every JavaScript file in the repo
 ```
+
+### Full local stack with Docker (optional)
+
+```bash
+docker compose up           # MySQL 8 + app on http://localhost:3000 (admin / local-dev-password)
+docker compose up db        # just MySQL; then run `npm run dev` on the host
+docker compose down -v      # stop and wipe the database volume
+```
+
+First boot applies the schema + migrations and seeds the admin automatically.
+Docker is for local development only — production stays on cPanel.
 
 ### Look at the UI without MySQL or an API key
 
@@ -97,7 +110,7 @@ public/                       the entire frontend (static, no build step)
   admin.html                  admin console (10 views, sidebar layout)
   css/style.css               design system: dark navy panels, cyan accents
   js/api.js                   fetch wrapper + CSRF + shared render helpers
-  js/{app,ticket,history,analytics,predictions,login,admin}.js
+  js/{app,ticket,history,analytics,predictions,account,login,admin}.js
   img/{logo,favicon}.svg
 server/
   config/index.js             typed environment configuration
@@ -106,11 +119,13 @@ server/
                               analytics, auth, admin
   controllers/                request validation + response shaping only
   services/                   apiFootball, fixtureService, oddsService, statsService,
-                              contextService, syncService, resultService,
-                              settingsService, logService, analyticsService, ticketService
+                              contextService, syncService, resultService, settingsService,
+                              logService, analyticsService, ticketService, notifyService
   prediction/                 over15, confidence, risk, quality, correlation,
                               ticketBuilder, pipeline
-  database/                   schema.sql, connection.js (pool), queries.js (all SQL)
+  database/                   schema.sql (baseline), migrations/ (versioned, applied
+                              once + checksummed), migrate.js, connection.js (pool),
+                              queries.js (all SQL)
   middleware/                 auth, adminAuth (+CSRF), rateLimit, requestLogger, errorHandler
   utils/                      decimal (exact odds maths), numbers, time, logger,
                               errors, asyncHandler, validate, fixtureStatus
@@ -193,6 +208,8 @@ Every variable is documented in [`.env.example`](.env.example). The important on
 | `TRUST_PROXY` | `1` on cPanel (the app sits behind a proxy) |
 | `ADMIN_USERNAME/ADMIN_EMAIL/ADMIN_PASSWORD` | first administrator, created by `npm run db:seed` |
 | `ENABLE_INTERNAL_SCHEDULER` | keep `0` on cPanel and use cron instead |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | optional: announce published tickets / NO QUALIFYING TICKET days and operational alerts via a Telegram bot (server side only) |
+| `NOTIFY_WEBHOOK_URL` | optional: POST the same events as JSON to any webhook |
 | `ODDS_FRESHNESS_MINUTES`, `MIN_TOTAL_ODDS`, `MAX_TOTAL_ODDS`, `MIN_CONFIDENCE`, `MAX_RISK`, `MIN_DATA_QUALITY`, `MAX_SELECTIONS` | fallback defaults; the `settings` table overrides them at runtime |
 
 Documentation:

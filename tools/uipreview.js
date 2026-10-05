@@ -75,7 +75,7 @@ function anchorKickoffs(scn) {
   const now = new Date();
   const buildSlots = (start) => [0, 1, 2].map((i) => new Date(start.getTime() + i * 2 * 3600000));
 
-  let cursor = new Date(now.getTime() + 100 * 60000);
+  const cursor = new Date(now.getTime() + 100 * 60000);
   cursor.setUTCMinutes(0, 0, 0);
   let slots = buildSlots(cursor);
 

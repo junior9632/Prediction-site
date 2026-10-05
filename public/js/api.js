@@ -211,7 +211,7 @@ const App = (() => {
     return `<span class="badge badge-slate">${icons.clock} Pending</span>`;
   }
 
-  function verifiedChip(odds, now) {
+  function verifiedChip(odds) {
     if (!odds || !odds.verifiedAt) return `<span class="verified-chip stale">${icons.alert} Not verified</span>`;
     const label = odds.verifiedAgo || fmt.ago(odds.verifiedAt);
     return `<span class="verified-chip" title="Bookmaker price verified on our server">${icons.checkCircle} Verified ${escapeHtml(label)}</span>`;
@@ -299,7 +299,7 @@ const App = (() => {
         const data = await API.get('/auth/me');
         session.cache = data;
         return data;
-      } catch (err) {
+      } catch (_) {
         session.cache = null;
         return null;
       }
@@ -332,7 +332,7 @@ const App = (() => {
       if (logoutBtn) {
         logoutBtn.addEventListener('click', async () => {
           try {
-            await API.post('/auth/admin/logout', {});
+            await API.post('/auth/logout', {});
           } catch (_) {
             /* ignore */
           }
@@ -348,3 +348,14 @@ const App = (() => {
 })();
 
 window.App = App;
+
+/* ----------------------- PWA service worker ------------------------- */
+// Registered from an external file because CSP forbids inline scripts.
+// The worker never caches /api/ — live tickets and odds only.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      /* a failed registration must never break the page */
+    });
+  });
+}

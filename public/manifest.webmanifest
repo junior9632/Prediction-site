@@ -1,0 +1,27 @@
+{
+  "name": "GoalPredict — Daily Over 1.5 Goals Predictions",
+  "short_name": "GoalPredict",
+  "description": "One honestly built football ticket per day. Over 1.5 Goals only, real verified bookmaker odds.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#04080f",
+  "theme_color": "#04080f",
+  "categories": ["sports"],
+  "icons": [
+    {
+      "src": "/img/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/img/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

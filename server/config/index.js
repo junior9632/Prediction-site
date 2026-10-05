@@ -133,6 +133,16 @@ const config = {
     requestLogging: bool('REQUEST_LOGGING', true),
   },
 
+  // Outbound notifications (Telegram bot / generic JSON webhook). Both are
+  // optional: leave the values empty and the notify service is a no-op.
+  // SECURITY: the bot token is a server-side secret — never ship it to public/.
+  notifications: {
+    telegramBotToken: str('TELEGRAM_BOT_TOKEN', ''),
+    telegramChatId: str('TELEGRAM_CHAT_ID', ''),
+    webhookUrl: str('NOTIFY_WEBHOOK_URL', ''),
+    timeoutMs: int('NOTIFY_TIMEOUT_MS', 10000),
+  },
+
   // Hard product rule: the only market this platform will ever predict.
   market: Object.freeze({
     key: 'over_1_5',

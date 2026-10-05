@@ -23,6 +23,7 @@
     "test:sql": "node scripts/validate-sql.js",
     "preview:ui": "node tools/uipreview.js",
     "lint:secrets": "node scripts/check-no-secrets.js",
+    "lint:js": "npx --yes eslint@9 .",
     "lint:syntax": "find . -path ./node_modules -prune -o -name '*.js' -print0 | xargs -0 -n1 node --check"
   },
   "dependencies": {

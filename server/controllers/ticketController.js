@@ -3,7 +3,6 @@
 /** Public ticket endpoints: today's ticket, a specific date, and history. */
 
 const ticketService = require('../services/ticketService');
-const time = require('../utils/time');
 const { assertValid } = require('../utils/validate');
 const { asyncHandler } = require('../utils/asyncHandler');
 const settingsService = require('../services/settingsService');

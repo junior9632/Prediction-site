@@ -20,6 +20,7 @@ Controllers (server/controllers/*)      validate input, shape output, no busines
    ▼
 Services (server/services/*)            apiFootball · fixtures · odds · stats · context
    │                                    sync · results · settings · logs · analytics · tickets
+   │                                    notify (Telegram/webhook, fire-and-forget, zero deps)
    ▼
 Prediction engine (server/prediction/*) pure functions: over15 · confidence · risk · quality
    │                                    correlation · ticketBuilder · pipeline

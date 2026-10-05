@@ -991,6 +991,10 @@ async function recordUserLoginFailure(id, ip, lockUntil) {
   );
 }
 
+async function updateUserPassword(id, passwordHash) {
+  return db.execute(`UPDATE users SET password_hash = ? WHERE id = ?`, [passwordHash, id]);
+}
+
 /* =====================================================================
  * ANALYTICS
  * ===================================================================*/
@@ -1104,7 +1108,7 @@ module.exports = {
   // auth
   getAdminByLogin, getAdminById, listAdmins, createAdmin, updateAdminPassword,
   recordAdminLoginSuccess, recordAdminLoginFailure,
-  getUserByLogin, getUserById, createUser, recordUserLoginSuccess, recordUserLoginFailure,
+  getUserByLogin, getUserById, createUser, recordUserLoginSuccess, recordUserLoginFailure, updateUserPassword,
   // analytics
   getTicketAnalytics, getSelectionAnalytics, getOver15OutcomeCounts,
   getMonthlyTicketStats, getSettledTicketSequence,
