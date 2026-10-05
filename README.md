@@ -66,7 +66,8 @@ node scripts/check-no-secrets.js   # verifies no key/secret is shipped in public
 ### Look at the UI without MySQL or an API key
 
 ```bash
-node tools/uipreview.js     # http://localhost:3000  — admin / preview123
+npm run preview:ui          # http://localhost:3000  — admin / preview123
+# or: node tools/uipreview.js
 ```
 
 The preview harness boots the **real** Express app, controllers and prediction pipeline, but
