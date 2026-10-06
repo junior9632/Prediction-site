@@ -67,10 +67,10 @@
   async function route() {
     hide('#guestView');
     hide('#memberView');
-    hide('#adminView');
+    hide('#staffView');
     const me = await API.get('/auth/me').catch(() => null);
     if (!me) return show('#guestView');
-    if (me.type === 'admin') return show('#adminView');
+    if (me.type === 'admin') return show('#staffView');
     return paintMember(me.account || {});
   }
 

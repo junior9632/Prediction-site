@@ -304,16 +304,12 @@ const App = (() => {
         return null;
       }
     },
-    isAdmin() {
-      return Boolean(session.cache && session.cache.type === 'admin');
-    },
     reset() {
       session.cache = null;
     },
-    /** Wire the shared header login/admin controls on every page. */
+    /** Wire the shared header login controls on every page. */
     bindHeader() {
       const loginBtn = document.querySelector('[data-auth-login]');
-      const adminBtn = document.querySelector('[data-auth-admin]');
       const signed = document.querySelector('[data-auth-signed]');
       const nameNode = document.querySelector('[data-auth-name]');
       const logoutBtn = document.querySelector('[data-auth-logout]');
@@ -322,15 +318,11 @@ const App = (() => {
         const me = session.cache;
         const isAuthed = Boolean(me);
         if (loginBtn) loginBtn.classList.toggle('hidden', isAuthed);
-        if (adminBtn && isAuthed) adminBtn.textContent = me.type === 'admin' ? 'Dashboard' : 'Admin';
         if (signed) signed.classList.toggle('hidden', !isAuthed);
         if (nameNode && me) {
-          nameNode.textContent = me.account ? me.account.username : (me.admin ? me.admin.username : 'Account');
-          nameNode.href = me.type === 'admin' ? '/admin.html' : '/dashboard';
-          nameNode.setAttribute('aria-label', me.type === 'admin' ? 'Open admin dashboard' : 'Open member dashboard');
-        }
-        if (adminBtn && me && me.type !== 'admin') {
-          adminBtn.classList.add('hidden');
+          nameNode.textContent = me.account ? me.account.username : 'Account';
+          nameNode.href = me.type === 'admin' ? '/account.html' : '/dashboard';
+          nameNode.setAttribute('aria-label', 'Open my account');
         }
       };
 

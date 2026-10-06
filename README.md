@@ -106,8 +106,8 @@ public/                       the entire frontend (static, no build step)
   history.html                ticket history with result filters + pagination
   analytics.html              performance analytics (win rate, streaks, monthly)
   predictions.html            every analysed fixture with its evidence
-  login.html                  administrator sign-in
-  admin.html                  admin console (10 views, sidebar layout)
+  login.html                  sign-in door (unlisted, never linked from the public UI)
+  admin.html                  admin console (10 views, sidebar layout, unlisted + guarded)
   css/style.css               design system: dark navy panels, cyan accents
   js/api.js                   fetch wrapper + CSRF + shared render helpers
   js/{app,ticket,history,analytics,predictions,account,login,admin}.js
@@ -174,6 +174,12 @@ removed from the accumulator instead of being counted as wins).
 
 ## Admin console
 
+The console is **hidden from the public site**: no navigation, footer, sitemap or robots
+entry references it. Guests opening `/admin` or `/admin.html` are redirected to the sign-in
+page, authenticated members receive a bare `403`, and the console shell + its script are
+served `no-store` / `noindex` to administrators only. Administrators reach it by going
+straight to `/admin` (sign-in lives at the equally unlisted `/login`).
+
 `/admin.html` (superadmin sees everything, `admin` role sees the operational views):
 
 | View | What it does |
@@ -227,8 +233,10 @@ Documentation:
 * Helmet with a strict CSP — **no inline JavaScript anywhere**; `script-src 'self'`.
 * `bcryptjs` password hashing, JWT sessions in `httpOnly` + `SameSite=strict` cookies.
 * Double-submit CSRF token on every cookie-authenticated mutation (bearer/CLI clients exempt).
-* The admin account is re-read from the database on every privileged request, so a disabled or
-  locked account loses access immediately; repeated failures lock the login.
+* The admin console is unlisted (no public links, robots.txt/sitemap stay silent) **and**
+  server-side protected: guest → redirect to sign-in, non-admin session → `403`, admin
+  account re-read from the database on every privileged request, so a disabled or locked
+  account loses access immediately; repeated failures lock the login.
 * Layered rate limiting: global API, auth, admin and generation endpoints.
 * All SQL is written in `server/database/queries.js` with bound placeholders; `LIMIT/OFFSET`
   are inlined only after integer validation.
