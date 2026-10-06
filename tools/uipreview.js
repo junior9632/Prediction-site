@@ -456,7 +456,13 @@ async function main() {
   wrapper.disable('x-powered-by');
   wrapper.get('/preview-banner.js', (_req, res) => res.type('application/javascript').send(BANNER_JS));
   wrapper.get('/', (_req, res) => sendHtml(res, 'index.html'));
-  wrapper.get(/^\/[A-Za-z0-9_-]+\.html$/, (req, res) => sendHtml(res, req.path.slice(1)));
+  // The protected pages must never bypass the app's guards, so they are NOT
+  // served by the banner injector — they fall through to the real app, which
+  // enforces the same hidden-admin rules as production.
+  wrapper.get(/^\/[A-Za-z0-9_-]+\.html$/, (req, res, next) => {
+    if (req.path === '/admin.html' || req.path === '/dashboard.html') return next();
+    return sendHtml(res, req.path.slice(1));
+  });
   wrapper.use(app);
 
   const port = Number(process.env.PORT) || 3000;

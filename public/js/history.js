@@ -35,7 +35,7 @@
     list.innerHTML = skeletonRows(4);
     try {
       const data = await API.get(`/tickets/history?page=${page}&limit=15${result ? `&result=${encodeURIComponent(result)}` : ''}`);
-      if (!data.items.length) list.innerHTML = emptyState('history', 'No tickets yet', 'Tickets appear here after an administrator generates them.');
+      if (!data.items.length) list.innerHTML = emptyState('history', 'No tickets yet', 'Tickets appear here after they are generated and published.');
       else list.innerHTML = data.items.map(row).join('');
       const pager = $('#pager');
       pager.innerHTML = data.pages > 1 ? `<button class="btn btn-ghost btn-sm" id="prevBtn" ${page <= 1 ? 'disabled' : ''}>← Prev</button>

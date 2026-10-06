@@ -24,7 +24,6 @@
     </nav>
     <div class="header-actions">
       <a class="btn btn-ghost btn-sm" href="/account.html" data-auth-login>Login</a>
-      <a class="btn btn-primary btn-sm" href="/admin.html" data-auth-admin>Admin</a>
       <span class="row hidden" data-auth-signed>
         <a class="small muted" href="/account.html" data-auth-name></a>
         <button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button>
@@ -52,7 +51,6 @@
             <div class="field"><label for="loginPassword">Password</label><input class="input" id="loginPassword" type="password" autocomplete="current-password" required></div>
             <button class="btn btn-primary btn-block" type="submit" id="loginBtn">Sign in</button>
           </form>
-          <p class="tiny muted" style="margin:12px 0 0;">Administrator? <a href="/login.html">Use the admin sign in</a>.</p>
         </div>
       </div>
 
@@ -128,13 +126,12 @@
     </div>
   </section>
 
-  <!-- ======================= signed in (admin) ======================= -->
-  <section class="section hidden" id="adminView">
+  <!-- ======================= signed in (staff) ======================= -->
+  <section class="section hidden" id="staffView">
     <h1 class="section-title" style="margin-top:18px;">My Account</h1>
     <div class="card"><div class="card-body">
-      <p class="small">You are signed in as an <strong>administrator</strong>. Account management for
-      administrators lives in the dashboard.</p>
-      <p style="margin-top:12px;"><a class="btn btn-primary" href="/admin.html">Open the dashboard</a></p>
+      <p class="small">You are signed in with a <strong>staff account</strong>. The management console
+      is only reachable from its private address and is intentionally not linked from this site.</p>
     </div></div>
   </section>
 

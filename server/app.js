@@ -17,7 +17,8 @@ const config = require('./config');
 const logger = require('./utils/logger');
 const { AppError } = require('./utils/errors');
 const { requestLogger } = require('./middleware/requestLogger');
-const { optionalAuth, requireAuth, requireAdmin } = require('./middleware/auth');
+const { optionalAuth, requireAuth, readToken, verifyToken } = require('./middleware/auth');
+const { requireActiveAdmin } = require('./middleware/adminAuth');
 const { apiLimiter } = require('./middleware/rateLimit');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
@@ -111,13 +112,71 @@ function createApp() {
   app.use('/api/admin', adminRoutes);
 
   /* ------------------------ protected frontend ---------------------- */
-  // HTML is protected at the server boundary as well as in the browser.
-  // This prevents an unauthenticated visitor from loading a private page
-  // directly by URL (for example /dashboard.html), not merely hiding links.
-  app.get('/dashboard', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
-  app.get('/dashboard.html', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
-  app.get('/admin', requireAdmin, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
-  app.get('/admin.html', requireAdmin, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
+  // The private pages are protected at the server boundary as well as in the
+  // browser. An unauthenticated visitor opening /dashboard.html directly is
+  // bounced to the sign-in page instead of receiving the member area.
+  app.get('/dashboard', requireAuth, (req, res) => {
+    if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
+    return res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
+  });
+  app.get('/dashboard.html', requireAuth, (req, res) => {
+    if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
+    return res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
+  });
+
+  /* ------------------------- hidden admin area ---------------------- */
+  // The admin console is deliberately undiscoverable: no public page, nav,
+  // footer, sitemap or robots entry references it. Server side we never rely
+  // on that secrecy alone —
+  //   * guests (or expired/invalid sessions) are redirected to the public
+  //     sign-in page, so the URL never answers with admin content
+  //   * authenticated non-admins receive a bare 403 with no admin details
+  //   * the admin account is re-read from the database, so a deactivated or
+  //     locked administrator is refused even with a valid token
+  //   * the console shell + its script are never cached or indexed
+  const adminPageGuard = (req, res, next) => {
+    const { token } = readToken(req);
+    if (!token) return res.redirect(302, '/login.html');
+    let claims;
+    try {
+      claims = verifyToken(token);
+    } catch (_err) {
+      return res.redirect(302, '/login.html');
+    }
+    if (claims.type !== 'admin') return next(AppError.forbidden());
+    req.auth = {
+      id: Number(claims.sub),
+      type: 'admin',
+      role: claims.role || 'admin',
+      email: claims.email || null,
+      username: claims.username || null,
+    };
+    return next();
+  };
+
+  const adminConsolePage = (_req, res) =>
+    res.sendFile(path.join(PUBLIC_DIR, 'admin.html'), {
+      headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
+    });
+
+  app.get('/admin', adminPageGuard, requireActiveAdmin, adminConsolePage);
+  app.get('/admin.html', adminPageGuard, requireActiveAdmin, adminConsolePage);
+
+  // The console script lists the privileged API endpoints, so it is only
+  // served to verified administrators; for everyone else it simply does not
+  // exist (404), exactly like an unknown asset.
+  app.get('/js/admin.js', (req, res, next) => {
+    const { token } = readToken(req);
+    if (token) {
+      try {
+        const claims = verifyToken(token);
+        if (claims.type === 'admin') return res.sendFile(path.join(PUBLIC_DIR, 'js', 'admin.js'));
+      } catch (_err) {
+        /* fall through to the generic 404 below */
+      }
+    }
+    return next(AppError.notFound());
+  });
 
   /* --------------------------- frontend ---------------------------- */
   app.use(
@@ -137,11 +196,16 @@ function createApp() {
     app.get(`/${page}`, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, `${page}.html`)));
   }
 
+  // The robots file must never advertise private areas (/admin, the sign-in
+  // pages): a Disallow entry would point crawlers straight at them. The
+  // private pages themselves answer with redirects/403s for anyone who is
+  // not an administrator and carry noindex headers, so nothing leaks even if
+  // a crawler does guess the URL.
   app.get('/robots.txt', (_req, res) => {
     res
       .type('text/plain')
       .send(
-        `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /login\nDisallow: /account\nDisallow: /api/\n\nSitemap: ${config.appUrl}/sitemap.xml\n`
+        `User-agent: *\nAllow: /\nDisallow: /account\nDisallow: /api/\n\nSitemap: ${config.appUrl}/sitemap.xml\n`
       );
   });
 

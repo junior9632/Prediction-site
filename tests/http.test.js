@@ -403,6 +403,80 @@ test('security: admin routes reject anonymous and non admin callers', async () =
   assert.equal(deactivated.status, 401, 'an unknown administrator id is refused');
 });
 
+test('security: the admin area is hidden from the public UI', () => {
+  // No public page may link to, mention or otherwise expose the admin URLs.
+  // admin.html (the console itself) and login.html (the unlisted sign-in
+  // door) are the only files allowed to know about the console.
+  const exempt = new Set(['admin.html']);
+  for (const entry of fs.readdirSync(PUBLIC_DIR)) {
+    if (!entry.endsWith('.html') || exempt.has(entry)) continue;
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, entry), 'utf8');
+    assert.ok(!html.includes('/admin'), `${entry} must not reference any admin URL`);
+    assert.ok(!/data-auth-admin/i.test(html), `${entry} must not render admin controls`);
+    assert.ok(!/admin login/i.test(html), `${entry} must not advertise an admin login`);
+  }
+
+  // The public navigation offers Home, Today's Ticket, Ticket History,
+  // Analytics, Predictions and Login only.
+  const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  const nav = indexHtml.match(/<nav class="main-nav"[\s\S]*?<\/nav>/)[0];
+  assert.ok(!/admin/i.test(nav), 'no admin entry in the primary navigation');
+  for (const label of ['Home', "Today's Ticket", 'Ticket History', 'Analytics', 'Predictions']) {
+    assert.ok(nav.includes(`>${label}<`), `the nav keeps ${label}`);
+  }
+
+  // The JavaScript loaded by public pages contains no privileged endpoints;
+  // only the console itself (admin.js) and the unlisted sign-in door
+  // (login.js) talk to the admin surface.
+  const publicScripts = ['api.js', 'app.js', 'ticket.js', 'history.js', 'analytics.js', 'predictions.js', 'account.js', 'dashboard.js'];
+  for (const name of publicScripts) {
+    const js = fs.readFileSync(path.join(PUBLIC_DIR, 'js', name), 'utf8');
+    assert.ok(!js.includes('/admin'), `js/${name} must not reference admin endpoints`);
+    assert.ok(!/data-auth-admin/i.test(js), `js/${name} must not wire admin controls`);
+  }
+});
+
+test('security: typing the admin URL never grants a guest or member access', async () => {
+  // guest: bounced to the public sign-in page, never shown admin content
+  for (const url of ['/admin', '/admin.html']) {
+    const res = await fetch(`${base}${url}`, { redirect: 'manual' });
+    assert.equal(res.status, 302, `${url} redirects guests`);
+    assert.equal(res.headers.get('location'), '/login.html');
+  }
+
+  // guest: unknown admin-looking URLs simply do not exist
+  for (const url of ['/admin/login', '/admin/admin', '/admin/anything']) {
+    const res = await get(url);
+    assert.equal(res.status, 404, `${url} must not be revealed`);
+  }
+
+  // guest: the console script behaves like an unknown asset
+  const script = await get('/js/admin.js');
+  assert.equal(script.status, 404);
+
+  // normal authenticated member: a proper 403, no admin details
+  const userToken = auth.signToken({ sub: 5, type: 'user', role: null });
+  for (const url of ['/admin', '/admin.html']) {
+    const res = await get(url, { token: userToken });
+    assert.equal(res.status, 403, `${url} must refuse members`);
+    assert.ok(res.json && !/admin/i.test(res.json.error.message), 'the refusal must not mention admins');
+  }
+  assert.equal((await get('/js/admin.js', { token: userToken })).status, 404);
+  const api = await get('/api/admin/overview', { token: userToken });
+  assert.ok([401, 403].includes(api.status), 'members never reach the admin API');
+
+  // administrator: full access, and the shell ships uncached + unindexable
+  const shell = await get('/admin.html', { token: bearer });
+  assert.equal(shell.status, 200);
+  assert.match(shell.text, /Admin Console|admin-shell/);
+  assert.match(shell.headers.get('cache-control') || '', /no-store/);
+  assert.match(shell.headers.get('x-robots-tag') || '', /noindex/);
+  const consoleScript = await get('/js/admin.js', { token: bearer });
+  assert.equal(consoleScript.status, 200);
+  const friendly = await get('/admin', { token: bearer });
+  assert.equal(friendly.status, 200, 'the friendly URL keeps working for admins');
+});
+
 test('security: cookie sessions need the double submit CSRF token', async () => {
   const csrf = 'csrf-token-value-1234567890';
   const cookie = `fp_token=${bearer}; fp_csrf=${csrf}`;
@@ -474,10 +548,18 @@ test('security: the frontend is served with a strict CSP and no inline scripts',
   assert.equal(home.headers.get('x-powered-by'), null);
   assert.ok(!/<script(?![^>]*\ssrc=)/i.test(home.text), 'no inline <script> tags');
 
-  for (const asset of ['/js/api.js', '/js/app.js', '/js/admin.js', '/css/style.css', '/admin.html']) {
+  for (const asset of ['/js/api.js', '/js/app.js', '/css/style.css']) {
     const res = await get(asset);
     assert.equal(res.status, 200, `${asset} must be served`);
   }
+
+  // the admin console shell and its script are NOT public assets: a guest is
+  // bounced to the sign-in page, the script answers like an unknown file
+  const adminShell = await fetch(`${base}/admin.html`, { redirect: 'manual' });
+  assert.equal(adminShell.status, 302, 'the admin console redirects guests away');
+  assert.equal(adminShell.headers.get('location'), '/login.html');
+  const adminScript = await get('/js/admin.js');
+  assert.equal(adminScript.status, 404, 'the admin script is invisible to guests');
 });
 
 test('security: no API key, secret or upstream host is shipped to the browser', () => {
@@ -534,7 +616,8 @@ test('compliance & SEO: legal page, robots.txt and sitemap.xml are served', asyn
 
   const robots = await get('/robots.txt');
   assert.equal(robots.status, 200);
-  assert.match(robots.text, /Disallow: \/admin/);
+  assert.doesNotMatch(robots.text, /admin/i, 'robots.txt must never advertise the admin area');
+  assert.doesNotMatch(robots.text, /Disallow: \/login/, 'the sign-in door is not advertised either');
   assert.match(robots.text, /Disallow: \/api\//);
   assert.match(robots.text, /Sitemap: .+\/sitemap\.xml/);
 

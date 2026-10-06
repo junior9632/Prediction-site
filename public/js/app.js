@@ -117,68 +117,6 @@
       .join('');
   }
 
-  /* --------------------- manual generation (admin) -------------------- */
-  let polling = null;
-
-  function progressLine(entry, state) {
-    return `<div class="progress-line ${state}"><span class="dot"></span><span>${escapeHtml(entry.message)}</span></div>`;
-  }
-
-  async function pollProgress(runId, box) {
-    clearInterval(polling);
-    polling = setInterval(async () => {
-      try {
-        const progress = await API.get(`/admin/generation-progress?run_id=${runId}`);
-        const seen = new Set();
-        const lines = [];
-        (progress.progress || []).forEach((entry) => {
-          if (seen.has(entry.step)) return;
-          seen.add(entry.step);
-          const isLast = entry.step === progress.currentStep && progress.status === 'RUNNING';
-          lines.push(progressLine(entry, isLast ? 'current' : 'done'));
-        });
-        if (progress.status === 'RUNNING') {
-          lines.push(`<div class="progress-line current"><span class="dot"></span><span class="spinner"></span>&nbsp;working…</div>`);
-        }
-        box.innerHTML = lines.join('');
-        box.scrollTop = box.scrollHeight;
-
-        if (progress.status !== 'RUNNING') {
-          clearInterval(polling);
-          const btn = $('#btnGenerate');
-          if (btn) btn.disabled = false;
-          setTimeout(() => window.location.reload(), 1200);
-        }
-      } catch (_) {
-        clearInterval(polling);
-      }
-    }, 900);
-  }
-
-  async function bindGeneration() {
-    const me = await App.session.me();
-    if (!me || me.type !== 'admin') return;
-    const foot = $('#generateFoot');
-    if (foot) foot.classList.remove('hidden');
-    const btn = $('#btnGenerate');
-    if (!btn) return;
-
-    btn.addEventListener('click', async () => {
-      if (!window.confirm("Generate today's Over 1.5 ticket now? The run re-verifies every price with the data provider.")) return;
-      btn.disabled = true;
-      const box = $('#progressBox');
-      box.classList.remove('hidden');
-      box.innerHTML = progressLine({ step: 'START', message: 'Starting generation…' }, 'current');
-      try {
-        const started = await API.post('/admin/generate-ticket', {});
-        await pollProgress(started.runId, box);
-      } catch (err) {
-        box.innerHTML = `<div class="alert error">${icons.alert}<div>${escapeHtml(err.message)}</div></div>`;
-        btn.disabled = false;
-      }
-    });
-  }
-
   async function init() {
     App.session.bindHeader();
     const list = $('#pickList');
@@ -193,7 +131,6 @@
         list.innerHTML = emptyState('alert', 'Could not load the ticket', err.message || 'The API is unreachable right now.');
       }
     }
-    bindGeneration();
   }
 
   document.addEventListener('DOMContentLoaded', init);
