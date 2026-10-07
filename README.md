@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 54 tests, no test dependencies |
+| Tests | `node:test` (built in) — 89 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -56,7 +56,7 @@ Useful commands:
 ```bash
 npm run dev                 # node --watch server.js
 npm run db:migrate -- --status   # applied vs pending migrations (read-only)
-npm test                    # 62 unit + service + HTTP acceptance tests (no DB needed)
+npm test                    # 89 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
@@ -116,23 +116,26 @@ server/
   config/index.js             typed environment configuration
   app.js  server.js           Express app factory + HTTP bootstrap
   routes/                     health, fixtures, odds, predictions, tickets,
-                              analytics, auth, admin
+                              analytics, auth, admin, dashboard (member only)
   controllers/                request validation + response shaping only
   services/                   apiFootball, fixtureService, oddsService, statsService,
                               contextService, syncService, resultService, settingsService,
-                              logService, analyticsService, ticketService, notifyService
+                              logService, analyticsService, activityService, ticketService,
+                              notifyService
   prediction/                 over15, confidence, risk, quality, correlation,
                               ticketBuilder, pipeline
   database/                   schema.sql (baseline), migrations/ (versioned, applied
                               once + checksummed), migrate.js, connection.js (pool),
                               queries.js (all SQL)
-  middleware/                 auth, adminAuth (+CSRF), rateLimit, requestLogger, errorHandler
+  middleware/                 auth, adminAuth (+CSRF), account (member state),
+                              rateLimit, requestLogger, errorHandler
   utils/                      decimal (exact odds maths), numbers, time, logger,
                               errors, asyncHandler, validate, fixtureStatus
   jobs/scheduler.js           optional internal sync scheduler (never generates tickets)
 scripts/                      db-migrate, db-seed, cron-sync-*, cron-health-check,
                               generate-ticket-cli, validate-sql, check-no-secrets
-tests/                        fakeDb.js, synthetic.js, engine/acceptance/http tests
+tests/                        fakeDb.js, synthetic.js, engine/acceptance/http/
+                              dashboard-activity tests
 tools/uipreview.js            preview harness (development only)
 docs/                         ARCHITECTURE.md, API.md, DEPLOYMENT-CPANEL.md
 ```
@@ -171,6 +174,23 @@ is LOST**, and **postponed / cancelled / abandoned legs are VOID or POSTPONED** 
 removed from the accumulator instead of being counted as wins).
 
 ---
+
+## Member dashboard
+
+The member area (`/dashboard`, served as `public/dashboard.html`) is **not a hidden `<div>`**:
+the server refuses the page itself and the data behind it.
+
+| State | What happens |
+| --- | --- |
+| Visitor (no session) | `/dashboard` and `/dashboard.html` answer `302` to `/account.html`; `GET /api/dashboard/activity` answers `401 UNAUTHORIZED` with no payload; the public pages contain no dashboard markup, no feed script and no reference to the endpoint |
+| Signed-in member | the page is served `no-store` / `noindex` with the **Dashboard Activity** card: the account summary (plan, member since, last sign-in, recorded events) and the caller's own audit trail (sign-ins, password changes, lockouts) |
+| Administrator | the console at `/admin` keeps its own permissions and its own activity panel; `/dashboard` redirects administrators to `/admin.html` |
+
+The activity feed is read from `system_logs` scoped to the actor type/id of the **verified
+session**, which the server re-reads from the database on every request (`requireAuth` +
+`requireActiveAccount`). Query parameters cannot widen the scope and a disabled, locked or
+deleted account loses access immediately. `tests/dashboard-activity.test.js` pins all three
+states.
 
 ## Admin console
 
@@ -237,6 +257,10 @@ Documentation:
   server-side protected: guest → redirect to sign-in, non-admin session → `403`, admin
   account re-read from the database on every privileged request, so a disabled or locked
   account loses access immediately; repeated failures lock the login.
+* The member dashboard is **server protected**, never CSS-hidden: `/dashboard` redirects
+  visitors to sign-in and `GET /api/dashboard/activity` answers `401 UNAUTHORIZED` without a
+  verified session. The feed is scoped to the account row re-read from the database, so members
+  cannot request each other's activity and query parameters cannot widen the scope.
 * Layered rate limiting: global API, auth, admin and generation endpoints.
 * All SQL is written in `server/database/queries.js` with bound placeholders; `LIMIT/OFFSET`
   are inlined only after integer validation.
@@ -250,7 +274,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 62 tests, ~1.5s, no database or network required
+npm test          # 89 tests, ~3s, no database or network required
 ```
 
 | File | Covers |
@@ -258,6 +282,7 @@ npm test          # 62 tests, ~1.5s, no database or network required
 | `tests/engine.test.js` | exact decimal odds maths, the 14-point odds gate, exact Over 1.5 goal-line matching, combination engine, correlation protection, settlement rules, locked settings |
 | `tests/acceptance.test.js` | manual-trigger guards, data-source-unavailable runs, a full qualified generation, regeneration, settlement end to end |
 | `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
+| `tests/dashboard-activity.test.js` | the three dashboard states: a visitor is redirected and answered `401` (nothing about the feed exists on public pages), a signed-in member sees only their own activity, and the administrator keeps the existing console permissions |
 | `tests/fakeDb.js` | in-memory double for `server/database/connection.js`; the SQL still comes from `queries.js` |
 | `tests/synthetic.js` | fictional fixtures, odds payloads, form rows and an API-Football double |
 | `tests/scripts.test.js` | runs `scripts/validate-sql.js` and `scripts/check-no-secrets.js` and fails when they do; also guards the `test` script itself (see below) |
@@ -281,6 +306,7 @@ npm test          # 62 tests, ~1.5s, no database or network required
 | 13 | A later price move never rewrites a stored ticket | `acceptance 13: a later bookmaker price move never rewrites a stored ticket` |
 | 14 | The admin console stays usable on a phone | `responsive: the admin console stays navigable on small screens` |
 | 15 | The exact spec products behave (1.95 / 2.10 / 3.375) | `review 4`, `review 5`, `review 6`, `review 6b` in `tests/engine.test.js` |
+| 16 | Dashboard Activity is only visible to logged-in accounts | `tests/dashboard-activity.test.js` (guest `401` + redirect, member scope, admin permissions) |
 
 ### Continuous integration
 

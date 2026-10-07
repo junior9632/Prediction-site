@@ -63,6 +63,41 @@ const ADMIN = {
 const mysqlDateTime = (date) => date.toISOString().replace('T', ' ').slice(0, 19);
 const utcDay = (date) => date.toISOString().slice(0, 10);
 
+/**
+ * A sample MEMBER account so the preview can show the three dashboard states:
+ * signed out (the activity section does not exist anywhere), signed in as a
+ * member (dashboard activity visible) and signed in as an administrator (the
+ * console keeps its own permissions). The activity feed below belongs to this
+ * account only — a different member sees nothing of it.
+ */
+const MEMBER = {
+  id: 2,
+  email: 'member@preview.local',
+  username: 'member',
+  password_hash: bcrypt.hashSync(PREVIEW_PASSWORD, 8),
+  role: 'user',
+  is_active: 1,
+  failed_logins: 0,
+  locked_until: null,
+  last_login_at: mysqlDateTime(new Date(Date.now() - 86400000)),
+  last_login_ip: '203.0.113.7',
+  created_at: mysqlDateTime(new Date(Date.now() - 21 * 86400000)),
+  updated_at: mysqlDateTime(new Date(Date.now() - 86400000)),
+};
+
+/** Sample audit rows for the member account — the dashboard activity feed. */
+function sampleActivity(userId) {
+  const at = (daysAgo, hour) =>
+    mysqlDateTime(new Date(new Date(Date.now() - daysAgo * 86400000).setUTCHours(hour || 0, 15, 0, 0)));
+  return [
+    { id: 101, level: 'info', channel: 'auth', event: 'USER_REGISTERED', message: 'Preview member account created', actor_type: 'user', actor_id: userId, ip_address: '203.0.113.7', user_agent: null, context_json: null, created_at: at(21, 9) },
+    { id: 102, level: 'info', channel: 'auth', event: 'USER_LOGIN', message: 'Preview member signed in', actor_type: 'user', actor_id: userId, ip_address: '203.0.113.7', user_agent: null, context_json: null, created_at: at(14, 18) },
+    { id: 103, level: 'info', channel: 'auth', event: 'USER_PASSWORD_CHANGED', message: 'Preview member changed the password', actor_type: 'user', actor_id: userId, ip_address: '203.0.113.7', user_agent: null, context_json: null, created_at: at(7, 11) },
+    { id: 104, level: 'warn', channel: 'auth', event: 'LOGIN_FAILED', message: 'Failed preview sign-in', actor_type: 'user', actor_id: userId, ip_address: '203.0.113.7', user_agent: null, context_json: null, created_at: at(2, 20) },
+    { id: 105, level: 'info', channel: 'auth', event: 'USER_LOGIN', message: 'Preview member signed in', actor_type: 'user', actor_id: userId, ip_address: '203.0.113.7', user_agent: null, context_json: null, created_at: at(1, 8) },
+  ];
+}
+
 /* ------------------------------------------------------------------ */
 /* 1. sample data                                                      */
 /* ------------------------------------------------------------------ */
@@ -302,7 +337,8 @@ const BANNER_JS = `
     'font:600 12px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:8px 12px;text-align:center;' +
     'border-top:1px solid #f97316;letter-spacing:.02em;';
   bar.textContent = 'PREVIEW MODE \\u2014 sample data only. Fictional teams, leagues, odds and results. ' +
-    'No API-Football key, no database. Production runs on server.js + MySQL. Admin: admin / preview123';
+    'No API-Football key, no database. Production runs on server.js + MySQL. ' +
+    'Admin: admin / preview123 \\u00b7 Member: member / preview123';
   document.addEventListener('DOMContentLoaded', function () {
     document.body.appendChild(bar);
     document.body.style.paddingBottom = '52px';
@@ -369,6 +405,8 @@ async function main() {
   const ctx = fakeDb.install({
     admins: [ADMIN],
     settings: [],
+    users: [MEMBER],
+    systemLogs: sampleActivity(MEMBER.id),
     fixtures: scn.fixtures,
     teamForms: scn.teamForms,
     leagues: scn.leagueEnvs,
@@ -473,6 +511,7 @@ async function main() {
       '  GoalPredict — UI preview harness (sample data only)',
       `  Local:   http://localhost:${port}`,
       `  Admin:   http://localhost:${port}/admin.html  (admin / ${PREVIEW_PASSWORD})`,
+      `  Member:  http://localhost:${port}/account.html  (member / ${PREVIEW_PASSWORD})  → /dashboard`,
       `  Sample ticket date: ${ticketDate}${ticketDate === today ? ' (today)' : ` (today shows a copy)`}`,
       `  Sample generation:  ${progress.status}`,
       '  Database: in-memory double (tests/fakeDb.js) — no MySQL required',

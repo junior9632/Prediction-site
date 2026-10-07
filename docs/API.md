@@ -204,6 +204,26 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 
 ---
 
+## Member (`/api/dashboard/*`)
+
+Session-scoped data for the signed-in account. **Server-side protection, not a hidden element:**
+without a verified `fp_token` cookie (or `Authorization: Bearer` header) every route answers
+`401 UNAUTHORIZED` with `{ok:false}` and no payload. The account is re-read from the database on
+each request, so a deleted / disabled / locked account is refused as well (`401 ACCOUNT_MISSING`,
+`403 ACCOUNT_DISABLED`, `403 ACCOUNT_LOCKED`).
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /activity` | The caller's OWN dashboard activity: `{audience: "authenticated", scope: "self", generatedAt, account {type, id, username, email, plan, memberSince, lastLoginAt}, summary {recordedEvents, shownEvents, lastActivityAt, accountAgeDays}, items [{id, event, title, detail, tone, level, channel, at}]}` |
+
+The actor type/id used to read the feed come from the database row of the session — query
+parameters can never widen the scope, and one member can never read another member's events. The
+response is sent with `Cache-Control: no-store`. The matching member page `/dashboard` (and
+`/dashboard.html`) redirects anonymous visitors to the sign-in page instead of serving the member
+area. Admins keep the separate, equally protected `/api/admin/*` surface.
+
+---
+
 ## Admin (`/api/admin/*`)
 
 All routes require an active administrator; the account is re-read from the database on every

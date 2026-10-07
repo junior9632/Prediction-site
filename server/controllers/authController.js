@@ -103,7 +103,19 @@ const adminLogin = asyncHandler(async (req, res) => {
   const csrf = newCsrfToken();
   auth.setAuthCookies(res, token, csrf);
 
-  await logService.audit(req, 'ADMIN_LOGIN', { adminId: Number(row.id) });
+  // Written with an explicit actor: the login request itself carries no
+  // session yet, so the dashboard activity feed must be told whose event this is.
+  await logService.write({
+    level: 'info',
+    channel: 'audit',
+    event: 'ADMIN_LOGIN',
+    message: `Administrator ${row.username} signed in`,
+    actorType: 'admin',
+    actorId: Number(row.id),
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+    context: { adminId: Number(row.id) },
+  });
   res.json({ ok: true, data: { admin: publicAdmin(row), token, csrfToken: csrf } });
 });
 
@@ -219,6 +231,17 @@ const userLogin = asyncHandler(async (req, res) => {
     throw AppError.unauthorized(GENERIC, 'INVALID_CREDENTIALS');
   }
   await db.recordUserLoginSuccess(Number(row.id), req.ip);
+  // Feeds the member's own dashboard activity (GET /api/dashboard/activity).
+  await logService.write({
+    level: 'info',
+    channel: 'auth',
+    event: 'USER_LOGIN',
+    message: `Member ${row.username} signed in`,
+    actorType: 'user',
+    actorId: Number(row.id),
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+  });
   const token = auth.signToken({ sub: row.id, type: 'user', role: row.role, email: row.email, username: row.username });
   const csrf = newCsrfToken();
   auth.setAuthCookies(res, token, csrf);
