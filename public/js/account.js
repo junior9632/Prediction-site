@@ -64,12 +64,29 @@
     paintRecord(account.memberSince);
   }
 
+  /**
+   * /account.html#register (the homepage "Create Account" button) drops the
+   * visitor straight on the registration card instead of the sign-in form.
+   */
+  function focusHash() {
+    if (window.location.hash !== '#register') return;
+    const card = $('#register');
+    if (!card) return;
+    card.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    const input = $('#regUsername');
+    if (input) input.focus({ preventScroll: true });
+  }
+
   async function route() {
     hide('#guestView');
     hide('#memberView');
     hide('#staffView');
     const me = await API.get('/auth/me').catch(() => null);
-    if (!me) return show('#guestView');
+    if (!me) {
+      show('#guestView');
+      focusHash();
+      return;
+    }
     if (me.type === 'admin') return show('#staffView');
     return paintMember(me.account || {});
   }

@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 94 tests, no test dependencies |
+| Tests | `node:test` (built in) — 99 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -56,7 +56,7 @@ Useful commands:
 ```bash
 npm run dev                 # node --watch server.js
 npm run db:migrate -- --status   # applied vs pending migrations (read-only)
-npm test                    # 94 unit + service + HTTP acceptance tests (no DB needed)
+npm test                    # 99 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
@@ -104,7 +104,8 @@ server.js                     startup entry point (cPanel "Application startup f
 package.json                  scripts + the 9 runtime dependencies
 .env.example                  every environment variable, documented
 public/                       the entire frontend (static, no build step)
-  index.html                  homepage: today's ticket, stats, recent results
+  index.html                  public landing page: hero + today's ticket preview,
+                              public stats, model output cards, settled results
   ticket.html                 full ticket page (also accepts ?date=YYYY-MM-DD)
   history.html                ticket history with result filters + pagination
   analytics.html              performance analytics (win rate, streaks, monthly)
@@ -113,7 +114,8 @@ public/                       the entire frontend (static, no build step)
   admin.html                  admin console (10 views, sidebar layout, unlisted + guarded)
   css/style.css               design system: dark navy panels, cyan accents
   js/api.js                   fetch wrapper + CSRF + shared render helpers
-  js/{app,ticket,history,analytics,predictions,account,login,admin}.js
+  js/app.js                   homepage controller (public endpoints only)
+  js/{ticket,history,analytics,predictions,account,dashboard,login,admin}.js
   img/{logo,favicon}.svg
 server/
   config/index.js             typed environment configuration
@@ -178,6 +180,26 @@ is LOST**, and **postponed / cancelled / abandoned legs are VOID or POSTPONED** 
 removed from the accumulator instead of being counted as wins).
 
 ---
+
+## Public homepage
+
+`public/index.html` is the visitor-facing landing page — a sports-intelligence front end, not
+the console. It answers, in order: what GoalPredict is, what the engine does, what a visitor can
+see without an account, and why an account is worth creating.
+
+| Section | Data source (all public, all unauthenticated) |
+| --- | --- |
+| Hero with today's published ticket panel and live status | `GET /api/ticket/today` |
+| Public statistics strip — settled tickets, win rate, average odds, best streak, flat-stake ROI | `GET /api/analytics` (aggregates only, never per-account) |
+| "Today's model picks" cards — confidence bar, expected goals, Over 1.5 rates, verified odds | `GET /api/predictions?date=…&limit=6&eligible=1` |
+| Latest settled tickets | `GET /api/tickets/history?limit=5` |
+| Data-source pill (live / temporarily unavailable) | `GET /api/health` |
+
+Every call is anonymous and aggregate: `public/js/app.js` reads only those five endpoints, never
+`/api/dashboard/*`, and `scripts/verify-access.js` fails the deployment check if that ever
+changes. The header shows `Login` and `Create Account` to visitors; the dashboard shortcut is
+revealed by the session check in `public/js/api.js#bindHeader` after sign-in, i.e. the visitor
+never receives member markup, member scripts or member data.
 
 ## Member dashboard
 
@@ -283,7 +305,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 94 tests, ~3s, no database or network required
+npm test          # 99 tests, ~3s, no database or network required
 ```
 
 | File | Covers |
@@ -316,6 +338,8 @@ npm test          # 94 tests, ~3s, no database or network required
 | 14 | The admin console stays usable on a phone | `responsive: the admin console stays navigable on small screens` |
 | 15 | The exact spec products behave (1.95 / 2.10 / 3.375) | `review 4`, `review 5`, `review 6`, `review 6b` in `tests/engine.test.js` |
 | 16 | Dashboard Activity is only visible to logged-in accounts | `tests/dashboard-activity.test.js` (guest `401` + redirect, member scope, admin permissions) |
+| 17 | The homepage is a landing page, not a dashboard | `homepage: the public redesign is a landing page, not a dashboard` |
+| 18 | The homepage renders from public endpoints only | `tests/homepage-render.test.js` (real `api.js` + `app.js` in a DOM stand-in) |
 
 ### Continuous integration
 

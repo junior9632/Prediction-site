@@ -196,7 +196,7 @@ Notes:
    | --- | --- |
    | `https://yourdomain.com/api/health` | `{"ok":true,"data":{"status":"ok","database":"ok","dataSource":{"configured":true,…}}}` |
    | `https://yourdomain.com/api/meta` | site name, `market.key = over_1_5`, `oddsWindow {min:2,max:4}`, `autoTicketGeneration:false` |
-   | `https://yourdomain.com/` | homepage renders, dark navy theme, no console errors |
+   | `https://yourdomain.com/` | the public landing page renders (hero, today's ticket panel, public stats, model picks), dark navy + cyan theme, no console errors, no account-scoped request in the network tab |
    | `https://yourdomain.com/admin/login` | admin sign-in page renders (aliases: `/login`, `/login.html`); a guest hitting `/admin` lands here |
    | `https://yourdomain.com/admin.html` | signed out → `302` to `/admin/login`; signed in as an administrator → the console |
    | `https://yourdomain.com/dashboard` | signed out → `302` to `/account.html` (the member area is never served to a guest) |
@@ -219,7 +219,9 @@ Notes:
      --member=<test-member>:<password> --admin=<admin>:<password>
    ```
 
-   Without credentials it still checks the guest state (401 + redirect + a clean homepage).
+   Without credentials it still checks the guest state (401 + redirect + a homepage that is the
+   redesigned landing page, carries the visitor calls to action and calls no dashboard or admin
+   endpoint — 36 checks in total).
 
 ---
 
@@ -241,7 +243,7 @@ cd /home/USER/goalpredict
 git pull                        # or upload the changed files
 npm ci --omit=dev               # only when package.json changed
 npm run db:migrate              # idempotent — safe after every deploy
-npm test                        # optional but cheap: 94 tests, no DB needed
+npm test                        # optional but cheap: 99 tests, no DB needed
 node scripts/check-no-secrets.js
 ```
 

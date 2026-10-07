@@ -108,6 +108,14 @@ async function verifyGuest() {
   check('guest: the homepage mentions no dashboard activity', !/dashboard activity/i.test(home.text));
   check('guest: the homepage references no dashboard endpoint', !home.text.includes('/api/dashboard'));
   check('guest: the homepage ships no activity feed renderer', !home.text.includes('activityFeed'));
+  check('guest: the homepage loads no dashboard script', !home.text.includes('/js/dashboard.js'));
+  check('guest: the homepage offers the visitor calls to action', /\/account\.html#register/.test(home.text) && /data-auth-login/.test(home.text));
+  check('guest: the homepage is the redesigned landing page', /class="hp-hero"/.test(home.text) && /AI Sports Intelligence/i.test(home.text));
+
+  // The homepage script must read public feeds only.
+  const homeJs = await request('/js/app.js');
+  check('guest: the homepage script calls no dashboard endpoint', homeJs.status === 200 && !homeJs.text.includes('/api/dashboard'), `got ${homeJs.status}`);
+  check('guest: the homepage script calls no admin endpoint', homeJs.status === 200 && !homeJs.text.includes('/api/admin'));
 
   const adminApi = await request('/api/admin/overview');
   check('guest: the admin API is refused', adminApi.status === 401, `got ${adminApi.status}`);
