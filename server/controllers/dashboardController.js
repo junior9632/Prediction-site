@@ -21,7 +21,7 @@ const { AppError } = require('../utils/errors');
 const activity = asyncHandler(async (req, res) => {
   if (!req.member) throw AppError.unauthorized();
   const data = await activityService.getDashboardActivity(req.member);
-  res.set('Cache-Control', 'no-store');
+  // `Cache-Control: no-store` is set for every /api/dashboard response by the router.
   res.json({ ok: true, data });
 });
 

@@ -22,6 +22,13 @@ const { requireActiveAccount } = require('../middleware/account');
 
 const router = express.Router();
 
+// Not even the refusals may be stored: a shared cache must never replay
+// account data (or a 401/403 for a route whose answer depends on the session).
+router.use((_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 router.use(requireAuth);
 router.use(requireActiveAccount);
 

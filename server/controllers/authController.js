@@ -15,6 +15,7 @@ const db = require('../database/queries');
 const config = require('../config');
 const auth = require('../middleware/auth');
 const { newCsrfToken } = require('../middleware/adminAuth');
+const { assertAccountUsable } = require('../middleware/account');
 const logService = require('../services/logService');
 const { assertValid } = require('../utils/validate');
 const { asyncHandler } = require('../utils/asyncHandler');
@@ -180,11 +181,13 @@ const me = asyncHandler(async (req, res) => {
   if (!req.auth) throw AppError.unauthorized();
   if (req.auth.type === 'admin') {
     const row = await db.getAdminById(req.auth.id);
-    if (!row) throw AppError.unauthorized();
+    // A disabled or locked account is refused here too, so no page can paint a
+    // "signed in" header for a session that may no longer read member data.
+    assertAccountUsable(row, 'Administrator');
     return res.json({ ok: true, data: { type: 'admin', account: publicAdmin(row) } });
   }
   const row = await db.getUserById(req.auth.id);
-  if (!row) throw AppError.unauthorized();
+  assertAccountUsable(row, 'Member');
   return res.json({
     ok: true,
     data: {

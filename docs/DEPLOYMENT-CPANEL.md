@@ -198,6 +198,8 @@ Notes:
    | `https://yourdomain.com/api/meta` | site name, `market.key = over_1_5`, `oddsWindow {min:2,max:4}`, `autoTicketGeneration:false` |
    | `https://yourdomain.com/` | homepage renders, dark navy theme, no console errors |
    | `https://yourdomain.com/login.html` | admin sign-in works |
+   | `https://yourdomain.com/dashboard` | signed out → `302` to `/account.html` (the member area is never served to a guest) |
+   | `https://yourdomain.com/api/dashboard/activity` | signed out → `401 {"ok":false,"error":{"code":"UNAUTHORIZED"}}` |
 
 4. Warm the data: admin console → **API Status** → *Sync fixtures*, then *Sync odds*
    (or wait for cron). Check **Fixtures** and **Odds** show rows with a green "verified Xm ago"
@@ -229,7 +231,7 @@ cd /home/USER/goalpredict
 git pull                        # or upload the changed files
 npm ci --omit=dev               # only when package.json changed
 npm run db:migrate              # idempotent — safe after every deploy
-npm test                        # optional but cheap: 54 tests, no DB needed
+npm test                        # optional but cheap: 90 tests, no DB needed
 node scripts/check-no-secrets.js
 ```
 

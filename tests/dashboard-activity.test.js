@@ -229,6 +229,7 @@ test('guest: the activity API answers 401 and the member page redirects to sign-
   assert.equal(api.json.ok, false);
   assert.equal(api.json.error.code, 'UNAUTHORIZED');
   assert.ok(!('data' in api.json), 'no dashboard payload is returned to a visitor');
+  assert.match(api.headers.get('cache-control') || '', /no-store/, 'even the refusal is never cached');
 
   // ... also with a forged / expired token
   const forged = await get('/api/dashboard/activity', { token: 'not-a-real-jwt' });
@@ -293,10 +294,37 @@ test('member: dashboard activity is served for the caller only', async () => {
   // the API response is not cached either
   assert.match(res.headers.get('cache-control') || '', /no-store/);
 
+  // the session endpoint itself is never cached and refuses a disabled account
+  const meRes = await get('/api/auth/me', { token });
+  assert.equal(meRes.status, 200);
+  assert.match(meRes.headers.get('cache-control') || '', /no-store/);
+
   // a disabled account loses access immediately, even with a valid token
   const disabled = await get('/api/dashboard/activity', { token: disabledBearer });
   assert.equal(disabled.status, 403);
   assert.equal(disabled.json.error.code, 'ACCOUNT_DISABLED');
+  const disabledMe = await get('/api/auth/me', { token: disabledBearer });
+  assert.equal(disabledMe.status, 403, 'a disabled session cannot even paint the member header');
+});
+
+test('contract: public/dashboard.html defines every element dashboard.js drives', () => {
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'dashboard.html'), 'utf8');
+  const js = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'dashboard.js'), 'utf8');
+
+  const ids = new Set();
+  for (const match of js.matchAll(/\$\(\s*'#([A-Za-z0-9_-]+)'\s*\)/g)) ids.add(match[1]);
+  for (const match of js.matchAll(/setText\(\s*'#([A-Za-z0-9_-]+)'/g)) ids.add(match[1]);
+  assert.ok(ids.size >= 10, 'dashboard.js is expected to drive the member cards');
+  for (const id of ids) {
+    assert.ok(html.includes(`id="${id}"`), `public/dashboard.html must define #${id}`);
+  }
+
+  // the activity card exists but starts hidden: only the authenticated payload reveals it
+  const card = html.match(/<section[^>]*id="activityCard"[^>]*>/);
+  assert.ok(card, 'the Dashboard Activity card exists');
+  assert.match(card[0], /\bhidden\b/, 'the card is hidden until the server confirms the session');
+  assert.ok(!/\son(click|load|error)=/i.test(html), 'no inline event handlers (CSP forbids them)');
+  assert.ok(!html.includes('fetch('), 'the page uses the shared API helper, not ad-hoc requests');
 });
 
 /* ------------------------------------------------------------------ */

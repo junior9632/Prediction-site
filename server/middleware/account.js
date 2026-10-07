@@ -16,7 +16,8 @@
 const db = require('../database/queries');
 const { AppError } = require('../utils/errors');
 
-function assertUsable(row, kind) {
+/** Throw unless the row exists and the account may still be used. */
+function assertAccountUsable(row, kind) {
   if (!row) throw AppError.unauthorized(`${kind} account no longer exists`, 'ACCOUNT_MISSING');
   if (Number(row.is_active) !== 1) throw AppError.forbidden('Account disabled', 'ACCOUNT_DISABLED');
   if (row.locked_until && new Date(row.locked_until).getTime() > Date.now()) {
@@ -29,7 +30,7 @@ async function requireActiveAccount(req, _res, next) {
     if (!req.auth) throw AppError.unauthorized();
     if (req.auth.type === 'admin') {
       const admin = await db.getAdminById(req.auth.id);
-      assertUsable(admin, 'Administrator');
+      assertAccountUsable(admin, 'Administrator');
       req.member = {
         type: 'admin',
         id: Number(admin.id),
@@ -42,7 +43,7 @@ async function requireActiveAccount(req, _res, next) {
       return next();
     }
     const user = await db.getUserById(req.auth.id);
-    assertUsable(user, 'Member');
+    assertAccountUsable(user, 'Member');
     req.member = {
       type: 'user',
       id: Number(user.id),
@@ -58,4 +59,4 @@ async function requireActiveAccount(req, _res, next) {
   }
 }
 
-module.exports = { requireActiveAccount };
+module.exports = { requireActiveAccount, assertAccountUsable };

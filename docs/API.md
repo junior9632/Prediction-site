@@ -196,7 +196,7 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 | `POST /api/auth/admin/login` | `{login, password}` | `200 {admin, token, csrfToken}` + `fp_token` (httpOnly) and `fp_csrf` cookies; rate limited; failures lock the account |
 | `POST /api/auth/admin/logout` | — | clears the cookies |
 | `POST /api/auth/admin/change-password` | `{currentPassword, newPassword}` | authenticated; minimum length enforced |
-| `GET /api/auth/me` | — | `{type: "admin"|"user"|"anonymous", account}` |
+| `GET /api/auth/me` | — | `{type: "admin"|"user", account}`; `401` when there is no session, `403` when the account is disabled or locked; responses are `no-store` |
 | `POST /api/auth/register` | `{email, username, password}` | `201 {id, username, email}`; optional reader account (never required to read the site); rate limited |
 | `POST /api/auth/login` | `{login, password}` | `200 {user, token, csrfToken}` + the same cookie pair as the admin login; lockout after repeated failures |
 | `POST /api/auth/logout` | — | clears the session cookies for any session type (admin or user) |
