@@ -64,12 +64,29 @@
     paintRecord(account.memberSince);
   }
 
+  /**
+   * /account.html#register (the homepage "Create Account" button) drops the
+   * visitor straight on the registration card instead of the sign-in form.
+   */
+  function focusHash() {
+    if (window.location.hash !== '#register') return;
+    const card = $('#register');
+    if (!card) return;
+    card.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    const input = $('#regUsername');
+    if (input) input.focus({ preventScroll: true });
+  }
+
   async function route() {
     hide('#guestView');
     hide('#memberView');
     hide('#staffView');
     const me = await API.get('/auth/me').catch(() => null);
-    if (!me) return show('#guestView');
+    if (!me) {
+      show('#guestView');
+      focusHash();
+      return;
+    }
     if (me.type === 'admin') return show('#staffView');
     return paintMember(me.account || {});
   }
@@ -81,7 +98,10 @@
       busy('#loginBtn', true);
       try {
         await API.post('/auth/login', { login: $('#loginId').value.trim(), password: $('#loginPassword').value });
-        window.location.reload();
+        // a session now exists: hand the visitor to their own area. Members get
+        // the member dashboard; the server redirects administrators to the
+        // console instead (see the /dashboard guard in server/app.js).
+        window.location.href = '/dashboard';
       } catch (err) {
         flash('#loginAlert', '#loginAlertText', 'error', err.message || 'Sign in failed');
         busy('#loginBtn', false, 'Sign in');
@@ -97,9 +117,10 @@
         const username = $('#regUsername').value.trim();
         const password = $('#regPassword').value;
         await API.post('/auth/register', { username, email: $('#regEmail').value.trim(), password });
-        // sign straight in with the new credentials
+        // sign straight in with the new credentials, then straight to the
+        // member area (the dashboard the new account now owns)
         await API.post('/auth/login', { login: username, password });
-        window.location.reload();
+        window.location.href = '/dashboard';
       } catch (err) {
         flash('#registerAlert', '#registerAlertText', 'error', err.message || 'Registration failed');
         busy('#registerBtn', false, 'Create account');

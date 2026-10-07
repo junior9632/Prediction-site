@@ -313,12 +313,24 @@ const App = (() => {
       const signed = document.querySelector('[data-auth-signed]');
       const nameNode = document.querySelector('[data-auth-name]');
       const logoutBtn = document.querySelector('[data-auth-logout]');
+      // Public marketing CTAs: shown to visitors, replaced by the dashboard
+      // shortcut once a session exists. This is presentation only — every
+      // account scoped value still comes from the server-side guarded API.
+      const guestNodes = document.querySelectorAll('[data-auth-guest]');
+      const memberCtaNodes = document.querySelectorAll('[data-auth-signed-cta]');
+      const dashboardNodes = document.querySelectorAll('[data-auth-dashboard]');
 
       const paint = () => {
         const me = session.cache;
         const isAuthed = Boolean(me);
+        const isAdmin = isAuthed && me.type === 'admin';
         if (loginBtn) loginBtn.classList.toggle('hidden', isAuthed);
         if (signed) signed.classList.toggle('hidden', !isAuthed);
+        guestNodes.forEach((node) => node.classList.toggle('hidden', isAuthed));
+        memberCtaNodes.forEach((node) => node.classList.toggle('hidden', !isAuthed));
+        // administrators get their console from its own unlisted address; the
+        // member shortcut is not offered to them
+        dashboardNodes.forEach((node) => node.classList.toggle('hidden', isAdmin));
         if (nameNode && me) {
           nameNode.textContent = me.account ? me.account.username : 'Account';
           nameNode.href = me.type === 'admin' ? '/account.html' : '/dashboard';

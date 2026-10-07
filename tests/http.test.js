@@ -416,14 +416,19 @@ test('security: the admin area is hidden from the public UI', () => {
     assert.ok(!/admin login/i.test(html), `${entry} must not advertise an admin login`);
   }
 
-  // The public navigation offers Home, Today's Ticket, Ticket History,
-  // Analytics, Predictions and Login only.
+  // The public navigation is the redesigned, simple one: Home, Today's
+  // Predictions, Matches, Analytics — plus Login/Create Account in the header
+  // actions. No admin entry, no dashboard entry for visitors.
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   const nav = indexHtml.match(/<nav class="main-nav"[\s\S]*?<\/nav>/)[0];
   assert.ok(!/admin/i.test(nav), 'no admin entry in the primary navigation');
-  for (const label of ['Home', "Today's Ticket", 'Ticket History', 'Analytics', 'Predictions']) {
+  assert.ok(!/dashboard/i.test(nav), 'no dashboard entry for visitors in the primary navigation');
+  for (const label of ['Home', "Today's Predictions", 'Matches', 'Analytics']) {
     assert.ok(nav.includes(`>${label}<`), `the nav keeps ${label}`);
   }
+  const actions = indexHtml.match(/<div class="header-actions">[\s\S]*?<\/div>/)[0];
+  assert.match(actions, />Login</, 'the header offers Login to visitors');
+  assert.match(actions, />Create Account</, 'the header offers Create Account to visitors');
 
   // The JavaScript loaded by public pages contains no privileged endpoints;
   // only the console itself (admin.js) and the unlisted sign-in door
@@ -437,15 +442,29 @@ test('security: the admin area is hidden from the public UI', () => {
 });
 
 test('security: typing the admin URL never grants a guest or member access', async () => {
-  // guest: bounced to the public sign-in page, never shown admin content
+  // guest: bounced to the console's own sign-in door, never shown admin content
   for (const url of ['/admin', '/admin.html']) {
     const res = await fetch(`${base}${url}`, { redirect: 'manual' });
     assert.equal(res.status, 302, `${url} redirects guests`);
-    assert.equal(res.headers.get('location'), '/login.html');
+    assert.equal(res.headers.get('location'), '/admin/login');
   }
 
-  // guest: unknown admin-looking URLs simply do not exist
-  for (const url of ['/admin/login', '/admin/admin', '/admin/anything']) {
+  // guest: the sign-in door exists (an operator typing the obvious admin
+  // address gets a form, not a 404) but ships no admin data, no console shell
+  // and no privileged endpoint — and is never cached or indexed
+  for (const url of ['/admin/login', '/admin/login.html']) {
+    const res = await get(url);
+    assert.equal(res.status, 200, `${url} serves the sign-in page`);
+    assert.match(res.text, /id="loginForm"/, 'the sign-in form is present');
+    assert.ok(!res.text.includes('/api/admin'), `${url} must not list admin endpoints`);
+    assert.ok(!res.text.includes('admin.js'), `${url} must not load the console script`);
+    assert.ok(!/admin console|admin-shell/i.test(res.text), `${url} must not ship the console shell`);
+    assert.match(res.headers.get('cache-control') || '', /no-store/, `${url} is never cached`);
+    assert.match(res.headers.get('x-robots-tag') || '', /noindex/, `${url} is never indexed`);
+  }
+
+  // guest: every other admin-looking URL simply does not exist
+  for (const url of ['/admin/admin', '/admin/anything', '/admin/overview', '/admin/users']) {
     const res = await get(url);
     assert.equal(res.status, 404, `${url} must not be revealed`);
   }
@@ -453,6 +472,15 @@ test('security: typing the admin URL never grants a guest or member access', asy
   // guest: the console script behaves like an unknown asset
   const script = await get('/js/admin.js');
   assert.equal(script.status, 404);
+
+  // an administrator who already has a session is taken straight to the console
+  // (raw fetch: the shared helper follows redirects, we want to see the 302)
+  const signedIn = await fetch(`${base}/admin/login`, {
+    headers: { Authorization: `Bearer ${bearer}` },
+    redirect: 'manual',
+  });
+  assert.equal(signedIn.status, 302, 'the sign-in door skips itself for a live admin session');
+  assert.equal(signedIn.headers.get('location'), '/admin.html');
 
   // normal authenticated member: a proper 403, no admin details
   const userToken = auth.signToken({ sub: 5, type: 'user', role: null });
@@ -557,7 +585,10 @@ test('security: the frontend is served with a strict CSP and no inline scripts',
   // bounced to the sign-in page, the script answers like an unknown file
   const adminShell = await fetch(`${base}/admin.html`, { redirect: 'manual' });
   assert.equal(adminShell.status, 302, 'the admin console redirects guests away');
-  assert.equal(adminShell.headers.get('location'), '/login.html');
+  assert.equal(adminShell.headers.get('location'), '/admin/login');
+  const signIn = await get('/admin/login');
+  assert.equal(signIn.status, 200, 'the sign-in door answers a guest with a form');
+  assert.ok(!/admin-shell/i.test(signIn.text));
   const adminScript = await get('/js/admin.js');
   assert.equal(adminScript.status, 404, 'the admin script is invisible to guests');
 });
@@ -601,7 +632,7 @@ test('responsive: the admin console stays navigable on small screens', () => {
 
   // and the public pages keep their mobile bottom bar, hidden on desktop
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
-  assert.ok(indexHtml.includes('class="bottom-nav"'), 'public pages need the mobile bottom nav');
+  assert.match(indexHtml, /class="bottom-nav( [\w-]+)?"/, 'public pages need the mobile bottom nav');
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*?\.bottom-nav \{ display: none/, 'bottom nav is mobile only');
 });
 
@@ -758,4 +789,64 @@ test('analytics page: flat-stake ROI and monthly chart are rendered from real da
   assert.match(js, /renderRoi/);
   assert.match(js, /renderMonthlyChart/);
   assert.match(js, /losses included|negative ROI is shown/i, 'honesty note ships with the code');
+});
+
+test('homepage: the public redesign is a landing page, not a dashboard', async () => {
+  const page = await get('/');
+  assert.equal(page.status, 200);
+
+  // strong hero + the question a visitor must be able to answer
+  assert.match(page.text, /class="hp-hero"/, 'the hero section exists');
+  assert.match(page.text, /class="hp-h1"/, 'the hero has a headline');
+  assert.match(page.text, /AI Sports Intelligence/i, 'the AI/sports-intelligence branding is present');
+  assert.match(page.text, /Over 1\.5 Goals/, 'the single market is stated');
+
+  // the calls to action a visitor needs
+  assert.match(page.text, /href="\/account\.html#register"/, 'a create-account call to action exists');
+  assert.match(page.text, /href="\/account\.html"[^>]*data-auth-login/, 'a login call to action exists');
+
+  // public information sections
+  for (const marker of ['hpStatSettled', 'hpStatWinRate', 'hover', 'pickList', 'hpMatches', 'recentResults', 'dataSourcePill']) {
+    if (marker === 'hover') continue; // placeholder guard, not an element id
+    assert.ok(page.text.includes(`id="${marker}"`), `the homepage renders #${marker}`);
+  }
+  assert.match(page.text, /What GoalPredict does/i, 'the page explains what the platform does');
+  assert.match(page.text, /How the AI works/i, 'the page explains the AI pipeline');
+
+  // and it must not look like the admin console
+  assert.ok(!/admin-shell|side-link|progress-box|System Logs/i.test(page.text), 'no admin console furniture on the homepage');
+
+  // the five-item mobile bar needs its own unscoped column rule: the shared
+  // .bottom-nav rule assumes four stops and would wrap the fifth on phones
+  const css = fs.readFileSync(path.join(PUBLIC_DIR, 'css', 'style.css'), 'utf8');
+  assert.ok(css.includes('.bottom-nav.five { grid-template-columns: repeat(5, 1fr); }'), 'the five-item bottom bar gets five columns on phones');
+  assert.equal((css.match(/{/g) || []).length, (css.match(/}/g) || []).length, 'the stylesheet braces stay balanced');
+
+  // the homepage script only talks to public endpoints
+  const appJs = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'app.js'), 'utf8');
+  assert.ok(!appJs.includes('/api/dashboard'), 'the homepage never calls the account-scoped API');
+  assert.ok(!appJs.includes('/api/admin'), 'the homepage never calls the admin API');
+  for (const endpoint of ["/ticket/today", "/tickets/history?limit=", "/analytics", "/health", "/predictions?date="]) {
+    assert.ok(appJs.includes(endpoint), `the homepage reads the public endpoint ${endpoint}`);
+  }
+});
+
+test('homepage: signed-in visitors get the dashboard shortcut, guests never do', async () => {
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  const js = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'api.js'), 'utf8');
+
+  // the dashboard shortcut ships hidden and is revealed by the session check
+  const dashLink = html.match(/<a[^>]*data-auth-dashboard[^>]*>/);
+  assert.ok(dashLink, 'the header has a dashboard shortcut for members');
+  assert.ok(html.includes('data-auth-signed'), 'the signed-in block exists');
+  assert.ok(/class="[^"]*\bhidden\b[^"]*"[^>]*data-auth-signed|data-auth-signed[^>]*class="[^"]*\bhidden\b/.test(html), 'the signed-in block starts hidden');
+  assert.match(js, /\[data-auth-guest\]/, 'api.js knows how to hide guest-only calls to action');
+
+  // signing in must land the visitor in their own area, not back on the form
+  const accountJs = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'account.js'), 'utf8');
+  assert.equal((accountJs.match(/window\.location\.href = '\/dashboard'/g) || []).length, 2, 'sign-in and registration both hand the new session to the member area');
+  assert.ok(!accountJs.includes('window.location.reload()'), 'the sign-in form no longer reloads itself');
+  assert.match(js, /\[data-auth-signed-cta\]/, 'api.js knows how to reveal the member call to action');
+  // and nothing account-scoped is inline in the markup
+  assert.ok(!/user|session|token/i.test(dashLink[0]), 'the shortcut carries no user data');
 });

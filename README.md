@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 54 tests, no test dependencies |
+| Tests | `node:test` (built in) — 99 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -56,11 +56,14 @@ Useful commands:
 ```bash
 npm run dev                 # node --watch server.js
 npm run db:migrate -- --status   # applied vs pending migrations (read-only)
-npm test                    # 62 unit + service + HTTP acceptance tests (no DB needed)
+npm test                    # 99 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
 npm run health              # non-zero exit when the DB or the data source is down
+npm run doctor              # deployment diagnosis: env, MySQL (with the exact cause + fix), schema, seed, live site
+npm run verify:access -- https://yourdomain.com \
+  --member=user:pw --admin=admin:pw   # proves the guest/member/admin boundary on a RUNNING site
 npm run lint:secrets        # verifies no key/secret is shipped in public/
 npm run lint:js             # ESLint (correctness rules only, fetched via npx)
 npm run lint:syntax         # node --check over every JavaScript file in the repo
@@ -101,38 +104,44 @@ server.js                     startup entry point (cPanel "Application startup f
 package.json                  scripts + the 9 runtime dependencies
 .env.example                  every environment variable, documented
 public/                       the entire frontend (static, no build step)
-  index.html                  homepage: today's ticket, stats, recent results
+  index.html                  public landing page: hero + today's ticket preview,
+                              public stats, model output cards, settled results
   ticket.html                 full ticket page (also accepts ?date=YYYY-MM-DD)
   history.html                ticket history with result filters + pagination
   analytics.html              performance analytics (win rate, streaks, monthly)
   predictions.html            every analysed fixture with its evidence
-  login.html                  sign-in door (unlisted, never linked from the public UI)
+  login.html                  admin sign-in page (served at /admin/login, unlisted)
   admin.html                  admin console (10 views, sidebar layout, unlisted + guarded)
   css/style.css               design system: dark navy panels, cyan accents
   js/api.js                   fetch wrapper + CSRF + shared render helpers
-  js/{app,ticket,history,analytics,predictions,account,login,admin}.js
+  js/app.js                   homepage controller (public endpoints only)
+  js/{ticket,history,analytics,predictions,account,dashboard,login,admin}.js
   img/{logo,favicon}.svg
 server/
   config/index.js             typed environment configuration
   app.js  server.js           Express app factory + HTTP bootstrap
   routes/                     health, fixtures, odds, predictions, tickets,
-                              analytics, auth, admin
+                              analytics, auth, admin, dashboard (member only)
   controllers/                request validation + response shaping only
   services/                   apiFootball, fixtureService, oddsService, statsService,
                               contextService, syncService, resultService, settingsService,
-                              logService, analyticsService, ticketService, notifyService
+                              logService, analyticsService, activityService, ticketService,
+                              notifyService
   prediction/                 over15, confidence, risk, quality, correlation,
                               ticketBuilder, pipeline
   database/                   schema.sql (baseline), migrations/ (versioned, applied
                               once + checksummed), migrate.js, connection.js (pool),
                               queries.js (all SQL)
-  middleware/                 auth, adminAuth (+CSRF), rateLimit, requestLogger, errorHandler
+  middleware/                 auth, adminAuth (+CSRF), account (member state),
+                              rateLimit, requestLogger, errorHandler
   utils/                      decimal (exact odds maths), numbers, time, logger,
                               errors, asyncHandler, validate, fixtureStatus
   jobs/scheduler.js           optional internal sync scheduler (never generates tickets)
 scripts/                      db-migrate, db-seed, cron-sync-*, cron-health-check,
-                              generate-ticket-cli, validate-sql, check-no-secrets
-tests/                        fakeDb.js, synthetic.js, engine/acceptance/http tests
+                              generate-ticket-cli, validate-sql, check-no-secrets,
+                              verify-access (live guest/member/admin boundary check)
+tests/                        fakeDb.js, synthetic.js, engine/acceptance/http/
+                              dashboard-activity tests
 tools/uipreview.js            preview harness (development only)
 docs/                         ARCHITECTURE.md, API.md, DEPLOYMENT-CPANEL.md
 ```
@@ -172,13 +181,56 @@ removed from the accumulator instead of being counted as wins).
 
 ---
 
+## Public homepage
+
+`public/index.html` is the visitor-facing landing page — a sports-intelligence front end, not
+the console. It answers, in order: what GoalPredict is, what the engine does, what a visitor can
+see without an account, and why an account is worth creating.
+
+| Section | Data source (all public, all unauthenticated) |
+| --- | --- |
+| Hero with today's published ticket panel and live status | `GET /api/ticket/today` |
+| Public statistics strip — settled tickets, win rate, average odds, best streak, flat-stake ROI | `GET /api/analytics` (aggregates only, never per-account) |
+| "Today's model picks" cards — confidence bar, expected goals, Over 1.5 rates, verified odds | `GET /api/predictions?date=…&limit=6&eligible=1` |
+| Latest settled tickets | `GET /api/tickets/history?limit=5` |
+| Data-source pill (live / temporarily unavailable) | `GET /api/health` |
+
+Every call is anonymous and aggregate: `public/js/app.js` reads only those five endpoints, never
+`/api/dashboard/*`, and `scripts/verify-access.js` fails the deployment check if that ever
+changes. The header shows `Login` and `Create Account` to visitors; the dashboard shortcut is
+revealed by the session check in `public/js/api.js#bindHeader` after sign-in, i.e. the visitor
+never receives member markup, member scripts or member data.
+
+## Member dashboard
+
+The member area (`/dashboard`, served as `public/dashboard.html`) is **not a hidden `<div>`**:
+the server refuses the page itself and the data behind it.
+
+| State | What happens |
+| --- | --- |
+| Visitor (no session) | `/dashboard` and `/dashboard.html` answer `302` to `/account.html`; `GET /api/dashboard/activity` answers `401 UNAUTHORIZED` with no payload; the public pages contain no dashboard markup, no feed script and no reference to the endpoint |
+| Signed-in member | the page is served `no-store` / `noindex` with the **Dashboard Activity** card: the account summary (plan, member since, last sign-in, recorded events) and the caller's own audit trail (sign-ins, password changes, lockouts) |
+| Administrator | the console at `/admin` keeps its own permissions and its own activity panel; `/dashboard` redirects administrators to `/admin.html` |
+
+Signing in — or completing registration — on `/account.html` hands the fresh session straight to
+`/dashboard`; the server guard sends administrators on to `/admin.html` instead, so nobody lands
+back on a sign-in form they no longer need.
+
+The activity feed is read from `system_logs` scoped to the actor type/id of the **verified
+session**, which the server re-reads from the database on every request (`requireAuth` +
+`requireActiveAccount`). Query parameters cannot widen the scope and a disabled, locked or
+deleted account loses access immediately. `tests/dashboard-activity.test.js` pins all three
+states.
+
 ## Admin console
 
 The console is **hidden from the public site**: no navigation, footer, sitemap or robots
-entry references it. Guests opening `/admin` or `/admin.html` are redirected to the sign-in
-page, authenticated members receive a bare `403`, and the console shell + its script are
-served `no-store` / `noindex` to administrators only. Administrators reach it by going
-straight to `/admin` (sign-in lives at the equally unlisted `/login`).
+entry references it. Guests opening `/admin` or `/admin.html` are redirected to `/admin/login`,
+authenticated members receive a bare `403`, and the console shell + its script are
+served `no-store` / `noindex` to administrators only. Administrators sign in at
+**`/admin/login`** (aliases: `/login`, `/login.html`) — the page is the shared sign-in form,
+ships no admin data or endpoint list, and an administrator who already has a session is taken
+straight to the console. Any other `/admin/<anything>` answers `404`.
 
 `/admin.html` (superadmin sees everything, `admin` role sees the operational views):
 
@@ -237,6 +289,13 @@ Documentation:
   server-side protected: guest → redirect to sign-in, non-admin session → `403`, admin
   account re-read from the database on every privileged request, so a disabled or locked
   account loses access immediately; repeated failures lock the login.
+* The member dashboard is **server protected**, never CSS-hidden: `/dashboard` redirects
+  visitors to sign-in and `GET /api/dashboard/activity` answers `401 UNAUTHORIZED` without a
+  verified session. The feed is scoped to the account row re-read from the database, so members
+  cannot request each other's activity and query parameters cannot widen the scope.
+* Signing out clears the feed from the DOM, and a page restored from the browser's
+  back/forward cache is wiped and re-validated against the server before anything is shown —
+  so a shared computer never reveals a previous session's activity.
 * Layered rate limiting: global API, auth, admin and generation endpoints.
 * All SQL is written in `server/database/queries.js` with bound placeholders; `LIMIT/OFFSET`
   are inlined only after integer validation.
@@ -250,7 +309,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 62 tests, ~1.5s, no database or network required
+npm test          # 99 tests, ~3s, no database or network required
 ```
 
 | File | Covers |
@@ -258,6 +317,7 @@ npm test          # 62 tests, ~1.5s, no database or network required
 | `tests/engine.test.js` | exact decimal odds maths, the 14-point odds gate, exact Over 1.5 goal-line matching, combination engine, correlation protection, settlement rules, locked settings |
 | `tests/acceptance.test.js` | manual-trigger guards, data-source-unavailable runs, a full qualified generation, regeneration, settlement end to end |
 | `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
+| `tests/dashboard-activity.test.js` | the three dashboard states: a visitor is redirected and answered `401` (nothing about the feed exists on public pages), a signed-in member sees only their own activity, and the administrator keeps the existing console permissions |
 | `tests/fakeDb.js` | in-memory double for `server/database/connection.js`; the SQL still comes from `queries.js` |
 | `tests/synthetic.js` | fictional fixtures, odds payloads, form rows and an API-Football double |
 | `tests/scripts.test.js` | runs `scripts/validate-sql.js` and `scripts/check-no-secrets.js` and fails when they do; also guards the `test` script itself (see below) |
@@ -281,6 +341,9 @@ npm test          # 62 tests, ~1.5s, no database or network required
 | 13 | A later price move never rewrites a stored ticket | `acceptance 13: a later bookmaker price move never rewrites a stored ticket` |
 | 14 | The admin console stays usable on a phone | `responsive: the admin console stays navigable on small screens` |
 | 15 | The exact spec products behave (1.95 / 2.10 / 3.375) | `review 4`, `review 5`, `review 6`, `review 6b` in `tests/engine.test.js` |
+| 16 | Dashboard Activity is only visible to logged-in accounts | `tests/dashboard-activity.test.js` (guest `401` + redirect, member scope, admin permissions) |
+| 17 | The homepage is a landing page, not a dashboard | `homepage: the public redesign is a landing page, not a dashboard` |
+| 18 | The homepage renders from public endpoints only | `tests/homepage-render.test.js` (real `api.js` + `app.js` in a DOM stand-in) |
 
 ### Continuous integration
 

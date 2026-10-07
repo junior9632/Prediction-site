@@ -15,6 +15,7 @@ Express app (server/app.js)
    │  helmet CSP · compression · cors · body limit · request logger
    │  rate limits: global /api, /api/auth, /api/admin, generate-ticket
    │  optionalAuth → requireAdmin → requireActiveAdmin → requireCsrf
+   │  member area: requireAuth → requireActiveAccount (re-reads the account)
    ▼
 Controllers (server/controllers/*)      validate input, shape output, no business rules
    ▼
@@ -311,6 +312,13 @@ Static files only, mobile-first, no build step and no framework:
   `PENDING` (not generated yet), and per-leg `WON` / `LOST` / `VOID` / `POSTPONED` / `PENDING`.
 * The admin console is a single page with hash routing over ten views; generation is a
   confirm dialog → `202 Accepted` → 900 ms polling of the progress endpoint → refresh.
+* **Session-scoped pages are protected server side.** `/dashboard` (`public/dashboard.html`) is
+  only sent to a verified session — anonymous visitors get a `302` to `/account.html` and the
+  page is `no-store` / `noindex`. Its **Dashboard Activity** card is filled from
+  `GET /api/dashboard/activity` (`requireAuth` + `requireActiveAccount`), which reads
+  `system_logs` scoped to the actor type/id of the session account. A visitor opening the API
+  URL directly receives `401 UNAUTHORIZED` and no payload; a member can never request another
+  member's rows. The public pages never reference the endpoint, the feed script or the markup.
 
 ---
 

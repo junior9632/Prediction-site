@@ -196,11 +196,31 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 | `POST /api/auth/admin/login` | `{login, password}` | `200 {admin, token, csrfToken}` + `fp_token` (httpOnly) and `fp_csrf` cookies; rate limited; failures lock the account |
 | `POST /api/auth/admin/logout` | — | clears the cookies |
 | `POST /api/auth/admin/change-password` | `{currentPassword, newPassword}` | authenticated; minimum length enforced |
-| `GET /api/auth/me` | — | `{type: "admin"|"user"|"anonymous", account}` |
+| `GET /api/auth/me` | — | `{type: "admin"|"user", account}`; `401` when there is no session, `403` when the account is disabled or locked; responses are `no-store` |
 | `POST /api/auth/register` | `{email, username, password}` | `201 {id, username, email}`; optional reader account (never required to read the site); rate limited |
 | `POST /api/auth/login` | `{login, password}` | `200 {user, token, csrfToken}` + the same cookie pair as the admin login; lockout after repeated failures |
 | `POST /api/auth/logout` | — | clears the session cookies for any session type (admin or user) |
 | `POST /api/auth/change-password` | `{currentPassword, newPassword}` | authenticated user session; CSRF required for cookie sessions |
+
+---
+
+## Member (`/api/dashboard/*`)
+
+Session-scoped data for the signed-in account. **Server-side protection, not a hidden element:**
+without a verified `fp_token` cookie (or `Authorization: Bearer` header) every route answers
+`401 UNAUTHORIZED` with `{ok:false}` and no payload. The account is re-read from the database on
+each request, so a deleted / disabled / locked account is refused as well (`401 ACCOUNT_MISSING`,
+`403 ACCOUNT_DISABLED`, `403 ACCOUNT_LOCKED`).
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /activity` | The caller's OWN dashboard activity: `{audience: "authenticated", scope: "self", generatedAt, account {type, id, username, email, plan, memberSince, lastLoginAt}, summary {recordedEvents, shownEvents, lastActivityAt, accountAgeDays}, items [{id, event, title, detail, tone, level, channel, at}]}` |
+
+The actor type/id used to read the feed come from the database row of the session — query
+parameters can never widen the scope, and one member can never read another member's events. The
+response is sent with `Cache-Control: no-store`. The matching member page `/dashboard` (and
+`/dashboard.html`) redirects anonymous visitors to the sign-in page instead of serving the member
+area. Admins keep the separate, equally protected `/api/admin/*` surface.
 
 ---
 

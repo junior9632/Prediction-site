@@ -47,7 +47,11 @@ async function query(sql, params = []) {
     return rows;
   } catch (err) {
     if (isConnectionError(err)) {
-      throw AppError.upstream('Database is unavailable', 'DB_UNAVAILABLE', {
+      // A misconfigured deployment (wrong host/credentials, no privileges on
+      // the database) is an availability problem, not a query bug: report it
+      // as 503 DB_UNAVAILABLE. The raw MySQL message names the database user
+      // and host, so it is only attached outside production.
+      throw AppError.upstream('Database is unavailable', 'DB_UNAVAILABLE', config.isProduction ? undefined : {
         code: err.code,
         message: err.message,
       });
@@ -65,11 +69,18 @@ async function query(sql, params = []) {
 function isConnectionError(err) {
   const codes = [
     'ECONNREFUSED',
+    'EHOSTUNREACH',
     'ENOTFOUND',
     'ETIMEDOUT',
     'ECONNRESET',
+    'EPIPE',
     'PROTOCOL_CONNECTION_LOST',
+    'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR',
     'ER_ACCESS_DENIED_ERROR',
+    // the user exists but was never granted privileges on this database —
+    // a deployment/configuration fault, seen as SQL_ER_DBACCESS_DENIED_ERROR
+    'ER_DBACCESS_DENIED_ERROR',
+    'ER_BAD_DB_ERROR',
     'POOL_CLOSED',
   ];
   return codes.includes(err && err.code);
