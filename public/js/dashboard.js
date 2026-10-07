@@ -10,6 +10,51 @@ document.addEventListener('DOMContentLoaded', async () => {
   /* ---------------------------- session ---------------------------- */
   const goToSignIn = () => window.location.replace(SIGN_IN);
 
+  /**
+   * Remove everything account specific from the DOM.
+   *
+   * Used before signing out and before re-validating a page restored from the
+   * browser's back/forward cache: a snapshot taken while signed in must never
+   * be shown to a session that is gone (shared computer, expired token).
+   */
+  function clearActivity() {
+    const card = $('#activityCard');
+    if (card) card.classList.add('hidden');
+    const feed = $('#activityFeed');
+    if (feed) feed.innerHTML = '';
+    for (const id of ['#activityUser', '#activityPlan', '#activitySince', '#activityLastLogin', '#activityCount', '#activityGenerated']) {
+      App.setText(id, '—');
+    }
+    App.setText('#welcomeName', 'there');
+    App.setText('#profileName', '—');
+    App.setText('#profileEmail', '—');
+  }
+
+  /** Re-check the session with the server; returns false when it is gone. */
+  async function revalidate() {
+    let session = null;
+    try {
+      session = await API.get('/auth/me');
+    } catch (_) {
+      session = null;
+    }
+    if (!session) {
+      goToSignIn();
+      return false;
+    }
+    await loadActivity();
+    return true;
+  }
+
+  // Back/forward cache: the browser can restore this page with its frozen DOM
+  // after the user signed out (or the session expired). Nothing is trusted from
+  // the snapshot — it is wiped and re-validated against the server first.
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return;
+    clearActivity();
+    revalidate();
+  });
+
   let me;
   try {
     me = await API.get('/auth/me');
@@ -118,6 +163,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadActivity();
 
   $('#logoutBtn').addEventListener('click', async () => {
+    clearActivity(); // never leave the feed in the DOM, not even for a snapshot
     try { await API.post('/auth/logout', {}); } catch (_) {}
     window.location.replace('/');
   });

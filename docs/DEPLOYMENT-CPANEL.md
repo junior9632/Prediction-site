@@ -210,6 +210,15 @@ Notes:
    did not support a ticket.
 6. Confirm the public pages (`/`, `/ticket.html`, `/history.html`, `/analytics.html`,
    `/predictions.html`) show the same server-computed values.
+7. Run the access verifier — it proves the guest/member/admin boundary on the live site and
+   exits non-zero when anything regresses, so it is safe to run from cron or before a release:
+
+   ```bash
+   npm run verify:access -- https://yourdomain.com \
+     --member=<test-member>:<password> --admin=<admin>:<password>
+   ```
+
+   Without credentials it still checks the guest state (401 + redirect + a clean homepage).
 
 ---
 
@@ -231,7 +240,7 @@ cd /home/USER/goalpredict
 git pull                        # or upload the changed files
 npm ci --omit=dev               # only when package.json changed
 npm run db:migrate              # idempotent — safe after every deploy
-npm test                        # optional but cheap: 91 tests, no DB needed
+npm test                        # optional but cheap: 93 tests, no DB needed
 node scripts/check-no-secrets.js
 ```
 

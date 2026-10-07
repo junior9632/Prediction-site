@@ -19,6 +19,7 @@
     "sync:all": "node scripts/cron-sync-all.js",
     "ticket:generate": "node scripts/generate-ticket-cli.js",
     "health": "node scripts/cron-health-check.js",
+    "verify:access": "node scripts/verify-access.js",
     "test": "node --test",
     "test:sql": "node scripts/validate-sql.js",
     "preview:ui": "node tools/uipreview.js",

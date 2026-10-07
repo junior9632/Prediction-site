@@ -30,12 +30,14 @@ const settingsService = require('../server/services/settingsService');
 const { createApp, PUBLIC_DIR } = require('../server/app');
 
 const MEMBER_PASSWORD = 'member-secret-99';
+const ADMIN_PASSWORD = 'admin-test-pass-1';
 
 const ADMIN = {
   id: 1,
   email: 'admin@test.local',
   username: 'admin',
-  password_hash: 'x',
+  // a real hash so the operator verifier can exercise the admin sign-in too
+  password_hash: bcrypt.hashSync(ADMIN_PASSWORD, 4),
   role: 'superadmin',
   is_active: 1,
   locked_until: null,
@@ -333,6 +335,13 @@ test('contract: public/dashboard.html defines every element dashboard.js drives'
   assert.match(card[0], /\bhidden\b/, 'the card is hidden until the server confirms the session');
   assert.ok(!/\son(click|load|error)=/i.test(html), 'no inline event handlers (CSP forbids them)');
   assert.ok(!html.includes('fetch('), 'the page uses the shared API helper, not ad-hoc requests');
+
+  // a page restored from the back/forward cache must be wiped and re-checked,
+  // and signing out must clear the feed before leaving the page
+  assert.match(js, /addEventListener\('pageshow'/, 'bfcache restores are handled');
+  assert.match(js, /event\.persisted/, 'and only acted on for real restores');
+  assert.match(js, /clearActivity\(\);\s*\/\/ never leave the feed/);
+  assert.match(js, /await API\.get\('\/auth\/me'\)/, 'the restore path re-validates the session server side');
 });
 
 /* ------------------------------------------------------------------ */
@@ -362,4 +371,32 @@ test('admin: the console keeps its permissions and the feed stays admin scoped',
   // and members still cannot touch the admin surface
   const forbidden = await get('/api/admin/overview', { token: memberBearer });
   assert.ok([401, 403].includes(forbidden.status), 'member tokens are rejected by admin routes');
+});
+
+/* ------------------------------------------------------------------ */
+/* 4. the operator-facing verifier works against this very server      */
+/* ------------------------------------------------------------------ */
+
+test('tooling: scripts/verify-access.js reports a clean pass against the running app', async () => {
+  // Must be ASYNC: execFileSync would block this process's event loop, and the
+  // app under test runs in it — the verifier's requests could never be served.
+  const { execFile } = require('node:child_process');
+  const { promisify } = require('node:util');
+  const report = await promisify(execFile)(
+    process.execPath,
+    [
+      path.join(__dirname, '..', 'scripts', 'verify-access.js'),
+      `--base=${base}`,
+      '--member=ticketfan:member-secret-99',
+      `--admin=${ADMIN.username}:${ADMIN_PASSWORD}`,
+      '--json',
+    ],
+    { cwd: path.join(__dirname, '..'), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' }, timeout: 60000 }
+  ).then((r) => r.stdout);
+  const parsed = JSON.parse(report);
+  assert.equal(parsed.failed, 0, report);
+  assert.ok(parsed.passed >= 20, 'the verifier checks the guest, member and admin states');
+  assert.ok(parsed.results.some((r) => r.name.startsWith('guest:')));
+  assert.ok(parsed.results.some((r) => r.name.startsWith('member:')));
+  assert.ok(parsed.results.some((r) => r.name.startsWith('admin:')));
 });
