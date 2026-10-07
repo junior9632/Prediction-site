@@ -307,6 +307,14 @@ test('member: dashboard activity is served for the caller only', async () => {
   assert.equal(disabledMe.status, 403, 'a disabled session cannot even paint the member header');
 });
 
+test('contract: a signed-in member can discover the dashboard from the account page', () => {
+  const account = fs.readFileSync(path.join(PUBLIC_DIR, 'account.html'), 'utf8');
+  assert.match(account, /href="\/dashboard"/, 'the member account page links to the dashboard');
+  // the public sign-in page never advertises the feed itself
+  assert.ok(!/dashboard activity/i.test(account), 'the guest-facing page does not render the feed');
+  assert.ok(!account.includes('/api/dashboard'), 'and never references the protected endpoint');
+});
+
 test('contract: public/dashboard.html defines every element dashboard.js drives', () => {
   const html = fs.readFileSync(path.join(PUBLIC_DIR, 'dashboard.html'), 'utf8');
   const js = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'dashboard.js'), 'utf8');

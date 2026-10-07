@@ -231,7 +231,7 @@ cd /home/USER/goalpredict
 git pull                        # or upload the changed files
 npm ci --omit=dev               # only when package.json changed
 npm run db:migrate              # idempotent — safe after every deploy
-npm test                        # optional but cheap: 90 tests, no DB needed
+npm test                        # optional but cheap: 91 tests, no DB needed
 node scripts/check-no-secrets.js
 ```
 
