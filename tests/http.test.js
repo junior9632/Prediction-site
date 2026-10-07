@@ -841,6 +841,11 @@ test('homepage: signed-in visitors get the dashboard shortcut, guests never do',
   assert.ok(html.includes('data-auth-signed'), 'the signed-in block exists');
   assert.ok(/class="[^"]*\bhidden\b[^"]*"[^>]*data-auth-signed|data-auth-signed[^>]*class="[^"]*\bhidden\b/.test(html), 'the signed-in block starts hidden');
   assert.match(js, /\[data-auth-guest\]/, 'api.js knows how to hide guest-only calls to action');
+
+  // signing in must land the visitor in their own area, not back on the form
+  const accountJs = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'account.js'), 'utf8');
+  assert.equal((accountJs.match(/window\.location\.href = '\/dashboard'/g) || []).length, 2, 'sign-in and registration both hand the new session to the member area');
+  assert.ok(!accountJs.includes('window.location.reload()'), 'the sign-in form no longer reloads itself');
   assert.match(js, /\[data-auth-signed-cta\]/, 'api.js knows how to reveal the member call to action');
   // and nothing account-scoped is inline in the markup
   assert.ok(!/user|session|token/i.test(dashLink[0]), 'the shortcut carries no user data');

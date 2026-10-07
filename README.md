@@ -212,6 +212,10 @@ the server refuses the page itself and the data behind it.
 | Signed-in member | the page is served `no-store` / `noindex` with the **Dashboard Activity** card: the account summary (plan, member since, last sign-in, recorded events) and the caller's own audit trail (sign-ins, password changes, lockouts) |
 | Administrator | the console at `/admin` keeps its own permissions and its own activity panel; `/dashboard` redirects administrators to `/admin.html` |
 
+Signing in — or completing registration — on `/account.html` hands the fresh session straight to
+`/dashboard`; the server guard sends administrators on to `/admin.html` instead, so nobody lands
+back on a sign-in form they no longer need.
+
 The activity feed is read from `system_logs` scoped to the actor type/id of the **verified
 session**, which the server re-reads from the database on every request (`requireAuth` +
 `requireActiveAccount`). Query parameters cannot widen the scope and a disabled, locked or

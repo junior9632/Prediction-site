@@ -98,7 +98,10 @@
       busy('#loginBtn', true);
       try {
         await API.post('/auth/login', { login: $('#loginId').value.trim(), password: $('#loginPassword').value });
-        window.location.reload();
+        // a session now exists: hand the visitor to their own area. Members get
+        // the member dashboard; the server redirects administrators to the
+        // console instead (see the /dashboard guard in server/app.js).
+        window.location.href = '/dashboard';
       } catch (err) {
         flash('#loginAlert', '#loginAlertText', 'error', err.message || 'Sign in failed');
         busy('#loginBtn', false, 'Sign in');
@@ -114,9 +117,10 @@
         const username = $('#regUsername').value.trim();
         const password = $('#regPassword').value;
         await API.post('/auth/register', { username, email: $('#regEmail').value.trim(), password });
-        // sign straight in with the new credentials
+        // sign straight in with the new credentials, then straight to the
+        // member area (the dashboard the new account now owns)
         await API.post('/auth/login', { login: username, password });
-        window.location.reload();
+        window.location.href = '/dashboard';
       } catch (err) {
         flash('#registerAlert', '#registerAlertText', 'error', err.message || 'Registration failed');
         busy('#registerBtn', false, 'Create account');
