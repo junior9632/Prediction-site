@@ -798,8 +798,11 @@ table.data tr:hover td { background: rgba(34, 211, 238, 0.03); }
   .hp-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hp-benefits { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hp-live-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .bottom-nav.five { grid-template-columns: repeat(5, 1fr); }
 }
+
+/* the landing page adds a fifth stop, and the base rule assumes four —
+   unscoped on purpose, otherwise the bar wraps on phones */
+.bottom-nav.five { grid-template-columns: repeat(5, 1fr); }
 
 @media (min-width: 900px) {
   .hp-hero { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 34px; align-items: center; padding: 52px 46px 46px; }

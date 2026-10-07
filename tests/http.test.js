@@ -816,6 +816,12 @@ test('homepage: the public redesign is a landing page, not a dashboard', async (
   // and it must not look like the admin console
   assert.ok(!/admin-shell|side-link|progress-box|System Logs/i.test(page.text), 'no admin console furniture on the homepage');
 
+  // the five-item mobile bar needs its own unscoped column rule: the shared
+  // .bottom-nav rule assumes four stops and would wrap the fifth on phones
+  const css = fs.readFileSync(path.join(PUBLIC_DIR, 'css', 'style.css'), 'utf8');
+  assert.ok(css.includes('.bottom-nav.five { grid-template-columns: repeat(5, 1fr); }'), 'the five-item bottom bar gets five columns on phones');
+  assert.equal((css.match(/{/g) || []).length, (css.match(/}/g) || []).length, 'the stylesheet braces stay balanced');
+
   // the homepage script only talks to public endpoints
   const appJs = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'app.js'), 'utf8');
   assert.ok(!appJs.includes('/api/dashboard'), 'the homepage never calls the account-scoped API');
