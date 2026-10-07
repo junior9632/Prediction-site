@@ -83,6 +83,48 @@ test('scripts: the access verifier is wired up and fails loudly on an unreachabl
   assert.match(output, /cannot reach http:\/\/127\.0\.0\.1:1/);
 });
 
+test('scripts: the doctor diagnoses a broken database instead of hiding it', () => {
+  const { scripts } = require('../package.json');
+  assert.equal(scripts.doctor, 'node scripts/doctor.js', 'npm run doctor is wired up');
+
+  // Point it at a port where nothing listens and skip the running-site section:
+  // it must fail loudly and name the cause + the fix, never pass silently.
+  let exitCode = 0;
+  let output = '';
+  try {
+    output = execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'doctor.js'), '--json'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        DOCTOR_SKIP_SITE: '1',
+        DB_HOST: '127.0.0.1',
+        DB_PORT: '1',
+        DB_USER: 'nobody',
+        DB_PASSWORD: 'nope',
+        DB_NAME: 'nothing',
+      },
+      timeout: 60000,
+    });
+  } catch (err) {
+    exitCode = err.status ?? 1;
+    output = `${err.stdout || ''}${err.stderr || ''}`;
+  }
+  assert.notEqual(exitCode, 0, `a broken database must fail the doctor: ${output}`);
+
+  const report = JSON.parse(output);
+  assert.equal(report.ok, false);
+  const failed = report.results.filter((r) => !r.ok);
+  assert.ok(failed.some((r) => r.group === 'database' && /MySQL connection/.test(r.name)), 'the connection failure is reported');
+  assert.ok(
+    failed.every((r) => r.group !== 'database' || r.fix.length > 0),
+    'every database failure ships an actionable fix'
+  );
+  // and it never prints a secret
+  assert.ok(!output.includes('nope'), 'the database password never appears in the report');
+});
+
 test('package.json: the test script runs on Node 18 and 20, not just 22', () => {
   const { scripts, engines } = require('../package.json');
 

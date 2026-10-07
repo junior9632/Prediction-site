@@ -197,7 +197,8 @@ Notes:
    | `https://yourdomain.com/api/health` | `{"ok":true,"data":{"status":"ok","database":"ok","dataSource":{"configured":true,…}}}` |
    | `https://yourdomain.com/api/meta` | site name, `market.key = over_1_5`, `oddsWindow {min:2,max:4}`, `autoTicketGeneration:false` |
    | `https://yourdomain.com/` | homepage renders, dark navy theme, no console errors |
-   | `https://yourdomain.com/login.html` | admin sign-in works |
+   | `https://yourdomain.com/admin/login` | admin sign-in page renders (aliases: `/login`, `/login.html`); a guest hitting `/admin` lands here |
+   | `https://yourdomain.com/admin.html` | signed out → `302` to `/admin/login`; signed in as an administrator → the console |
    | `https://yourdomain.com/dashboard` | signed out → `302` to `/account.html` (the member area is never served to a guest) |
    | `https://yourdomain.com/api/dashboard/activity` | signed out → `401 {"ok":false,"error":{"code":"UNAUTHORIZED"}}` |
 
@@ -240,7 +241,7 @@ cd /home/USER/goalpredict
 git pull                        # or upload the changed files
 npm ci --omit=dev               # only when package.json changed
 npm run db:migrate              # idempotent — safe after every deploy
-npm test                        # optional but cheap: 93 tests, no DB needed
+npm test                        # optional but cheap: 94 tests, no DB needed
 node scripts/check-no-secrets.js
 ```
 
@@ -255,7 +256,13 @@ code on every read.
 | Symptom | Cause and fix |
 | --- | --- |
 | cPanel shows "Application Error" on start | Look at the app's log. Usually a missing env var (`config.validate()` refuses to boot in production) or a Node version below 18.17 |
-| `/api/health` returns `503` with `database: "unavailable"` | `DB_HOST/DB_USER/DB_PASSWORD/DB_NAME` are wrong, or the user was not added to the database with ALL PRIVILEGES |
+| `/api/health` returns `503` with `database: "unavailable"` | run **`npm run doctor`** — it names the exact MySQL error and the cPanel screen that fixes it |
+| API answers `{"code":"SQL_ER_DBACCESS_DENIED_ERROR"}` (or `503 DB_UNAVAILABLE`) | the MySQL user was **never added to the database**. cPanel → *MySQL® Databases* → **Add User To Database** → user + database → **ALL PRIVILEGES** → Make Changes, then Restart the app |
+| API answers `SQL_ER_ACCESS_DENIED_ERROR` | wrong DB_USER/DB_PASSWORD (or quotes/spaces around them). Reset the password in *MySQL® Databases → Current Users* and update the app environment |
+| API answers `SQL_ER_BAD_DB_ERROR` | `DB_NAME` does not match the database cPanel created (usually `cpaneluser_dbname`) |
+| API answers `SQL_ER_NO_SUCH_TABLE` | the schema was never applied — run `npm run db:migrate` then `npm run db:seed` |
+| `/admin/login` returns `404 ROUTE_NOT_FOUND` | the deployed build predates the admin sign-in door — upload the current release (`GoalPredict-cPanel-deployment.zip`) and Restart |
+| Anything else | `npm run doctor` checks env vars, MySQL, the schema, the seed, `/api/health` and the guest/member boundary in one pass |
 | `dataSource.configured: false` | `API_FOOTBALL_KEY` is missing or was pasted with surrounding quotes/spaces |
 | `dataSource.state: "OPEN"` | the circuit breaker opened after repeated upstream failures; it half-opens automatically after the cooldown. Check quota/plan and `logs/cron.log` |
 | Generation ends `DATA_SOURCE_UNAVAILABLE` | by design when the API is unreachable — no ticket is fabricated. Re-run once the API Status panel shows `OK` |

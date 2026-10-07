@@ -111,6 +111,14 @@ async function verifyGuest() {
 
   const adminApi = await request('/api/admin/overview');
   check('guest: the admin API is refused', adminApi.status === 401, `got ${adminApi.status}`);
+
+  // The console's own sign-in door: a form, never admin data.
+  const signIn = await request('/admin/login');
+  check('guest: /admin/login serves the sign-in page', signIn.status === 200, `got ${signIn.status}`);
+  check('guest: the sign-in page ships no admin data', !signIn.text.includes('/api/admin') && !signIn.text.includes('admin.js'));
+  check('guest: the sign-in page is never indexed', /noindex/i.test(signIn.headers.get('x-robots-tag') || ''), signIn.headers.get('x-robots-tag') || '(none)');
+  const consoleUrl = await request('/admin.html');
+  check('guest: the console redirects to the sign-in door', consoleUrl.status === 302 && (consoleUrl.headers.get('location') || '').endsWith('/admin/login'), `got ${consoleUrl.status} -> ${consoleUrl.headers.get('location') || '(none)'}`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -169,6 +177,9 @@ async function verifyAdmin(creds) {
 
   const feed = await request('/api/dashboard/activity', { token: session.token });
   check('admin: the dashboard activity feed is admin scoped', feed.status === 200 && (feed.json.data.account || {}).type === 'admin', `got ${feed.status}`);
+
+  const door = await request('/admin/login', { token: session.token });
+  check('admin: the sign-in door skips itself for a live session', door.status === 302 && (door.headers.get('location') || '').endsWith('/admin.html'), `got ${door.status} -> ${door.headers.get('location') || '(none)'}`);
 }
 
 /* ------------------------------------------------------------------ */

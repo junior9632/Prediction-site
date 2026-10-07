@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 93 tests, no test dependencies |
+| Tests | `node:test` (built in) — 94 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -56,11 +56,12 @@ Useful commands:
 ```bash
 npm run dev                 # node --watch server.js
 npm run db:migrate -- --status   # applied vs pending migrations (read-only)
-npm test                    # 93 unit + service + HTTP acceptance tests (no DB needed)
+npm test                    # 94 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
 npm run health              # non-zero exit when the DB or the data source is down
+npm run doctor              # deployment diagnosis: env, MySQL (with the exact cause + fix), schema, seed, live site
 npm run verify:access -- https://yourdomain.com \
   --member=user:pw --admin=admin:pw   # proves the guest/member/admin boundary on a RUNNING site
 npm run lint:secrets        # verifies no key/secret is shipped in public/
@@ -108,7 +109,7 @@ public/                       the entire frontend (static, no build step)
   history.html                ticket history with result filters + pagination
   analytics.html              performance analytics (win rate, streaks, monthly)
   predictions.html            every analysed fixture with its evidence
-  login.html                  sign-in door (unlisted, never linked from the public UI)
+  login.html                  admin sign-in page (served at /admin/login, unlisted)
   admin.html                  admin console (10 views, sidebar layout, unlisted + guarded)
   css/style.css               design system: dark navy panels, cyan accents
   js/api.js                   fetch wrapper + CSRF + shared render helpers
@@ -198,10 +199,12 @@ states.
 ## Admin console
 
 The console is **hidden from the public site**: no navigation, footer, sitemap or robots
-entry references it. Guests opening `/admin` or `/admin.html` are redirected to the sign-in
-page, authenticated members receive a bare `403`, and the console shell + its script are
-served `no-store` / `noindex` to administrators only. Administrators reach it by going
-straight to `/admin` (sign-in lives at the equally unlisted `/login`).
+entry references it. Guests opening `/admin` or `/admin.html` are redirected to `/admin/login`,
+authenticated members receive a bare `403`, and the console shell + its script are
+served `no-store` / `noindex` to administrators only. Administrators sign in at
+**`/admin/login`** (aliases: `/login`, `/login.html`) — the page is the shared sign-in form,
+ships no admin data or endpoint list, and an administrator who already has a session is taken
+straight to the console. Any other `/admin/<anything>` answers `404`.
 
 `/admin.html` (superadmin sees everything, `admin` role sees the operational views):
 
@@ -280,7 +283,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 93 tests, ~3s, no database or network required
+npm test          # 94 tests, ~3s, no database or network required
 ```
 
 | File | Covers |

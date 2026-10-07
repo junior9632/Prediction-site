@@ -437,15 +437,29 @@ test('security: the admin area is hidden from the public UI', () => {
 });
 
 test('security: typing the admin URL never grants a guest or member access', async () => {
-  // guest: bounced to the public sign-in page, never shown admin content
+  // guest: bounced to the console's own sign-in door, never shown admin content
   for (const url of ['/admin', '/admin.html']) {
     const res = await fetch(`${base}${url}`, { redirect: 'manual' });
     assert.equal(res.status, 302, `${url} redirects guests`);
-    assert.equal(res.headers.get('location'), '/login.html');
+    assert.equal(res.headers.get('location'), '/admin/login');
   }
 
-  // guest: unknown admin-looking URLs simply do not exist
-  for (const url of ['/admin/login', '/admin/admin', '/admin/anything']) {
+  // guest: the sign-in door exists (an operator typing the obvious admin
+  // address gets a form, not a 404) but ships no admin data, no console shell
+  // and no privileged endpoint — and is never cached or indexed
+  for (const url of ['/admin/login', '/admin/login.html']) {
+    const res = await get(url);
+    assert.equal(res.status, 200, `${url} serves the sign-in page`);
+    assert.match(res.text, /id="loginForm"/, 'the sign-in form is present');
+    assert.ok(!res.text.includes('/api/admin'), `${url} must not list admin endpoints`);
+    assert.ok(!res.text.includes('admin.js'), `${url} must not load the console script`);
+    assert.ok(!/admin console|admin-shell/i.test(res.text), `${url} must not ship the console shell`);
+    assert.match(res.headers.get('cache-control') || '', /no-store/, `${url} is never cached`);
+    assert.match(res.headers.get('x-robots-tag') || '', /noindex/, `${url} is never indexed`);
+  }
+
+  // guest: every other admin-looking URL simply does not exist
+  for (const url of ['/admin/admin', '/admin/anything', '/admin/overview', '/admin/users']) {
     const res = await get(url);
     assert.equal(res.status, 404, `${url} must not be revealed`);
   }
@@ -453,6 +467,15 @@ test('security: typing the admin URL never grants a guest or member access', asy
   // guest: the console script behaves like an unknown asset
   const script = await get('/js/admin.js');
   assert.equal(script.status, 404);
+
+  // an administrator who already has a session is taken straight to the console
+  // (raw fetch: the shared helper follows redirects, we want to see the 302)
+  const signedIn = await fetch(`${base}/admin/login`, {
+    headers: { Authorization: `Bearer ${bearer}` },
+    redirect: 'manual',
+  });
+  assert.equal(signedIn.status, 302, 'the sign-in door skips itself for a live admin session');
+  assert.equal(signedIn.headers.get('location'), '/admin.html');
 
   // normal authenticated member: a proper 403, no admin details
   const userToken = auth.signToken({ sub: 5, type: 'user', role: null });
@@ -557,7 +580,10 @@ test('security: the frontend is served with a strict CSP and no inline scripts',
   // bounced to the sign-in page, the script answers like an unknown file
   const adminShell = await fetch(`${base}/admin.html`, { redirect: 'manual' });
   assert.equal(adminShell.status, 302, 'the admin console redirects guests away');
-  assert.equal(adminShell.headers.get('location'), '/login.html');
+  assert.equal(adminShell.headers.get('location'), '/admin/login');
+  const signIn = await get('/admin/login');
+  assert.equal(signIn.status, 200, 'the sign-in door answers a guest with a form');
+  assert.ok(!/admin-shell/i.test(signIn.text));
   const adminScript = await get('/js/admin.js');
   assert.equal(adminScript.status, 404, 'the admin script is invisible to guests');
 });
