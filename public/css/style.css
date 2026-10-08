@@ -528,7 +528,9 @@ table.data tr:hover td { background: rgba(34, 211, 238, 0.03); }
 
 .bottom-nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  /* auto-fit so the remaining links share the bar evenly when the member-only
+     entries are hidden for a guest (hidden items leave no empty track) */
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
   background: rgba(5, 10, 18, 0.94); backdrop-filter: blur(14px);
   border-top: 1px solid var(--line);
   padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
@@ -544,6 +546,44 @@ table.data tr:hover td { background: rgba(34, 211, 238, 0.03); }
 
 .auth-wrap { display: grid; place-items: center; padding: 40px 16px 90px; }
 .auth-card { width: 100%; max-width: 420px; }
+
+/* --------------------- login required (protected page) ------------------ */
+
+.lock-wrap { display: grid; place-items: center; padding: 34px 16px 70px; min-height: 58vh; }
+.lock-panel {
+  width: 100%; max-width: 620px; text-align: center; padding: 34px 22px 28px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.lock-badge {
+  display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.4); background: var(--cyan-soft); color: var(--cyan);
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase;
+}
+.lock-badge svg { width: 13px; height: 13px; }
+.lock-eyebrow {
+  display: block; margin-top: 16px; color: var(--muted-2);
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase;
+}
+.lock-title { margin: 8px 0 0; font-size: clamp(26px, 6vw, 38px); font-weight: 900; letter-spacing: -0.02em; }
+.lock-message { margin: 12px auto 0; max-width: 46ch; color: var(--muted); font-size: 15px; }
+.lock-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 22px; }
+.lock-actions .btn { min-width: 168px; }
+.lock-list { list-style: none; margin: 26px auto 0; padding: 0; max-width: 44ch; text-align: left; display: grid; gap: 9px; }
+.lock-list li { display: flex; gap: 10px; align-items: flex-start; color: var(--muted); font-size: 13px; }
+.lock-tick {
+  flex: 0 0 auto; width: 17px; height: 17px; margin-top: 2px; border-radius: 50%;
+  background: var(--cyan-soft); border: 1px solid rgba(34, 211, 238, 0.45); position: relative;
+}
+.lock-tick::after {
+  content: ''; position: absolute; left: 5px; top: 4px; width: 5px; height: 8px;
+  border: solid var(--cyan); border-width: 0 2px 2px 0; transform: rotate(42deg);
+}
+.lock-foot { margin: 24px auto 0; max-width: 52ch; color: var(--muted-2); font-size: 12px; }
+@media (max-width: 599.98px) {
+  .lock-panel { padding: 26px 16px 22px; }
+  .lock-actions .btn { width: 100%; }
+}
 
 /* ------------------------------- footer ------------------------------- */
 
@@ -756,6 +796,18 @@ body.nav-open { overflow: hidden; }
 .pv-pill.warn .dot { background: var(--amber); }
 .pv-pill.bad { color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); background: var(--red-soft); }
 .pv-pill.bad .dot { background: var(--red); }
+.pv-pill.lock { color: var(--cyan); border-color: rgba(34, 211, 238, 0.4); background: var(--cyan-soft); }
+.pv-pill.lock .dot { background: var(--cyan); box-shadow: 0 0 9px rgba(34, 211, 238, 0.8); }
+
+/* Members-only placeholders on the public landing page: the shape of the
+   surface, never a single real figure behind it. */
+.pv-match-locked { opacity: 0.66; }
+.pv-match-locked:hover { transform: none; border-color: var(--line); box-shadow: none; }
+.lock-mask {
+  border-radius: 6px; color: transparent; user-select: none;
+  background: linear-gradient(100deg, var(--panel-2) 40%, var(--panel-3) 50%, var(--panel-2) 60%);
+  background-size: 200% 100%; animation: shimmer 1.8s infinite;
+}
 
 /* --------------------- public preview: the record -------------------- */
 
@@ -1022,4 +1074,6 @@ body.nav-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .reveal-ready .reveal { opacity: 1; transform: none; }
   .lp-badge-dot { animation: none !important; }
+  /* the members-only placeholders stay a plain bar instead of shimmering */
+  .lock-mask { animation: none !important; }
 }

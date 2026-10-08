@@ -21,35 +21,33 @@
           <span class="brand-tag">Football Analytics</span>
         </span>
       </a>
-      <nav class="main-nav lp-nav" aria-label="Primary">
+      <nav class="main-nav" aria-label="Primary">
         <a href="/">Home</a>
-        <a href="/predictions.html">Predictions</a>
-        <a href="/history.html">Results</a>
-        <a href="/analytics.html">Analytics</a>
-        <a href="/about.html" class="active">About</a>
+        <a href="/about.html">About</a>
+        <a class="hidden" href="/dashboard" data-member-only>Dashboard</a>
+        <a class="hidden" href="/predictions.html" data-member-only>Predictions</a>
+        <a class="hidden" href="/ticket.html" data-member-only>Today's Ticket</a>
+        <a class="hidden" href="/history.html" data-member-only>Ticket History</a>
+        <a class="hidden" href="/analytics.html" data-member-only>Analytics</a>
       </nav>
       <div class="header-actions">
         <a class="btn btn-ghost btn-sm lp-header-login" href="/login" data-auth-login>Login</a>
-        <a class="btn btn-primary btn-sm lp-header-cta" href="/account.html#register" data-auth-register>Get Started</a>
-        <span class="row hidden lp-account-chip" data-auth-signed>
-          <a class="small" href="/dashboard" data-auth-name>My dashboard</a>
-          <button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button>
-        </span>
-        <button class="lp-nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open navigation menu">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-        </button>
+        <a class="btn btn-primary btn-sm lp-header-cta" href="/account.html#register" data-auth-register>Create Account</a>
+        <span class="row hidden" data-auth-signed><a class="small muted" href="/account.html" data-auth-name></a><button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button></span>
       </div>
     </div>
     <div class="lp-mobile-menu" id="mobileMenu" hidden>
-      <nav class="container" aria-label="Mobile">
+            <nav class="container" aria-label="Mobile">
         <a href="/">Home</a>
-        <a href="/predictions.html">Predictions</a>
-        <a href="/history.html">Results</a>
-        <a href="/analytics.html">Analytics</a>
         <a href="/about.html" class="active">About</a>
+        <a class="hidden" href="/dashboard" data-member-only>Dashboard</a>
+        <a class="hidden" href="/predictions.html" data-member-only>Predictions</a>
+        <a class="hidden" href="/ticket.html" data-member-only>Today's Ticket</a>
+        <a class="hidden" href="/history.html" data-member-only>Ticket History</a>
+        <a class="hidden" href="/analytics.html" data-member-only>Analytics</a>
         <div class="lp-mobile-actions">
           <a class="btn btn-ghost" href="/login" data-auth-login>Login</a>
-          <a class="btn btn-primary" href="/account.html#register" data-auth-register>Get Started</a>
+          <a class="btn btn-primary" href="/account.html#register" data-auth-register>Create Account</a>
           <a class="btn btn-ghost hidden" href="/dashboard" data-auth-name-mobile>My dashboard</a>
           <button class="btn btn-ghost hidden" type="button" data-auth-logout-mobile>Logout</button>
         </div>
@@ -154,13 +152,16 @@
         <p class="footer-note lp-footer-tagline">Data-driven football predictions focused on Over 1.5 Goals.</p>
       </div>
       <div>
-        <div class="footer-links lp-footer-links">
+                <div class="footer-links lp-footer-links">
           <a href="/">Home</a>
-          <a href="/predictions.html">Predictions</a>
-          <a href="/history.html">Results</a>
-          <a href="/analytics.html">Analytics</a>
           <a href="/about.html">About</a>
-          <a href="/login">Login</a>
+          <a class="hidden" href="/dashboard" data-member-only>Dashboard</a>
+          <a class="hidden" href="/predictions.html" data-member-only>Predictions</a>
+          <a class="hidden" href="/ticket.html" data-member-only>Today's Ticket</a>
+          <a class="hidden" href="/history.html" data-member-only>Ticket History</a>
+          <a class="hidden" href="/analytics.html" data-member-only>Analytics</a>
+          <a href="/login" data-auth-login>Login</a>
+          <a href="/account.html#register" data-auth-register>Create Account</a>
           <a href="/legal.html#terms">Terms</a>
           <a href="/legal.html#privacy">Privacy</a>
         </div>

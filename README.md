@@ -98,19 +98,41 @@ It exists so the interface can be reviewed before deployment — production alwa
 
 ---
 
-## Public page vs dashboard
+## Access model — football data is login only
 
-The homepage is marketing with a **public preview**: it reads `/api/ticket/today`, `/api/analytics`
-and `/api/predictions` — the same three endpoints an anonymous visitor can already read on
-`/ticket`, `/analytics` and `/predictions` — and renders today's published selection, the published
-record and today's analysed fixtures.
+| Tier | Routes |
+| --- | --- |
+| **Public** | `/`, `/about`, `/legal`, `/login`, `/account`, `GET /api/health`, `GET /api/meta` |
+| **Member** | `/predictions`, `/ticket`, `/today-ticket`, `/history`, `/analytics`, `/dashboard` and every `/api/predictions`, `/api/ticket`, `/api/tickets`, `/api/analytics`, `/api/fixtures`, `/api/odds`, `/api/dashboard` route |
+| **Admin** | `/admin` and every `/api/admin` route |
 
-Everything account-scoped lives at `/dashboard`, which is served `no-store` + `noindex` and
-redirects guests to `/account.html`, and its API (`/api/dashboard/activity`) answers a guest with
-**401 and no payload** (`requireAuth` → `requireActiveAccount`, scoped to the session's own
-account). `tests/homepage-render.test.js` pins both halves: no dashboard endpoint may appear in the
-homepage's markup or script, no private request may be made at runtime, and every endpoint the
-homepage does read must answer a guest with `200`.
+The rule is enforced **server side**, before any controller, query or template runs — never by
+CSS, never by hiding a navigation link:
+
+| Principal | Prediction / ticket / analytics **API** | Prediction / ticket / history / analytics **page** |
+| --- | --- | --- |
+| Guest | `401 UNAUTHORIZED`, no `data` key, `no-store` | `401` + the "login required" page |
+| Expired / forged / `alg=none` token | `401 TOKEN_EXPIRED` / `TOKEN_INVALID` | `401` + the "login required" page |
+| Deleted account | `401 ACCOUNT_MISSING` | `401` + the "login required" page |
+| Disabled / locked account | `403 ACCOUNT_DISABLED` / `ACCOUNT_LOCKED` | `403` + the door, with the reason |
+| Member / admin | `200` | page served `no-store`, `noindex` |
+
+* The same guard the member dashboard already used — `requireAuth` → `requireActiveAccount`
+  (exported as `memberGuard`) — is mounted on every prediction router, so a deactivated account
+  loses access even while its JWT is still cryptographically valid.
+* The **authenticated user is always resolved from the session** and re-read from the database. A
+  `userId` in the query string, a `role` parameter or an `X-User-Id` header changes nothing.
+* The **homepage is marketing only**: it fetches nothing but the shared session check
+  (`GET /api/auth/me`), shows a locked preview behind **Unlock AI Football Predictions**, and
+  names no prediction endpoint. No team, price, confidence, selection or statistic is rendered.
+* Member-only navigation (`Dashboard · Predictions · Today's Ticket · Ticket History · Analytics`)
+  ships `hidden` and is revealed only after `/api/auth/me` confirms a session.
+* `tests/predictions-auth.test.js` pins the whole matrix; `tests/homepage-render.test.js` pins the
+  public side, and `node scripts/verify-access.js <url>` proves it against a running site.
+
+The dashboard keeps its existing behaviour: served `no-store` + `noindex`, guests redirected to
+`/account.html`, and `/api/dashboard/activity` answering a guest with **401 and no payload**,
+scoped to the session's own account.
 
 ## Project layout
 
@@ -119,13 +141,13 @@ server.js                     startup entry point (cPanel "Application startup f
 package.json                  scripts + the 9 runtime dependencies
 .env.example                  every environment variable, documented
 public/                       the entire frontend (static, no build step)
-  index.html                  public landing page: hero + public preview (today's ticket,
-                              published record, today's matches), trust strip, process, CTA
+  index.html                  public landing page: hero + locked preview, how the AI works,
+                              trust strip, process, CTA — no prediction data
   about.html                  what GoalPredict is: one market, the rules, no guarantees
-  ticket.html                 full ticket page (also accepts ?date=YYYY-MM-DD)
-  history.html                ticket history with result filters + pagination
-  analytics.html              performance analytics (win rate, streaks, monthly)
-  predictions.html            every analysed fixture with its evidence
+  ticket.html                 full ticket page (member only, also accepts ?date=YYYY-MM-DD)
+  history.html                ticket history with result filters + pagination (member only)
+  analytics.html              performance analytics (win rate, streaks, monthly) (member only)
+  predictions.html            every analysed fixture with its evidence (member only)
   login.html                  console sign-in door, unlisted: served at /admin/login and /login.html
   account.html                member sign-in / register / profile / change password
   dashboard.html              member workspace: profile, status, Dashboard Activity

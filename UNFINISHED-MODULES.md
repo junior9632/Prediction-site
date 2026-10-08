@@ -334,3 +334,58 @@ The boundary is enforced in three layers, none of them cosmetic:
 Live verification: guest `/api/dashboard/activity` → `401` with no data; guest `/dashboard` and
 `/dashboard.html` → `302 /account.html`; member session → `200`, `scope: self`, own account only;
 guest `/admin` → `302 /admin/login`; admin console unchanged; `verify-access` **35/35**.
+
+---
+
+### Module 9 — Football predictions become LOGIN ONLY — ✅ COMPLETE
+
+Module 8 deliberately published today's selection, the record and the analysed fixtures on the
+landing page "because a guest could already read them on `/ticket`, `/analytics` and
+`/predictions`". Module 9 inverts that premise: **the football surfaces themselves are now member
+only**, so the landing page has nothing left to mirror and becomes pure marketing.
+
+| Surface | Before | After |
+| --- | --- | --- |
+| `/api/predictions`, `/api/predictions/:id` | public | **member** — 401 + empty body for a guest |
+| `/api/ticket/today`, `/api/ticket/:date`, `/api/tickets/*` | public | **member** |
+| `/api/analytics` | public | **member** |
+| `/api/fixtures`, `/api/odds` | public | **member** (they carry the verified Over 1.5 price and the fixture's confidence) |
+| `/predictions`, `/ticket`, `/today-ticket`, `/history`, `/analytics` (+ `.html`) | public | **member** — 401 + the "login required" page, `no-store`, `noindex` |
+| `/`, `/about`, `/legal`, `/login`, `/account`, `/api/health`, `/api/meta` | public | unchanged |
+
+| Piece | File |
+| --- | --- |
+| `memberGuard = [noStore, requireAuth, requireActiveAccount]` — the dashboard's own guard, reused | `server/middleware/account.js` |
+| `router.use(memberGuard)` on every prediction router (both `/api/ticket` and `/api/tickets` aliases) | `server/routes/{predictions,tickets,analytics,fixtures,odds}.js` |
+| `memberAreaGuard(section)` + the `/today-ticket` alias, registered **before** `express.static` so the `.html` aliases are guarded too | `server/app.js` |
+| Server-rendered refusal (outside `public/`, so it is never a fetchable asset) | `server/views/login-required.html` |
+| Lock-preview styles | `public/css/style.css` (`.lock-*`, `.lock-mask`) |
+| Landing page: locked preview, member-only nav, unlock CTAs, no data fetch | `public/index.html`, `public/js/app.js` |
+| Member-only navigation revealed only after `/api/auth/me`; a 401 walks the browser to `/login?next=…` | `public/js/api.js` |
+| `?next=` honoured on sign-in and registration (same-site paths only) | `public/js/account.js` |
+| Nav / footer / mobile drawer on every public page | `index.html`, `about.html`, `legal.html`, `account.html`, `login.html`, `predictions.html`, `ticket.html`, `history.html`, `analytics.html`, `dashboard.html` |
+| Acceptance matrix (19 tests) | `tests/predictions-auth.test.js` |
+| Public-side contract rewritten for the locked homepage (10 tests) | `tests/homepage-render.test.js` |
+| Member reads, sitemap and primary-nav assertions updated | `tests/http.test.js` |
+| Deployed-site matrix extended (guest APIs, guest pages, homepage, member APIs/pages, scope) | `scripts/verify-access.js` |
+| Preview harness no longer serves the guarded pages, so the real guards run there too | `tools/uipreview.js` |
+| Docs | `README.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/DEPLOYMENT-CPANEL.md` |
+
+Four layers, none of them cosmetic:
+
+1. **Server** — the guard runs before any controller, query or template. The API answers `401`
+   `{"ok":false,…}` with no `data` key and `Cache-Control: no-store`; a page answers `401` (or
+   `403` for a disabled/locked account) with the login-required view, `no-store` and
+   `X-Robots-Tag: noindex`. The account is **re-read from the database** on every request, so a
+   deleted, deactivated or locked member is refused even while its JWT is still valid.
+2. **Session-derived identity** — `requireAuth` verifies the token and `requireActiveAccount`
+   resolves the principal. No handler reads a `userId`, `user_id`, `account` or `role` parameter
+   and no `X-User-Id` header is consulted, so a forged id cannot widen the payload.
+3. **Static contract** — the landing page's markup and script may not name any prediction
+   endpoint, and every member-only navigation entry must ship `hidden`.
+4. **Runtime contract** — the suite boots the real `api.js` + `app.js` in a DOM harness with a
+   recording `fetch`: the recorded requests must be exactly `/api/auth/me`.
+
+Live verification against the preview harness: `verify-access` **315/315** (guest 401 on 9 APIs and
+9 pages with zero data leakage; member 200 on the same surfaces; admin console unchanged;
+`npm test` **154/154**).

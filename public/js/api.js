@@ -39,6 +39,11 @@ const App = (() => {
       }
 
       if (!res.ok) {
+        // 401 on a football endpoint means the session is gone: send the
+        // visitor to the member sign-in door instead of leaving an empty
+        // page behind. The server has already refused the data — this is only
+        // so the browser does not sit on a blank screen.
+        if (res.status === 401 && !options.anonymous && !path.startsWith('/auth/')) session.onUnauthorized();
         const err = new Error((payload && payload.error && payload.error.message) || `Request failed (${res.status})`);
         err.status = res.status;
         err.code = payload && payload.error ? payload.error.code : 'HTTP_' + res.status;
@@ -300,9 +305,10 @@ const App = (() => {
   /* ------------------------- session helpers -------------------------- */
   const session = {
     cache: null,
+    unauthorizedHandled: false,
     async me() {
       try {
-        const data = await API.get('/auth/me');
+        const data = await API.get('/auth/me', { anonymous: true });
         session.cache = data;
         return data;
       } catch (_) {
@@ -312,13 +318,32 @@ const App = (() => {
     },
     reset() {
       session.cache = null;
+      session.unauthorizedHandled = false;
+    },
+    /**
+     * A protected endpoint answered 401 — the session is missing or expired.
+     * The server already refused the payload; this only walks the browser to
+     * the sign-in door, remembering the page so login can come straight back.
+     */
+    onUnauthorized() {
+      if (session.unauthorizedHandled) return;
+      session.unauthorizedHandled = true;
+      const here = `${window.location.pathname}${window.location.search}`;
+      window.location.replace(`/login?next=${encodeURIComponent(here)}`);
     },
     /**
      * Wire the shared header session controls on every page.
      *
      * A signed-out visitor sees "Login" (data-auth-login) and, where a page
-     * offers one, "Get Started" (data-auth-register). A signed-in visitor sees
-     * the account chip (data-auth-signed) with their dashboard link instead.
+     * offers one, "Create Account" (data-auth-register). A signed-in visitor
+     * sees the account chip (data-auth-signed) with their dashboard link.
+     *
+     * Every member-only navigation entry carries `data-member-only` and is
+     * hidden in the markup: it is revealed here only once the server has
+     * confirmed a session (GET /api/auth/me). Hiding the link is the polite
+     * half of the rule — the enforcement is server side, where a guest asking
+     * for /predictions is answered with 401.
+     *
      * Pages opt in per element; anything absent is simply skipped.
      */
     bindHeader() {
@@ -327,6 +352,7 @@ const App = (() => {
       const signedBlocks = document.querySelectorAll('[data-auth-signed]');
       const nameNodes = document.querySelectorAll('[data-auth-name], [data-auth-name-mobile]');
       const logoutBtns = document.querySelectorAll('[data-auth-logout], [data-auth-logout-mobile]');
+      const memberOnly = document.querySelectorAll('[data-member-only]');
 
       const paint = () => {
         const me = session.cache;
@@ -334,6 +360,7 @@ const App = (() => {
         loginBtns.forEach((node) => node.classList.toggle('hidden', isAuthed));
         registerBtns.forEach((node) => node.classList.toggle('hidden', isAuthed));
         signedBlocks.forEach((node) => node.classList.toggle('hidden', !isAuthed));
+        memberOnly.forEach((node) => node.classList.toggle('hidden', !isAuthed));
         nameNodes.forEach((node) => {
           node.classList.toggle('hidden', !me);
           if (!me) return;

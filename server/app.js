@@ -4,8 +4,25 @@
  * Express application factory.
  *
  * Browser -> Express -> API-Football. The API key never leaves this process.
+ *
+ * ACCESS MODEL (server enforced, never a CSS or JavaScript rule)
+ *
+ *   public  : / , /about , /legal , /login , /account , /api/health , /api/meta
+ *   member  : /predictions , /ticket , /today-ticket , /history , /analytics ,
+ *             /dashboard and every /api/{predictions,ticket,tickets,analytics,
+ *             fixtures,odds} route
+ *   admin   : /admin (+ /api/admin)
+ *
+ * A member route is refused before any controller, query or template runs:
+ * an API path answers 401 Unauthorized with an empty body, a page path
+ * answers 401 with the "login required" page. Football data — matches,
+ * predictions, odds, confidence, AI selections, tickets, history and
+ * analytics — therefore never leaves the server for an anonymous caller, and
+ * the authenticated principal is always taken from the session token (never
+ * from a request parameter).
  */
 
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const helmet = require('helmet');
@@ -19,6 +36,7 @@ const { AppError } = require('./utils/errors');
 const { requestLogger } = require('./middleware/requestLogger');
 const { optionalAuth, requireAuth, readToken, verifyToken } = require('./middleware/auth');
 const { requireActiveAdmin } = require('./middleware/adminAuth');
+const { requireActiveAccount } = require('./middleware/account');
 const { apiLimiter } = require('./middleware/rateLimit');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
@@ -34,6 +52,120 @@ const dashboardRoutes = require('./routes/dashboard');
 
 const log = logger.child('app');
 const PUBLIC_DIR = path.join(config.rootDir, 'public');
+// Served from outside public/ on purpose: it is a server-rendered refusal, not
+// a static asset anyone may fetch (and it must never be cached or indexed).
+const LOGIN_REQUIRED_VIEW = path.join(config.rootDir, 'server', 'views', 'login-required.html');
+
+/**
+ * Copy for the "login required" page, one entry per protected surface. The
+ * wording matches the product voice: it states what is behind the door
+ * without revealing a single selection, price or percentage.
+ */
+const PREDICTIONS_SECTION = {
+  eyebrow: 'Football Predictions · Members only',
+  title: 'Football Predictions',
+  message: 'Login or create an account to access GoalPredict AI football predictions.',
+};
+const TICKET_SECTION = {
+  eyebrow: "Today's Ticket · Members only",
+  title: "Today's AI Ticket",
+  message: "Login to access today's verified football selections.",
+};
+const HISTORY_SECTION = {
+  eyebrow: 'Ticket History · Members only',
+  title: 'Ticket History',
+  message: 'Login to access the complete, settled GoalPredict ticket record.',
+};
+const ANALYTICS_SECTION = {
+  eyebrow: 'Analytics · Members only',
+  title: 'Prediction Analytics',
+  message: 'Login to access GoalPredict performance analytics and AI model statistics.',
+};
+
+/** Only same-site, absolute paths may be carried into a `?next=` parameter. */
+function safeNextPath(value) {
+  const raw = String(value || '');
+  if (!raw.startsWith('/') || raw.startsWith('//')) return '/predictions';
+  return raw.slice(0, 200);
+}
+
+function escapeHtml(value) {
+  return String(value === null || value === undefined ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+let loginRequiredTemplate = null;
+function loginRequiredTemplateHtml() {
+  if (loginRequiredTemplate === null) loginRequiredTemplate = fs.readFileSync(LOGIN_REQUIRED_VIEW, 'utf8');
+  return loginRequiredTemplate;
+}
+
+/**
+ * Render the "login required" page.
+ *
+ * The protected URL itself answers with 401 Unauthorized (403 when the
+ * session exists but the account is disabled or locked) and with this page as
+ * the body — so a guest gets a professional, on-brand door rather than the
+ * prediction data, and no cache is ever allowed to replay the answer.
+ */
+function sendLoginRequired(res, section, { status = 401, next = '/predictions', notice = '' } = {}) {
+  const html = loginRequiredTemplateHtml()
+    .replace(/\{\{EYEBROW\}\}/g, escapeHtml(section.eyebrow))
+    .replace(/\{\{TITLE\}\}/g, escapeHtml(section.title))
+    .replace(/\{\{MESSAGE\}\}/g, escapeHtml(section.message))
+    .replace(/\{\{NEXT\}\}/g, encodeURIComponent(safeNextPath(next)))
+    .replace(/\{\{YEAR\}\}/g, String(new Date().getFullYear()))
+    .replace(
+      '{{NOTICE}}',
+      notice
+        ? `<div class="alert warn" style="max-width:46ch;margin:20px auto 0;text-align:left;">${escapeHtml(notice)}</div>`
+        : ''
+    );
+
+  res
+    .status(status)
+    .set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      Pragma: 'no-cache',
+      'X-Robots-Tag': 'noindex, nofollow',
+    })
+    .type('html')
+    .send(html);
+}
+
+/**
+ * Server side guard for a member-only page: a verified session AND an account
+ * that still exists and is active. The account is re-read from the database by
+ * `requireActiveAccount`, so a deleted, deactivated or locked member is
+ * refused even while their token is still cryptographically valid.
+ */
+function memberAreaGuard(section) {
+  return (req, res, next) =>
+    requireAuth(req, res, (authErr) => {
+      if (authErr) {
+        return sendLoginRequired(res, section, {
+          status: authErr.status === 401 ? 401 : authErr.status || 401,
+          next: req.originalUrl,
+        });
+      }
+      return requireActiveAccount(req, res, (accountErr) => {
+        if (!accountErr) return next();
+        const status = accountErr.status === 401 ? 401 : 403;
+        return sendLoginRequired(res, section, {
+          status,
+          next: req.originalUrl,
+          notice:
+            status === 403
+              ? 'This account is currently disabled or temporarily locked. Contact support or sign in with a different account.'
+              : '',
+        });
+      });
+    });
+}
 
 function corsOptions() {
   const origins = config.security.corsOrigins;
@@ -136,6 +268,31 @@ function createApp() {
   app.get('/dashboard', memberPageGuard, memberDashboardPage);
   app.get('/dashboard.html', memberPageGuard, memberDashboardPage);
 
+  /* --------------------- member-only football pages ------------------ */
+  // Every football surface is login only. The guard below is the server side
+  // half of that rule — the navigation link is hidden for guests, but the
+  // page (and its .html alias) is refused here as well, so typing the URL
+  // into a fresh incognito window answers with a 401 "login required" page
+  // instead of predictions, odds, confidence or ticket selections.
+  //
+  // It runs BEFORE express.static, which is what makes the .html aliases
+  // safe too: /predictions.html never reaches the static handler for a guest.
+  const MEMBER_PAGES = [
+    { routes: ['/predictions', '/predictions.html'], file: 'predictions.html', section: PREDICTIONS_SECTION },
+    { routes: ['/ticket', '/ticket.html', '/today-ticket', '/today-ticket.html'], file: 'ticket.html', section: TICKET_SECTION },
+    { routes: ['/history', '/history.html'], file: 'history.html', section: HISTORY_SECTION },
+    { routes: ['/analytics', '/analytics.html'], file: 'analytics.html', section: ANALYTICS_SECTION },
+  ];
+
+  for (const page of MEMBER_PAGES) {
+    const guard = memberAreaGuard(page.section);
+    const serve = (_req, res) =>
+      res.sendFile(path.join(PUBLIC_DIR, page.file), {
+        headers: { 'Cache-Control': 'no-store, no-cache', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
+      });
+    for (const route of page.routes) app.get(route, guard, serve);
+  }
+
   /* ------------------------- hidden admin area ---------------------- */
   // The admin console is deliberately undiscoverable: no public page, nav,
   // footer, sitemap or robots entry references it. Server side we never rely
@@ -226,11 +383,12 @@ function createApp() {
     })
   );
 
-  // Friendly URLs (no .html needed). /login is the MEMBER sign-in — the same
-  // page as /account, register form included — so a visitor who types it lands
-  // on something useful. The console's own unlisted door is /admin/login (and
-  // the legacy /login.html that the deployment guide still prints).
-  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'about', 'account'];
+  // Friendly URLs (no .html needed). Only genuinely public pages live here —
+  // /login is the MEMBER sign-in (the same page as /account, register form
+  // included) so a visitor who types it lands on something useful. Every
+  // football page (/predictions, /ticket, /today-ticket, /history,
+  // /analytics) is registered above behind `memberAreaGuard` instead.
+  const pages = ['legal', 'about', 'account'];
   for (const page of pages) {
     app.get(`/${page}`, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, `${page}.html`)));
   }
@@ -238,10 +396,10 @@ function createApp() {
   app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
 
   // The robots file must never advertise private areas (/admin, the sign-in
-  // pages): a Disallow entry would point crawlers straight at them. The
-  // private pages themselves answer with redirects/403s for anyone who is
-  // not an administrator and carry noindex headers, so nothing leaks even if
-  // a crawler does guess the URL.
+  // pages, the member-only football pages): a Disallow entry would point
+  // crawlers straight at them. Every protected page answers with a 401/403
+  // login-required page and a noindex header, so nothing leaks even if a
+  // crawler does guess the URL.
   app.get('/robots.txt', (_req, res) => {
     res
       .type('text/plain')
@@ -250,9 +408,10 @@ function createApp() {
       );
   });
 
-  // Public, indexable pages only — the sign-in pages are deliberately excluded.
+  // Public, indexable pages only — the sign-in pages and every member-only
+  // football page are deliberately excluded.
   app.get('/sitemap.xml', (_req, res) => {
-    const publicPages = ['', 'ticket', 'history', 'analytics', 'predictions', 'about', 'legal'];
+    const publicPages = ['', 'about', 'legal'];
     const today = new Date().toISOString().slice(0, 10);
     const urls = publicPages
       .map(

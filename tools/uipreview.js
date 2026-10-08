@@ -20,7 +20,13 @@
  * Usage:  node tools/uipreview.js            (http://localhost:3000)
  *         PORT=8080 node tools/uipreview.js
  * Admin:  username `admin`   password `preview123`
- * Member: username `member`  password `preview123`  (open /dashboard)
+ * Member: username `member`  password `preview123`  (open /predictions)
+ *
+ * Football predictions, today's ticket, ticket history and analytics are
+ * MEMBER ONLY: as a guest every one of those URLs answers 401 with the
+ * "login required" page, and the API behind them answers 401 with an empty
+ * body. Sign in as `member` to see the same URLs open. The preview harness
+ * deliberately does not serve those pages itself, so the real guards run.
  */
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'development';
@@ -501,9 +507,14 @@ async function main() {
   wrapper.get('/', (_req, res) => sendHtml(res, 'index.html'));
   // The protected pages must never bypass the app's guards, so they are NOT
   // served by the banner injector — they fall through to the real app, which
-  // enforces the same hidden-admin rules as production.
+  // enforces the same member-only rules as production. That is exactly what
+  // the preview is for: a guest opening /predictions.html here gets the same
+  // 401 login-required page the deployed site serves.
+  const GUARDED_PAGES = new Set([
+    'admin.html', 'dashboard.html', 'predictions.html', 'ticket.html', 'history.html', 'analytics.html',
+  ]);
   wrapper.get(/^\/[A-Za-z0-9_-]+\.html$/, (req, res, next) => {
-    if (req.path === '/admin.html' || req.path === '/dashboard.html') return next();
+    if (GUARDED_PAGES.has(req.path.slice(1))) return next();
     return sendHtml(res, req.path.slice(1));
   });
   wrapper.use(app);

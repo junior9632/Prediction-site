@@ -216,8 +216,23 @@ Notes:
    either a published ticket (total odds inside 2.00–4.00) or **NO QUALIFYING TICKET** with its
    diagnostics. Both are correct outcomes; the second one simply means the day's verified data
    did not support a ticket.
-6. Confirm the public pages (`/`, `/ticket.html`, `/history.html`, `/analytics.html`,
-   `/predictions.html`) show the same server-computed values.
+6. Confirm the access boundary. Signed out, every football URL must answer `401` with the
+   "login required" page and every football API must answer `401` with an empty body:
+
+   ```bash
+   for u in /predictions /ticket /today-ticket /history /analytics \
+            /api/predictions /api/ticket/today /api/tickets/history /api/analytics \
+            /api/fixtures /api/odds; do
+     printf '%-32s %s\n' "$u" "$(curl -s -o /dev/null -w '%{http_code}' https://yourdomain.com$u)"
+   done
+   ```
+
+   Every line must read `401`. Then sign in and confirm the same URLs answer `200`.
+   `node scripts/verify-access.js https://yourdomain.com --member=user:pw` automates the whole
+   matrix (guest + member + admin) and exits non-zero on any failure, so it can gate a deploy
+   or run from cron.
+
+   `/`, `/about`, `/legal`, `/login`, `/account`, `/api/health` and `/api/meta` stay public.
 
 ---
 

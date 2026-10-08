@@ -4,6 +4,17 @@
   const { API } = App;
   const $ = (s) => document.querySelector(s);
 
+  /**
+   * Where to go once the session exists. A `?next=` parameter is honoured only
+   * when it is a same-site absolute path, so it can never be turned into an
+   * off-site redirect; anything else falls back to the member dashboard.
+   */
+  function nextTarget() {
+    const raw = new URLSearchParams(window.location.search).get('next');
+    if (raw && raw.startsWith('/') && !raw.startsWith('//')) return raw;
+    return '/dashboard';
+  }
+
   const show = (id) => $(id).classList.remove('hidden');
   const hide = (id) => $(id).classList.add('hidden');
 
@@ -65,6 +76,11 @@
   }
 
   async function route() {
+    // The shared header helper swaps Login / Create Account for the account
+    // chip and reveals the member-only navigation entries. It loads no
+    // prediction data — those surfaces are refused server side without a
+    // session, so there is nothing for this page to paint either.
+    App.session.bindHeader();
     hide('#guestView');
     hide('#memberView');
     hide('#staffView');
@@ -81,7 +97,7 @@
       busy('#loginBtn', true);
       try {
         await API.post('/auth/login', { login: $('#loginId').value.trim(), password: $('#loginPassword').value });
-        window.location.reload();
+        window.location.href = nextTarget();
       } catch (err) {
         flash('#loginAlert', '#loginAlertText', 'error', err.message || 'Sign in failed');
         busy('#loginBtn', false, 'Sign in');
@@ -99,7 +115,7 @@
         await API.post('/auth/register', { username, email: $('#regEmail').value.trim(), password });
         // sign straight in with the new credentials
         await API.post('/auth/login', { login: username, password });
-        window.location.reload();
+        window.location.href = nextTarget();
       } catch (err) {
         flash('#registerAlert', '#registerAlertText', 'error', err.message || 'Registration failed');
         busy('#registerBtn', false, 'Create account');

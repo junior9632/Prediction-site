@@ -17,17 +17,17 @@
     </a>
     <nav class="main-nav" aria-label="Primary">
       <a href="/">Home</a>
-      <a href="/ticket.html">Today's Ticket</a>
-      <a href="/history.html">Ticket History</a>
-      <a href="/analytics.html">Analytics</a>
-      <a href="/predictions.html">Predictions</a>
+      <a href="/about.html">About</a>
+      <a class="hidden" href="/dashboard" data-member-only>Dashboard</a>
+      <a class="hidden" href="/predictions.html" data-member-only>Predictions</a>
+      <a class="hidden" href="/ticket.html" data-member-only>Today's Ticket</a>
+      <a class="hidden" href="/history.html" data-member-only>Ticket History</a>
+      <a class="hidden" href="/analytics.html" data-member-only>Analytics</a>
     </nav>
     <div class="header-actions">
-      <a class="btn btn-ghost btn-sm" href="/account.html" data-auth-login>Login</a>
-      <span class="row hidden" data-auth-signed>
-        <a class="small muted" href="/account.html" data-auth-name></a>
-        <button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button>
-      </span>
+      <a class="btn btn-ghost btn-sm" href="/login" data-auth-login>Login</a>
+      <a class="btn btn-primary btn-sm" href="/account.html#register" data-auth-register>Create Account</a>
+      <span class="row hidden" data-auth-signed><a class="small muted" href="/account.html" data-auth-name></a><button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button></span>
     </div>
   </div>
 </header>
@@ -38,7 +38,8 @@
   <section class="section hidden" id="guestView">
     <h1 class="section-title" style="margin-top:18px;">My Account</h1>
     <p class="small muted" style="margin-bottom:18px;">
-      A free account is optional — every prediction on this site is readable without one.
+      GoalPredict football predictions, today's AI ticket, ticket history and performance
+      analytics are for signed-in members. Create a free account or sign in to open them.
     </p>
 
     <div class="grid-2" style="display:grid; gap:14px; grid-template-columns:1fr; max-width:900px;">
@@ -66,6 +67,7 @@
           </form>
           <p class="tiny muted" style="margin:12px 0 0;">
             18+ only. We store your username, e-mail and a bcrypt password hash — nothing else.
+            Members unlock football predictions, today's AI ticket, ticket history and analytics.
             See <a href="/legal.html">Legal &amp; Responsible Play</a>.
           </p>
         </div>
