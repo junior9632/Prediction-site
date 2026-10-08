@@ -28,7 +28,7 @@ those fields are dropped and reported back in `ignoredClientFields`.
 
 | Page | Route | Notes |
 | --- | --- | --- |
-| Landing page | `/` (`/index.html`) | Static marketing page: hero, trust strip, process, CTA. Renders **no** ticket, odds or account data; the only request it can make is the shared session check that chooses Login vs the account chip |
+| Landing page | `/` (`/index.html`) | Marketing + **public preview**: hero, today's published selection, the published record, today's analysed fixtures, trust strip, process, CTA. It reads only `/api/ticket/today`, `/api/analytics` and `/api/predictions` — endpoints an anonymous visitor can read anyway. It calls **no** dashboard or console endpoint, and renders no account-scoped data |
 | About | `/about` (`/about.html`) | Product story, the single market, the rules, the no-guarantee position |
 | Predictions | `/predictions` | Every analysed fixture with its evidence |
 | Today's ticket | `/ticket` | The published ticket for a date (`?date=YYYY-MM-DD`) |
@@ -236,7 +236,8 @@ it as `Login` and link `/account.html#register` as `Get Started`.
 
 ### Member dashboard (`/api/dashboard/*`)
 
-Session-scoped data that belongs to the signed-in account only. `requireAuth` +
+Session-scoped data that belongs to the signed-in account only. Nothing here is ever rendered on
+a public page: the homepage shows public previews, the account area shows the session's own data. `requireAuth` +
 `requireActiveAccount` run on **every** route: a guest receives `401 UNAUTHORIZED` with no payload,
 and an account that is deleted, deactivated or locked is refused with `401 ACCOUNT_MISSING`,
 `403 ACCOUNT_DISABLED` or `403 ACCOUNT_LOCKED` even while its token is still valid. Responses are

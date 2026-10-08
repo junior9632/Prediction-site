@@ -416,14 +416,14 @@ test('security: the admin area is hidden from the public UI', () => {
     assert.ok(!/admin login/i.test(html), `${entry} must not advertise an admin login`);
   }
 
-  // The public navigation is the marketing nav — Home, Predictions, Results,
-  // Analytics, About — plus Login / Get Started in the header. No account or
-  // operator surface is ever named here.
+  // The public navigation is the marketing nav — Home, Today's Predictions,
+  // Matches, Analytics — plus Login / Create Account in the header. No account
+  // or operator surface is ever named here.
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   const nav = indexHtml.match(/<nav class="main-nav lp-nav"[\s\S]*?<\/nav>/)[0];
   assert.ok(!/admin/i.test(nav), 'no admin entry in the primary navigation');
   assert.ok(!/dashboard/i.test(nav), 'no dashboard entry in the primary navigation');
-  for (const label of ['Home', 'Predictions', 'Results', 'Analytics', 'About']) {
+  for (const label of ['Home', "Today's Predictions", 'Matches', 'Analytics']) {
     assert.ok(nav.includes(`>${label}<`), `the nav keeps ${label}`);
   }
 

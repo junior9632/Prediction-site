@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 131 tests, no test dependencies |
+| Tests | `node:test` (built in) — 133 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -98,6 +98,20 @@ It exists so the interface can be reviewed before deployment — production alwa
 
 ---
 
+## Public page vs dashboard
+
+The homepage is marketing with a **public preview**: it reads `/api/ticket/today`, `/api/analytics`
+and `/api/predictions` — the same three endpoints an anonymous visitor can already read on
+`/ticket`, `/analytics` and `/predictions` — and renders today's published selection, the published
+record and today's analysed fixtures.
+
+Everything account-scoped lives at `/dashboard`, which is served `no-store` + `noindex` and
+redirects guests to `/account.html`, and its API (`/api/dashboard/activity`) answers a guest with
+**401 and no payload** (`requireAuth` → `requireActiveAccount`, scoped to the session's own
+account). `tests/homepage-render.test.js` pins both halves: no dashboard endpoint may appear in the
+homepage's markup or script, no private request may be made at runtime, and every endpoint the
+homepage does read must answer a guest with `200`.
+
 ## Project layout
 
 ```
@@ -105,7 +119,8 @@ server.js                     startup entry point (cPanel "Application startup f
 package.json                  scripts + the 9 runtime dependencies
 .env.example                  every environment variable, documented
 public/                       the entire frontend (static, no build step)
-  index.html                  public landing page: hero, trust strip, process, CTA (static)
+  index.html                  public landing page: hero + public preview (today's ticket,
+                              published record, today's matches), trust strip, process, CTA
   about.html                  what GoalPredict is: one market, the rules, no guarantees
   ticket.html                 full ticket page (also accepts ?date=YYYY-MM-DD)
   history.html                ticket history with result filters + pagination
@@ -285,7 +300,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 131 tests, ~6s, no database or network required
+npm test          # 133 tests, ~6s, no database or network required
 ```
 
 | File | Covers |

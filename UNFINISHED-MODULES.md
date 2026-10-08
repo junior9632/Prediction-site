@@ -295,3 +295,42 @@ The forbidden-widget check is explicit: the suite fails if the homepage ever ren
 odds, accumulator, statistics or privileged hook again (`accSummary`, `pickList`, `liveOdds`,
 `recentResults`, `/api/ticket`, `/api/dashboard`, `/api/admin`, …), and `js/app.js` is asserted to
 contain no `API.*` call, no `fetch` and no `XMLHttpRequest` at all.
+
+### Module 8 — Homepage becomes a sports-intelligence page with a PUBLIC preview — ✅ COMPLETE
+
+Module 7 made the homepage purely static, which was honest but left a visitor with nothing to look
+at. Module 8 gives it a public preview built strictly from endpoints a guest can already read, and
+tightens the public/private boundary with tests that run the real script.
+
+| Surface | Source | Who can read it |
+| --- | --- | --- |
+| Today's published selection (status, picks, total odds, model probability, generated-at) | `GET /api/ticket/today` | Everyone — same payload as `/ticket` |
+| The published record (settled tickets, ticket win rate, Over 1.5 leg win rate, flat-stake ROI) | `GET /api/analytics` | Everyone — same payload as `/analytics` |
+| Today's analysed fixtures as match cards (league, teams, kickoff, model probability, xG, verified price) | `GET /api/predictions?limit=6` | Everyone — same payload as `/predictions` |
+| Dashboard activity, account statistics, personal history | `GET /api/dashboard/activity` | 401 for guests, own data only for a signed-in member |
+
+| Piece | File |
+| --- | --- |
+| Landing page: hero (AI Sports Intelligence badge) + preview panel + record tiles + match cards + trust/market/target/process/features/CTA | `public/index.html` |
+| Public-preview renderer (pills, honest empty states, `verifiedChip` reuse) — public endpoints only | `public/js/app.js` |
+| Preview layer (`pv-panel`, `pv-pill`, `pv-tiles`, `pv-match`, `pv-metric`) + 3 breakpoints | `public/css/style.css` |
+| Nav per the brief: Home · Today's Predictions (`/ticket`) · Matches (`/predictions`) · Analytics, with Login + Create Account | `public/index.html` |
+| Contract suite (9 tests), including an executed-script request trace | `tests/homepage-render.test.js` |
+| Primary-nav assertion updated | `tests/http.test.js` |
+| Docs | `README.md` (public page vs dashboard), `docs/API.md` |
+
+The boundary is enforced in three layers, none of them cosmetic:
+
+1. **Server** — `/api/dashboard/*` runs `requireAuth` → `requireActiveAccount` and scopes every
+   query to the session's own account; the page guard redirects guests to `/account.html`.
+   (Proved by `tests/dashboard-activity.test.js` and, live, by `npm run verify:access`.)
+2. **Static contract** — the homepage markup and script may not contain `/api/dashboard`,
+   `/api/admin`, `activityFeed`, `dashboard.js` or any account-scoped vocabulary, and the endpoint
+   map in `public/js/app.js` must equal the public preview set exactly.
+3. **Runtime contract** — the suite boots the real `api.js` + `app.js` in a DOM harness with a
+   recording `fetch`: the recorded requests must be exactly `/api/auth/me` plus the three public
+   endpoints, and the preview must actually paint from those payloads.
+
+Live verification: guest `/api/dashboard/activity` → `401` with no data; guest `/dashboard` and
+`/dashboard.html` → `302 /account.html`; member session → `200`, `scope: self`, own account only;
+guest `/admin` → `302 /admin/login`; admin console unchanged; `verify-access` **35/35**.
