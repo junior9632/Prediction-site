@@ -21,6 +21,7 @@
     "health": "node scripts/cron-health-check.js",
     "doctor": "node scripts/doctor.js",
     "verify:access": "node scripts/verify-access.js",
+    "build:zip": "node scripts/build-deployment-zip.js",
     "test": "node --test",
     "test:sql": "node scripts/validate-sql.js",
     "preview:ui": "node tools/uipreview.js",

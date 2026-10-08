@@ -14,6 +14,16 @@ Target: a standard cPanel account with **Setup Node.js App**, **MySQL Databases*
 
 ---
 
+## 0. Get the package
+
+`GoalPredict-cPanel-deployment.zip` (in the repository root) is the upload package. It is built
+from the tracked source with `npm run build:zip`, and `tests/deployment-zip.test.js` fails the
+suite if the committed archive is not the build of the committed tree — so the ZIP you upload is
+always the reviewed code. `node scripts/build-deployment-zip.js --check` verifies it without
+running the tests.
+
+---
+
 ## 1. Upload the application
 
 1. In cPanel → **File Manager**, create `/home/USER/goalpredict` (outside `public_html` — the Node
@@ -253,6 +263,9 @@ code on every read.
 | Times look shifted | the engine works in UTC day boundaries; kickoff display uses the visitor timezone (`display_timezone = auto`) |
 | `429` responses | rate limits; raise `RATE_LIMIT_MAX` / `ADMIN_RATE_LIMIT_MAX` only if the traffic is genuinely yours |
 | Cron produces no log output | wrong `node` path or a missing `logs/` directory; run the command once by hand in Terminal |
+> **Regenerating the ZIP is a repository-side job**, not something to do on the host: build it
+> where the source lives (`npm run build:zip`) and upload the result.
+
 | Anything else — start here | `npm run doctor`. It prints the cause and the exact cPanel screen that fixes it (masked values only), and exits non-zero so it can gate a deploy. `npm run doctor -- --json` for a machine readable report |
 | "Is the member area really private on the live site?" | `npm run verify:access -- --member=USER:PW --admin=USER:PW` against the deployed URL. It checks every guest/member/admin boundary with real HTTP requests and exits non-zero on any leak |
 | Static assets 404 after upload | the app serves `public/` itself; make sure `public/` is inside the Application root and that no `.htaccess` in `public_html` rewrites the domain away from the Node app |
