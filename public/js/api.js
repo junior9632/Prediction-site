@@ -111,10 +111,16 @@ const App = (() => {
       return `${days}d ago`;
     },
     odds(value) {
+      // totals only: rounded to 2 decimals for display
       if (value === null || value === undefined || value === '') return '—';
       const n = Number(value);
       if (!Number.isFinite(n)) return String(value);
       return n.toFixed(2);
+    },
+    /** A selection's verified price exactly as the server supplied it (never re-rounded). */
+    exactOdds(value) {
+      if (value === null || value === undefined || value === '') return '—';
+      return String(value);
     },
     pct(value) {
       if (value === null || value === undefined) return '—';
@@ -252,7 +258,7 @@ const App = (() => {
             <div class="market-book">${escapeHtml((pick.odds && pick.odds.bookmaker) || 'Bookmaker')}</div>
           </div>
           <div class="row">
-            <span class="odds-badge">${escapeHtml(fmt.odds(pick.odds && pick.odds.display !== undefined ? pick.odds.display : pick.odds && pick.odds.value))}</span>
+            <span class="odds-badge">${escapeHtml(fmt.exactOdds(pick.odds && pick.odds.display !== undefined ? pick.odds.display : pick.odds && pick.odds.value))}</span>
             <div class="conf-pill">
               <div class="n">${fmt.pct(pick.confidence)}</div>
               <div class="l">Confidence</div>

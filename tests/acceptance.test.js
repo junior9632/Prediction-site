@@ -485,7 +485,7 @@ test('acceptance 11: every leg with 2+ goals settles WON and the ticket wins', a
       [3, 2, 3],
     );
     assert.equal(store.tickets[0].result, 'WON');
-    assert.equal(store.tickets[0].settled_odds, '2.196500');
+    assert.equal(decimal.format(decimal.toScaled(store.tickets[0].settled_odds), 6), '2.196480');
     assert.ok(store.tickets[0].settled_at);
     assert.equal(store.results.length, 3);
     assert.ok(store.results.every((r) => r.over15_result === 'WON' && Number(r.settled) === 1));

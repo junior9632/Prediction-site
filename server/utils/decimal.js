@@ -10,10 +10,12 @@
  * rounded for DISPLAY. Internal comparisons against the 2.00-4.00 window
  * also happen on the exact value.
  *
- * Scale: 4 decimal places (bookmakers publish 2, occasionally 3).
+ * Scale: 18 decimal places. Bookmakers publish 2 or 3 decimals; at 18 places
+ * the product of up to six such prices is exact, so no intermediate product is
+ * ever rounded before it is compared with the 2.00-4.00 window.
  */
 
-const SCALE_DIGITS = 4;
+const SCALE_DIGITS = 18;
 const SCALE_FACTOR = 10n ** BigInt(SCALE_DIGITS);
 const HALF = SCALE_FACTOR / 2n;
 const NUMERIC_RE = /^-?\d+(?:\.\d+)?$/;
@@ -43,6 +45,7 @@ function toScaled(value) {
   const frac = fracPart.slice(0, SCALE_DIGITS).padEnd(SCALE_DIGITS, '0');
   // round half-up when the source has more precision than our scale
   if (fracPart.length > SCALE_DIGITS) {
+    // more precision than the scale: keep the first SCALE_DIGITS and round half-up
     const nextDigit = Number(fracPart[SCALE_DIGITS]);
     let scaled = BigInt(intPart + frac);
     if (nextDigit >= 5) scaled += 1n;
@@ -55,7 +58,9 @@ function toScaled(value) {
 /** Exact scaled value of a plain JS number (used for the 2.00 / 4.00 bounds). */
 function scaledFromNumber(num) {
   if (typeof num !== 'number' || !Number.isFinite(num)) return null;
-  return toScaled(num.toFixed(SCALE_DIGITS));
+  // String(num) is the shortest decimal that round-trips, so a setting of 2.1
+  // is exactly 2.1 (toFixed would expose the binary approximation).
+  return toScaled(String(num));
 }
 
 /** Scaled BigInt -> JS number (for probability maths only, never for totals). */
@@ -144,3 +149,20 @@ module.exports = {
   format,
   toRoundedNumber,
 };
+
+/**
+ * Display text for ONE verified bookmaker price. The exact API string is shown
+ * unchanged (1.285 stays 1.285, 1.25 stays 1.25). Only a single trailing
+ * decimal is padded to two places ("1.5" -> "1.50"), which changes formatting,
+ * never the value. Totals use format(..., 2) instead.
+ */
+function exactOddsText(raw) {
+  const text = String(raw === null || raw === undefined ? '' : raw).trim();
+  if (!/^\d+(\.\d+)?$/.test(text)) return text;
+  const [whole, frac = ''] = text.split('.');
+  if (frac.length === 0) return `${whole}.00`;
+  if (frac.length === 1) return `${whole}.${frac}0`;
+  return text;
+}
+
+module.exports.exactOddsText = exactOddsText;

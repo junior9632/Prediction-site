@@ -5,8 +5,9 @@
  *
  *  - exact arithmetic: the combined odds are the true product of the verified
  *    prices (BigInt scaled decimals). Rounding happens only for display.
- *  - exhaustive depth first search with bounds pruning over the strongest
- *    correlation-safe pool, so every reachable combination is tested.
+ *  - depth first search with bounds pruning over the strongest
+ *    correlation-safe pool (candidatePoolSize, default 16). Every combination
+ *    of that pool is tested; candidates outside the pool are never combined.
  *  - the winner is the STRONGEST ticket, not the highest odds ticket:
  *    a 2.15 accumulator of high confidence picks beats a 3.90 accumulator
  *    of marginal picks.

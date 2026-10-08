@@ -21,7 +21,7 @@
     ${t.selections && t.selections.length ? `<details class="pick-detail"><summary>${icons.chevronDown} Selections &amp; results</summary><div class="detail-body">
       ${t.selections.map((s) => `<div class="detail-line">
         <span class="grow"><b>${escapeHtml(s.homeTeam ? s.homeTeam.name : '')}</b> <span class="muted">vs</span> <b>${escapeHtml(s.awayTeam ? s.awayTeam.name : '')}</b>
-          <div class="tiny muted">${escapeHtml((s.league && s.league.name) || '')} · ${escapeHtml(fmt.kickoffLabel(s.kickoffAt))} · Over 1.5 @ ${escapeHtml(fmt.odds(s.odds && s.odds.display))} (${escapeHtml((s.odds && s.odds.bookmaker) || '')})</div></span>
+          <div class="tiny muted">${escapeHtml((s.league && s.league.name) || '')} · ${escapeHtml(fmt.kickoffLabel(s.kickoffAt))} · Over 1.5 @ ${escapeHtml(fmt.exactOdds(s.odds && s.odds.display))} (${escapeHtml((s.odds && s.odds.bookmaker) || '')})</div></span>
         <span class="row">${s.score ? `<span class="score-pill">${s.score.home}-${s.score.away}</span>` : ''}
           ${s.result === 'WON' ? `<span class="badge badge-green">Won</span>` : s.result === 'LOST' ? `<span class="badge badge-red">Lost</span>` : s.result !== 'PENDING' ? `<span class="badge badge-amber">${escapeHtml(s.result)}</span>` : `<span class="badge badge-slate">Pending</span>`}</span>
       </div>`).join('')}

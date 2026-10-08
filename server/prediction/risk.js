@@ -55,8 +55,9 @@ function computeRisk(model, context = {}) {
 
   // 1. goal volatility — erratic totals make a 2+ goal game less predictable
   const stds = [features.homeTotalGoalsStddev, features.awayTotalGoalsStddev].filter((v) => Number.isFinite(v));
-  const avgStd = stds.length ? numbers.mean(stds) : 1.35;
-  push('goalVolatility', numbers.rescale(avgStd, 0.9, 2.0, 5, 85), { avgStddev: numbers.round(avgStd, 3) });
+  // Fail closed: a missing statistic is maximum risk, never an assumed average.
+  const avgStd = stds.length ? numbers.mean(stds) : null;
+  push('goalVolatility', avgStd === null ? 100 : numbers.rescale(avgStd, 0.9, 2.0, 5, 85), { avgStddev: avgStd === null ? null : numbers.round(avgStd, 3) });
 
   // 2. sample size
   const minSample = Math.min(Number(features.homeSample) || 0, Number(features.awaySample) || 0);
@@ -67,10 +68,17 @@ function computeRisk(model, context = {}) {
   // 3. defensive solidity / failure to score — the classic 0-0 and 1-0 traps
   const cleanSheets = [features.homeCleanSheetRate, features.awayCleanSheetRate].filter((v) => Number.isFinite(v));
   const failedToScore = [features.homeFailedToScoreRate, features.awayFailedToScoreRate].filter((v) => Number.isFinite(v));
-  const avgCleanSheet = cleanSheets.length ? numbers.mean(cleanSheets) : 25;
-  const avgFailed = failedToScore.length ? numbers.mean(failedToScore) : 15;
-  const defensiveRisk = 0.55 * numbers.rescale(avgCleanSheet, 15, 50, 5, 80) + 0.45 * numbers.rescale(avgFailed, 5, 35, 0, 75);
-  push('defensiveSolidity', defensiveRisk, { avgCleanSheet: numbers.round(avgCleanSheet, 2), avgFailedToScore: numbers.round(avgFailed, 2) });
+  // Fail closed: missing statistics are maximum risk, never an assumed average.
+  const avgCleanSheet = cleanSheets.length ? numbers.mean(cleanSheets) : null;
+  const avgFailed = failedToScore.length ? numbers.mean(failedToScore) : null;
+  const defensiveRisk =
+    avgCleanSheet === null || avgFailed === null
+      ? 100
+      : 0.55 * numbers.rescale(avgCleanSheet, 15, 50, 5, 80) + 0.45 * numbers.rescale(avgFailed, 5, 35, 0, 75);
+  push('defensiveSolidity', defensiveRisk, {
+    avgCleanSheet: avgCleanSheet === null ? null : numbers.round(avgCleanSheet, 2),
+    avgFailedToScore: avgFailed === null ? null : numbers.round(avgFailed, 2),
+  });
 
   // 4. league goal environment
   const leagueAvg = Number(leagueEnv.avgTotalGoals);

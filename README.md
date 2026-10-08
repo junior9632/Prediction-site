@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 85 tests, no test dependencies |
+| Tests | `node:test` (built in) — 95 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -56,7 +56,7 @@ Useful commands:
 ```bash
 npm run dev                 # node --watch server.js
 npm run db:migrate -- --status   # applied vs pending migrations (read-only)
-npm test                    # 85 unit + service + HTTP acceptance tests (no DB needed)
+npm test                    # 95 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
@@ -154,7 +154,8 @@ team + league statistics ┘                          recency, league environmen
                                                         │
                               correlation protection (league / country / team / kickoff window)
                                                         │
-                     exhaustive combination search with exact BigInt odds products
+                     combination search over the strongest 16 correlation-safe candidates,
+                     exact BigInt odds products (wider pools are a settings change, not a rule change)
                                                         │
                      ┌──────────────────────────────────┴─────────────────────────────┐
        2.00 ≤ total ≤ 4.00                                            no combination in range
@@ -250,7 +251,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 85 tests, ~3s, no database or network required
+npm test          # 95 tests, ~3s, no database or network required
 ```
 
 | File | Covers |

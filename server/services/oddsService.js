@@ -48,6 +48,7 @@ const REJECT = {
   ODDS_TIMESTAMP_INVALID: 'ODDS_TIMESTAMP_INVALID',
   ODDS_SOURCE_INVALID: 'ODDS_SOURCE_INVALID',
   ODDS_MANUALLY_MODIFIED: 'ODDS_MANUALLY_MODIFIED',
+  ODDS_FIXTURE_MISMATCH: 'ODDS_FIXTURE_MISMATCH',
 };
 
 /* ---------------------------------------------------------------------- */
@@ -352,9 +353,21 @@ function validateOddsPayload(payload, fixture, options = {}) {
   const verified = [];
   const rejected = [];
 
+  // the payload must describe exactly the fixture it is being validated for
+  const payloadFixture = parsed.fixtureId === null ? null : Number(parsed.fixtureId);
+  const fixtureMismatch = Boolean(fixture) && (payloadFixture === null || payloadFixture !== Number(fixture.id));
+
   for (const entry of parsed.entries) {
     entry.source = SOURCE;
     entry.fetchedAt = now;
+    if (fixtureMismatch) {
+      rejected.push({
+        ...entry,
+        reason: REJECT.ODDS_FIXTURE_MISMATCH,
+        detail: { payloadFixtureId: payloadFixture, fixtureId: fixture ? Number(fixture.id) : null },
+      });
+      continue;
+    }
     const result = validateOdd(entry, fixture, { ...options, now });
     if (result.ok) verified.push(result.odds);
     else rejected.push({ ...entry, reason: result.reason, detail: result.detail });
