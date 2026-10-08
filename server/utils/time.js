@@ -46,6 +46,53 @@ function toIso(value) {
   return d ? d.toISOString() : null;
 }
 
+/**
+ * Is this a timezone this runtime can actually resolve ("UTC", "Africa/Lagos",
+ * "Europe/London", ...)? Used to validate `sync_timezone` before it can change
+ * anything: a typo must never silently move the sync window.
+ */
+function isValidTimeZone(timeZone) {
+  if (!timeZone) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: String(timeZone) });
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+/**
+ * The calendar date ('YYYY-MM-DD') that `value` falls on **as observed in
+ * `timeZone`**. Storage stays UTC; this is only how a human's calendar day is
+ * derived for sync windows and reporting. An unknown zone falls back to UTC.
+ */
+function dateInZone(value, timeZone = 'UTC') {
+  const d = toDate(value);
+  if (!d) return null;
+  const zone = isValidTimeZone(timeZone) ? String(timeZone) : 'UTC';
+  if (zone === 'UTC') return toMysqlDate(d);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d);
+  const part = (type) => (parts.find((p) => p.type === type) || {}).value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+/**
+ * A pure DATE ANCHOR: the UTC-midnight instant of the calendar date `value`
+ * falls on in `timeZone`. It is deliberately NOT the wall-clock local midnight
+ * (that would need DST arithmetic); it exists so the API day windows a sync job
+ * asks for line up with the operator's calendar day. Defaults to UTC, i.e. the
+ * historical behaviour of this platform.
+ */
+function zoneDateAnchor(value, timeZone = 'UTC') {
+  const date = dateInZone(value, timeZone);
+  return date ? new Date(`${date}T00:00:00.000Z`) : null;
+}
+
 function startOfUtcDay(value) {
   const d = toDate(value);
   if (!d) return null;
@@ -110,6 +157,9 @@ module.exports = {
   toMysqlDate,
   toIso,
   startOfUtcDay,
+  isValidTimeZone,
+  dateInZone,
+  zoneDateAnchor,
   addDays,
   addMinutes,
   minutesBetween,

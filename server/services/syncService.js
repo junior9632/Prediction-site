@@ -77,6 +77,27 @@ async function refreshModelInputs(ticketDate, options = {}) {
   return { teams: teamIds.size, leagues: leagueRefreshed, fixtures: fixtures.length, h2hCalls };
 }
 
+/**
+ * The calendar day the sync jobs call "today", as observed in `sync_timezone`.
+ *
+ * Storage is always UTC; this only decides which API day windows are pulled, so
+ * a host whose operators work in, say, Africa/Lagos stops syncing "yesterday"
+ * during the last hour of their evening. `sync_timezone` defaults to `UTC`,
+ * which reproduces the original behaviour exactly. An unknown zone is reported
+ * and falls back to UTC rather than silently moving the window.
+ */
+function resolveSyncZone(settings = {}) {
+  const requested = String(settings.syncTimezone || 'UTC').trim() || 'UTC';
+  if (time.isValidTimeZone(requested)) return { zone: requested, valid: true };
+  log.warn('sync_timezone is not a known timezone — falling back to UTC', { requested });
+  return { zone: 'UTC', valid: false, requested };
+}
+
+/** The date anchor for a sync run: UTC midnight of the zone's calendar day. */
+function syncAnchor(now, zone) {
+  return time.zoneDateAnchor(now || new Date(), zone) || time.startOfUtcDay(now || new Date());
+}
+
 /** Fixtures for today + the configured number of days ahead (+ history). */
 async function syncFixtures(options = {}) {
   const settings = options.settings || (await settingsService.getEngineSettings());
@@ -85,11 +106,13 @@ async function syncFixtures(options = {}) {
   const handle = await logService.startSync('fixtures', trigger);
 
   try {
+    const { zone, valid, requested } = resolveSyncZone(settings);
+    const anchor = syncAnchor(options.now, zone);
     const upcoming = await fixtureService.syncUpcoming({
       api,
       daysAhead: Number(settings.syncDaysAhead) || 2,
       leagueIds: settings.syncLeagues.length ? settings.syncLeagues : null,
-      now: options.now,
+      now: anchor,
     });
 
     let history = { rowsWritten: 0, endpointCalls: 0 };
@@ -98,23 +121,26 @@ async function syncFixtures(options = {}) {
         api,
         days: Number(settings.syncHistoryDays) || 25,
         leagueIds: settings.syncLeagues.length ? settings.syncLeagues : null,
-        now: options.now,
+        now: anchor,
       });
     }
 
-    const modelInputs = await refreshModelInputs(options.now || new Date(), { settings, api });
+    const modelInputs = await refreshModelInputs(anchor, { settings, api });
 
     await logService.finishSync(handle, {
       status: 'SUCCESS',
       endpointCalls: upcoming.endpointCalls + history.endpointCalls,
       rowsWritten: upcoming.rowsWritten + history.rowsWritten,
-      message: `upcoming=${upcoming.rowsWritten} history=${history.rowsWritten} teams=${modelInputs.teams} leagues=${modelInputs.leagues}`,
+      message: `upcoming=${upcoming.rowsWritten} history=${history.rowsWritten} teams=${modelInputs.teams} leagues=${modelInputs.leagues} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}`,
     });
     return {
       job: 'fixtures',
       upcoming: upcoming.rowsWritten,
       history: history.rowsWritten,
       endpointCalls: upcoming.endpointCalls + history.endpointCalls,
+      syncTimezone: zone,
+      syncTimezoneValid: valid,
+      syncedFromDate: time.toMysqlDate(anchor),
       modelInputs,
     };
   } catch (err) {
@@ -137,11 +163,13 @@ async function syncOdds(options = {}) {
 
   try {
     const days = Number(settings.syncDaysAhead) || 2;
+    const { zone, valid, requested } = resolveSyncZone(settings);
+    const anchor = syncAnchor(options.now, zone);
     let totalRows = 0;
     let totalCalls = 0;
     const perDate = [];
     for (let i = 0; i <= days; i += 1) {
-      const date = time.addDays(options.now || new Date(), i);
+      const date = time.addDays(anchor, i);
       // eslint-disable-next-line no-await-in-loop
       const res = await oddsService.syncOddsForDate(date, {
         api,
@@ -157,9 +185,16 @@ async function syncOdds(options = {}) {
       status: 'SUCCESS',
       endpointCalls: totalCalls,
       rowsWritten: totalRows,
-      message: `dates=${perDate.length} rows=${totalRows}`,
+      message: `dates=${perDate.length} rows=${totalRows} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}`,
     });
-    return { job: 'odds', rowsWritten: totalRows, endpointCalls: totalCalls, perDate };
+    return {
+      job: 'odds',
+      rowsWritten: totalRows,
+      endpointCalls: totalCalls,
+      syncTimezone: zone,
+      syncTimezoneValid: valid,
+      perDate,
+    };
   } catch (err) {
     await logService.finishSync(handle, {
       status: 'FAILED',
@@ -179,18 +214,21 @@ async function syncResults(options = {}) {
   const handle = await logService.startSync('results', trigger);
 
   try {
+    const { zone, valid, requested } = resolveSyncZone(settings);
+    const anchor = syncAnchor(options.now, zone);
     const res = await resultService.syncResults({
       api,
       days: Number(options.days) || Math.min(7, Number(settings.syncHistoryDays) || 7),
-      now: options.now,
+      now: anchor,
+      settings,
     });
     await logService.finishSync(handle, {
       status: 'SUCCESS',
       endpointCalls: res.endpointCalls,
       rowsWritten: res.resultsRecorded + res.selectionsSettled,
-      message: `results=${res.resultsRecorded} settled=${res.selectionsSettled} tickets=${res.ticketsUpdated}`,
+      message: `results=${res.resultsRecorded} settled=${res.selectionsSettled} tickets=${res.ticketsUpdated} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}`,
     });
-    return { job: 'results', ...res };
+    return { job: 'results', syncTimezone: zone, syncTimezoneValid: valid, ...res };
   } catch (err) {
     await logService.finishSync(handle, {
       status: 'FAILED',

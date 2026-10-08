@@ -15,6 +15,7 @@ const db = require('../database/queries');
 const config = require('../config');
 const auth = require('../middleware/auth');
 const { newCsrfToken } = require('../middleware/adminAuth');
+const { assertAccountUsable } = require('../middleware/account');
 const logService = require('../services/logService');
 const { assertValid } = require('../utils/validate');
 const { asyncHandler } = require('../utils/asyncHandler');
@@ -103,7 +104,19 @@ const adminLogin = asyncHandler(async (req, res) => {
   const csrf = newCsrfToken();
   auth.setAuthCookies(res, token, csrf);
 
-  await logService.audit(req, 'ADMIN_LOGIN', { adminId: Number(row.id) });
+  // Written with an explicit actor: the login request itself carries no
+  // session yet, so the dashboard activity feed must be told whose event this is.
+  await logService.write({
+    level: 'info',
+    channel: 'audit',
+    event: 'ADMIN_LOGIN',
+    message: `Administrator ${row.username} signed in`,
+    actorType: 'admin',
+    actorId: Number(row.id),
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+    context: { adminId: Number(row.id) },
+  });
   res.json({ ok: true, data: { admin: publicAdmin(row), token, csrfToken: csrf } });
 });
 
@@ -168,11 +181,13 @@ const me = asyncHandler(async (req, res) => {
   if (!req.auth) throw AppError.unauthorized();
   if (req.auth.type === 'admin') {
     const row = await db.getAdminById(req.auth.id);
-    if (!row) throw AppError.unauthorized();
+    // A disabled or locked account is refused here too, so no page can paint a
+    // "signed in" header for a session that may no longer read member data.
+    assertAccountUsable(row, 'Administrator');
     return res.json({ ok: true, data: { type: 'admin', account: publicAdmin(row) } });
   }
   const row = await db.getUserById(req.auth.id);
-  if (!row) throw AppError.unauthorized();
+  assertAccountUsable(row, 'Member');
   return res.json({
     ok: true,
     data: {
@@ -219,6 +234,17 @@ const userLogin = asyncHandler(async (req, res) => {
     throw AppError.unauthorized(GENERIC, 'INVALID_CREDENTIALS');
   }
   await db.recordUserLoginSuccess(Number(row.id), req.ip);
+  // Feeds the member's own dashboard activity (GET /api/dashboard/activity).
+  await logService.write({
+    level: 'info',
+    channel: 'auth',
+    event: 'USER_LOGIN',
+    message: `Member ${row.username} signed in`,
+    actorType: 'user',
+    actorId: Number(row.id),
+    ipAddress: req.ip,
+    userAgent: req.get('user-agent'),
+  });
   const token = auth.signToken({ sub: row.id, type: 'user', role: row.role, email: row.email, username: row.username });
   const csrf = newCsrfToken();
   auth.setAuthCookies(res, token, csrf);

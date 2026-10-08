@@ -24,6 +24,21 @@ those fields are dropped and reported back in `ignoredClientFields`.
 
 ---
 
+## Pages
+
+| Page | Route | Notes |
+| --- | --- | --- |
+| Landing page | `/` (`/index.html`) | Marketing + **public preview**: hero, today's published selection, the published record, today's analysed fixtures, trust strip, process, CTA. It reads only `/api/ticket/today`, `/api/analytics` and `/api/predictions` — endpoints an anonymous visitor can read anyway. It calls **no** dashboard or console endpoint, and renders no account-scoped data |
+| About | `/about` (`/about.html`) | Product story, the single market, the rules, the no-guarantee position |
+| Predictions | `/predictions` | Every analysed fixture with its evidence |
+| Today's ticket | `/ticket` | The published ticket for a date (`?date=YYYY-MM-DD`) |
+| Results | `/history` | Settled record with filters and pagination |
+| Analytics | `/analytics` | Win rate, streaks, flat-stake ROI |
+| Legal | `/legal` | Legal and responsible play, terms (`#terms`), privacy (`#privacy`) |
+| Member sign-in | `/login`, `/account` | Sign in, register, profile, change password |
+| Member dashboard | `/dashboard` | Authenticated only: profile, status, account activity |
+| Console | `/admin`, `/admin/login` | Administrators only |
+
 ## Public
 
 ### `GET /api/health`
@@ -52,6 +67,10 @@ minSelections, maxSelections}`, `autoTicketGeneration: false`, `correlationProte
 `oddsFreshnessMinutes`, `serverTime`.
 
 ### `GET /api/ticket/today` · `GET /api/ticket/:date` · `GET /api/tickets/:date`
+
+The ticket router is mounted twice — `/api/ticket` **and** `/api/tickets` — so every route below
+also answers on the alias prefix (`GET /api/tickets/today`, `GET /api/ticket/history`, …). Both
+prefixes hit the same handler.
 
 The published outcome for one date (`:date` = `YYYY-MM-DD`, defaults to today, UTC).
 
@@ -121,7 +140,7 @@ Before any run: `status: "PENDING"`, `statusLabel: "NOT GENERATED YET"`.
 `GET /api/ticket/today` additionally returns `oddsWindow`, `autoTicketGeneration: false` and
 `serverTime`.
 
-### `GET /api/tickets/history?page=&limit=&from=&to=&status=&result=`
+### `GET /api/tickets/history?page=&limit=&from=&to=&status=&result=` (alias: `/api/ticket/history`)
 
 `{ page, limit, total, pages, items: [ticket] }` — tickets newest first, each with its selections.
 `status` ∈ `QUALIFIED | NO_QUALIFYING_TICKET | DATA_SOURCE_UNAVAILABLE | PENDING | ERROR`,
@@ -201,6 +220,37 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 | `POST /api/auth/login` | `{login, password}` | `200 {user, token, csrfToken}` + the same cookie pair as the admin login; lockout after repeated failures |
 | `POST /api/auth/logout` | — | clears the session cookies for any session type (admin or user) |
 | `POST /api/auth/change-password` | `{currentPassword, newPassword}` | authenticated user session; CSRF required for cookie sessions |
+
+Every `/api/auth/*` response is sent `Cache-Control: no-store`.
+
+### Sign-in door
+
+`GET /admin/login` (and `/admin/login.html`, plus the legacy `/login.html`) serves the console
+sign-in form to anyone who is not already an administrator — no admin data, no console shell, no
+endpoint list — and redirects a live administrator session to `/admin.html`. Guests hitting
+`/admin` or `/admin.html` are redirected here. Any other `/admin/<anything>` answers `404`.
+
+`GET /login` is the **member** sign-in: it serves `account.html` (sign in, register, profile), so
+a visitor who types the obvious public address lands on something useful. The marketing pages link
+it as `Login` and link `/account.html#register` as `Get Started`.
+
+### Member dashboard (`/api/dashboard/*`)
+
+Session-scoped data that belongs to the signed-in account only. Nothing here is ever rendered on
+a public page: the homepage shows public previews, the account area shows the session's own data. `requireAuth` +
+`requireActiveAccount` run on **every** route: a guest receives `401 UNAUTHORIZED` with no payload,
+and an account that is deleted, deactivated or locked is refused with `401 ACCOUNT_MISSING`,
+`403 ACCOUNT_DISABLED` or `403 ACCOUNT_LOCKED` even while its token is still valid. Responses are
+always `Cache-Control: no-store`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /activity` | The caller's own feed: `{audience: "authenticated", scope: "self", account {type, id, username, email, plan, memberSince, lastLoginAt}, summary {recordedEvents, shownEvents, lastActivityAt, accountAgeDays}, items[]}`. Items are `{id, event, title, detail, tone, level, channel, at}`, newest first, at most 25. |
+
+The actor type/id are read from the account row the middleware re-read from the database — **query
+parameters can never widen the scope**, and one account can never read another's events. The page
+that renders it (`/dashboard`, `/dashboard.html`) redirects guests to `/account.html`, redirects
+administrators to `/admin.html`, and is served `no-store` + `X-Robots-Tag: noindex`.
 
 ---
 

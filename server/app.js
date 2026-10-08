@@ -30,6 +30,7 @@ const ticketsRoutes = require('./routes/tickets');
 const analyticsRoutes = require('./routes/analytics');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
+const dashboardRoutes = require('./routes/dashboard');
 
 const log = logger.child('app');
 const PUBLIC_DIR = path.join(config.rootDir, 'public');
@@ -110,38 +111,50 @@ function createApp() {
   app.use('/api/analytics', analyticsRoutes);
   app.use('/api/auth', authRoutes);
   app.use('/api/admin', adminRoutes);
+  // Member dashboard data (activity feed, account summary). Guests get 401 —
+  // never a partial payload, never a cached one.
+  app.use('/api/dashboard', dashboardRoutes);
 
   /* ------------------------ protected frontend ---------------------- */
   // The private pages are protected at the server boundary as well as in the
-  // browser. An unauthenticated visitor opening /dashboard.html directly is
-  // bounced to the sign-in page instead of receiving the member area.
-  app.get('/dashboard', requireAuth, (req, res) => {
-    if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
-    return res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
-  });
-  app.get('/dashboard.html', requireAuth, (req, res) => {
-    if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
-    return res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
-  });
+  // browser. An unauthenticated visitor opening /dashboard or /dashboard.html
+  // directly is bounced to the member sign-in page instead of receiving the
+  // member area (and the page itself is never cached).
+  const memberPageGuard = (req, res, next) =>
+    requireAuth(req, res, (err) => {
+      if (err && err.status === 401) return res.redirect(302, '/account.html');
+      if (err) return next(err);
+      if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
+      return next();
+    });
+
+  const memberDashboardPage = (_req, res) =>
+    res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'), {
+      headers: { 'Cache-Control': 'no-store, no-cache', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
+    });
+
+  app.get('/dashboard', memberPageGuard, memberDashboardPage);
+  app.get('/dashboard.html', memberPageGuard, memberDashboardPage);
 
   /* ------------------------- hidden admin area ---------------------- */
   // The admin console is deliberately undiscoverable: no public page, nav,
   // footer, sitemap or robots entry references it. Server side we never rely
   // on that secrecy alone —
-  //   * guests (or expired/invalid sessions) are redirected to the public
-  //     sign-in page, so the URL never answers with admin content
+  //   * guests (or expired/invalid sessions) are redirected to the console's
+  //     own sign-in door (/admin/login), so the URL never answers with admin
+  //     content
   //   * authenticated non-admins receive a bare 403 with no admin details
   //   * the admin account is re-read from the database, so a deactivated or
   //     locked administrator is refused even with a valid token
   //   * the console shell + its script are never cached or indexed
   const adminPageGuard = (req, res, next) => {
     const { token } = readToken(req);
-    if (!token) return res.redirect(302, '/login.html');
+    if (!token) return res.redirect(302, '/admin/login');
     let claims;
     try {
       claims = verifyToken(token);
     } catch (_err) {
-      return res.redirect(302, '/login.html');
+      return res.redirect(302, '/admin/login');
     }
     if (claims.type !== 'admin') return next(AppError.forbidden());
     req.auth = {
@@ -159,6 +172,29 @@ function createApp() {
       headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
     });
 
+  // Canonical, unlisted sign-in door for the console: /admin/login.
+  // It serves the shared sign-in page — no admin data, no console shell, no
+  // endpoint list — so an operator who types the obvious admin address gets a
+  // form instead of a 404. Every other /admin/<anything> still answers 404.
+  const adminSignInPage = (_req, res) =>
+    res.sendFile(path.join(PUBLIC_DIR, 'login.html'), {
+      headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
+    });
+
+  const alreadySignedInAdmin = (req, res, next) => {
+    const { token } = readToken(req);
+    if (!token) return next();
+    try {
+      const claims = verifyToken(token);
+      if (claims.type === 'admin') return res.redirect(302, '/admin.html');
+    } catch (_err) {
+      /* expired or invalid session: show the form again */
+    }
+    return next();
+  };
+
+  app.get('/admin/login', alreadySignedInAdmin, adminSignInPage);
+  app.get('/admin/login.html', alreadySignedInAdmin, adminSignInPage);
   app.get('/admin', adminPageGuard, requireActiveAdmin, adminConsolePage);
   app.get('/admin.html', adminPageGuard, requireActiveAdmin, adminConsolePage);
 
@@ -190,11 +226,16 @@ function createApp() {
     })
   );
 
-  // friendly URLs (no .html needed)
-  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'account', 'login'];
+  // Friendly URLs (no .html needed). /login is the MEMBER sign-in — the same
+  // page as /account, register form included — so a visitor who types it lands
+  // on something useful. The console's own unlisted door is /admin/login (and
+  // the legacy /login.html that the deployment guide still prints).
+  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'about', 'account'];
   for (const page of pages) {
     app.get(`/${page}`, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, `${page}.html`)));
   }
+
+  app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
 
   // The robots file must never advertise private areas (/admin, the sign-in
   // pages): a Disallow entry would point crawlers straight at them. The
@@ -209,9 +250,9 @@ function createApp() {
       );
   });
 
-  // Public, indexable pages only — admin/login are deliberately excluded.
+  // Public, indexable pages only — the sign-in pages are deliberately excluded.
   app.get('/sitemap.xml', (_req, res) => {
-    const publicPages = ['', 'ticket', 'history', 'analytics', 'predictions', 'legal'];
+    const publicPages = ['', 'ticket', 'history', 'analytics', 'predictions', 'about', 'legal'];
     const today = new Date().toISOString().slice(0, 10);
     const urls = publicPages
       .map(

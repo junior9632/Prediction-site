@@ -455,14 +455,14 @@
   async function boot() {
     const me = await App.session.me();
     if (!me || me.type !== 'admin') {
-      window.location.replace('/login.html');
+      window.location.replace('/admin/login');
       return;
     }
     $('#whoami').textContent = `${me.account.username} · ${me.account.role}`;
     $('#logoutBtn').onclick = async () => {
       await API.post('/auth/admin/logout', {}).catch(() => {});
       App.session.reset();
-      window.location.replace('/login.html');
+      window.location.replace('/admin/login');
     };
     document.querySelectorAll('.side-link').forEach((btn) => btn.addEventListener('click', () => setView(btn.dataset.view)));
     bindSideNav();

@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 95 tests, no test dependencies |
+| Tests | `node:test` (built in) — 133 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -61,6 +61,9 @@ npm run test:sql            # static check: schema.sql vs every query in queries
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
 npm run health              # non-zero exit when the DB or the data source is down
+npm run build:zip           # rebuild GoalPredict-cPanel-deployment.zip from the tracked tree
+npm run doctor              # deployment diagnosis: env, MySQL, schema, seed, running site
+npm run verify:access -- --member=user:pw --admin=admin:pw   # prove the guest/member boundary on a live site
 npm run lint:secrets        # verifies no key/secret is shipped in public/
 npm run lint:js             # ESLint (correctness rules only, fetched via npx)
 npm run lint:syntax         # node --check over every JavaScript file in the repo
@@ -81,6 +84,7 @@ Docker is for local development only — production stays on cPanel.
 
 ```bash
 npm run preview:ui          # http://localhost:3000  — admin / preview123
+#                             member / preview123  →  /dashboard
 # or: node tools/uipreview.js
 ```
 
@@ -94,6 +98,20 @@ It exists so the interface can be reviewed before deployment — production alwa
 
 ---
 
+## Public page vs dashboard
+
+The homepage is marketing with a **public preview**: it reads `/api/ticket/today`, `/api/analytics`
+and `/api/predictions` — the same three endpoints an anonymous visitor can already read on
+`/ticket`, `/analytics` and `/predictions` — and renders today's published selection, the published
+record and today's analysed fixtures.
+
+Everything account-scoped lives at `/dashboard`, which is served `no-store` + `noindex` and
+redirects guests to `/account.html`, and its API (`/api/dashboard/activity`) answers a guest with
+**401 and no payload** (`requireAuth` → `requireActiveAccount`, scoped to the session's own
+account). `tests/homepage-render.test.js` pins both halves: no dashboard endpoint may appear in the
+homepage's markup or script, no private request may be made at runtime, and every endpoint the
+homepage does read must answer a guest with `200`.
+
 ## Project layout
 
 ```
@@ -101,38 +119,45 @@ server.js                     startup entry point (cPanel "Application startup f
 package.json                  scripts + the 9 runtime dependencies
 .env.example                  every environment variable, documented
 public/                       the entire frontend (static, no build step)
-  index.html                  homepage: today's ticket, stats, recent results
+  index.html                  public landing page: hero + public preview (today's ticket,
+                              published record, today's matches), trust strip, process, CTA
+  about.html                  what GoalPredict is: one market, the rules, no guarantees
   ticket.html                 full ticket page (also accepts ?date=YYYY-MM-DD)
   history.html                ticket history with result filters + pagination
   analytics.html              performance analytics (win rate, streaks, monthly)
   predictions.html            every analysed fixture with its evidence
-  login.html                  sign-in door (unlisted, never linked from the public UI)
+  login.html                  console sign-in door, unlisted: served at /admin/login and /login.html
+  account.html                member sign-in / register / profile / change password
+  dashboard.html              member workspace: profile, status, Dashboard Activity
   admin.html                  admin console (10 views, sidebar layout, unlisted + guarded)
   css/style.css               design system: dark navy panels, cyan accents
   js/api.js                   fetch wrapper + CSRF + shared render helpers
-  js/{app,ticket,history,analytics,predictions,account,login,admin}.js
+  js/{app,ticket,history,analytics,predictions,account,dashboard,login,admin}.js
   img/{logo,favicon}.svg
 server/
   config/index.js             typed environment configuration
   app.js  server.js           Express app factory + HTTP bootstrap
   routes/                     health, fixtures, odds, predictions, tickets,
-                              analytics, auth, admin
+                              analytics, auth, dashboard, admin
   controllers/                request validation + response shaping only
   services/                   apiFootball, fixtureService, oddsService, statsService,
                               contextService, syncService, resultService, settingsService,
-                              logService, analyticsService, ticketService, notifyService
+                              logService, analyticsService, ticketService, notifyService,
+                              activityService (member Activity feed)
   prediction/                 over15, confidence, risk, quality, correlation,
                               ticketBuilder, pipeline
   database/                   schema.sql (baseline), migrations/ (versioned, applied
                               once + checksummed), migrate.js, connection.js (pool),
                               queries.js (all SQL)
-  middleware/                 auth, adminAuth (+CSRF), rateLimit, requestLogger, errorHandler
+  middleware/                 auth, adminAuth (+CSRF), account (active-account guard),
+                              rateLimit, requestLogger, errorHandler
   utils/                      decimal (exact odds maths), numbers, time, logger,
                               errors, asyncHandler, validate, fixtureStatus
   jobs/scheduler.js           optional internal sync scheduler (never generates tickets)
 scripts/                      db-migrate, db-seed, cron-sync-*, cron-health-check,
-                              generate-ticket-cli, validate-sql, check-no-secrets
-tests/                        fakeDb.js, synthetic.js, engine/acceptance/http tests
+                              generate-ticket-cli, validate-sql, check-no-secrets,
+                              doctor (deployment diagnosis), verify-access (live boundary proof)
+tests/                        fakeDb.js, synthetic.js, engine/acceptance/http/dashboard tests
 tools/uipreview.js            preview harness (development only)
 docs/                         ARCHITECTURE.md, API.md, DEPLOYMENT-CPANEL.md
 ```
@@ -173,13 +198,37 @@ removed from the accumulator instead of being counted as wins).
 
 ---
 
+## Member area
+
+Members are optional readers — the site never requires an account. `/account` handles
+sign-in / registration / profile / password change, and `/dashboard` is the private workspace:
+profile, plan, today's ticket status and the **Dashboard Activity** feed.
+
+The feed is not hidden with CSS. It is protected at the server boundary:
+
+| Principal | `/dashboard` | `GET /api/dashboard/activity` |
+| --- | --- | --- |
+| Guest / expired token | `302` → `/account.html` | `401 UNAUTHORIZED`, no payload |
+| Deleted account | `302` → `/account.html` | `401 ACCOUNT_MISSING` |
+| Disabled or locked account | `302` → `/account.html` | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` |
+| Member | page served `no-store` + `noindex` | `200`, own events only |
+| Administrator | `302` → `/admin.html` | `200`, admin-scoped feed |
+
+The actor type and id come from the account row re-read from the database on every request, so a
+query string can never widen the scope and one member can never read another's events. The card
+starts hidden in the markup and is only revealed by the authenticated payload; a restore from the
+back/forward cache wipes it and re-validates the session before painting it again.
+
+---
+
 ## Admin console
 
 The console is **hidden from the public site**: no navigation, footer, sitemap or robots
-entry references it. Guests opening `/admin` or `/admin.html` are redirected to the sign-in
-page, authenticated members receive a bare `403`, and the console shell + its script are
-served `no-store` / `noindex` to administrators only. Administrators reach it by going
-straight to `/admin` (sign-in lives at the equally unlisted `/login`).
+entry references it. Guests opening `/admin` or `/admin.html` are redirected to the console's
+own unlisted sign-in door `/admin/login` (a plain form — no admin data, no endpoint list, no
+console script), authenticated members receive a bare `403`, and the console shell + its script
+are served `no-store` / `noindex` to administrators only. Administrators reach it by going
+straight to `/admin`, which bounces to its own unlisted sign-in door `/admin/login`.
 
 `/admin.html` (superadmin sees everything, `admin` role sees the operational views):
 
@@ -251,7 +300,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 95 tests, ~3s, no database or network required
+npm test          # 133 tests, ~6s, no database or network required
 ```
 
 | File | Covers |
@@ -259,6 +308,9 @@ npm test          # 95 tests, ~3s, no database or network required
 | `tests/engine.test.js` | exact decimal odds maths, the 14-point odds gate, exact Over 1.5 goal-line matching, combination engine, correlation protection, settlement rules, locked settings |
 | `tests/acceptance.test.js` | manual-trigger guards, data-source-unavailable runs, a full qualified generation, regeneration, settlement end to end |
 | `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
+| `tests/deployment-zip.test.js` | `GoalPredict-cPanel-deployment.zip` is the build of the current tree, byte for byte: it contains every file the host needs (never `node_modules`, `.git`, logs, `.env`), the build is deterministic, and the committed archive matches the source |
+| `tests/settings-wiring.test.js` | every admin-editable setting reaches the code that claims to honour it: the combination weights/leg-penalty reach the builder, `results_settle_mode` is enforced (a tampered value stops settlement with `SETTLE_MODE_UNSUPPORTED`), `sync_timezone` anchors the sync's calendar day with UTC storage and a safe fallback, and no newly declared setting is inert |
+| `tests/dashboard-activity.test.js` | the member boundary: guest `401`/redirect with no payload, self-scoped feed (another member's rows and IPs never leak, query parameters cannot widen the scope), disabled/locked/deleted accounts refused, admin permissions preserved, and the page contract (`no-store`, `noindex`, hidden-until-authenticated card, bfcache re-validation) |
 | `tests/fakeDb.js` | in-memory double for `server/database/connection.js`; the SQL still comes from `queries.js` |
 | `tests/synthetic.js` | fictional fixtures, odds payloads, form rows and an API-Football double |
 | `tests/scripts.test.js` | runs `scripts/validate-sql.js` and `scripts/check-no-secrets.js` and fails when they do; also guards the `test` script itself (see below) |
@@ -287,7 +339,7 @@ npm test          # 95 tests, ~3s, no database or network required
 
 `.github/workflows/checks.yml` runs on every push and pull request to `main`, on Node 18, 20 and
 22 (`>=18.17` is the documented floor for native `fetch`; 22 is what cPanel currently ships). Each
-job runs, in order: `npm ci`, `lint:syntax`, `test:sql`, `lint:secrets`, `npm test`.
+job runs, in order: `npm ci`, `lint:syntax`, `lint:js`, `test:sql`, `lint:secrets`, `npm test`.
 
 The workflow needs **no services and no secrets** — the suite is hermetic, so a green run is proof
 of the engine and HTTP contracts, not of a live MySQL or API-Football connection. Those still have
@@ -303,6 +355,35 @@ to be verified on the host with `npm run db:setup` and `npm run sync:all` (see
 > directory form `node --test tests/` either: that executes every `.js` file in the directory,
 > including the `fakeDb.js` and `synthetic.js` fixtures. `tests/scripts.test.js` fails the build
 > if either mistake is reintroduced.
+
+---
+
+## Deployment package
+
+`GoalPredict-cPanel-deployment.zip` is the upload package for cPanel. It is built from the files
+**git tracks** — never `node_modules`, `.git`, `logs`, `.env` or a stray file on disk — sorted and
+stamped with a fixed timestamp, so the same tree always produces the same bytes:
+
+```bash
+npm run build:zip            # rewrite the archive
+node scripts/build-deployment-zip.js --check   # verify it is current (exit 1 when stale)
+```
+
+The archive has drifted before (a committed copy once shipped a stale homepage that still
+contained the admin controls), so `tests/deployment-zip.test.js` fails the build whenever the
+committed ZIP is not the build of the committed source. **When you change any shipped file, run
+`npm run build:zip` and commit the archive in the same commit.**
+
+---
+
+## Deployment diagnosis
+
+Two operator commands answer "why is the deployed site broken?" without guessing:
+
+| Command | What it proves |
+| --- | --- |
+| `npm run doctor` | Node version, `NODE_ENV`, every required environment variable (values masked), a real MySQL connection using the **same** credentials as the app — with the MySQL error code translated into the cause *and* the cPanel screen that fixes it — the schema (all 17 tables), the seed (settings + an active administrator), and the running site's own answers (`/api/health`, `/api/meta`, and the guest boundary on `/api/dashboard/activity`, which must be 401). `--json` for machines, `--skip-site` for the database half only. Exit code 1 on any problem, so it can gate a deploy. |
+| `npm run verify:access -- --member=user:pw --admin=admin:pw` | The guest/member/admin boundary against a **live** site: guest `401` with no payload and a redirect on `/dashboard`, the member feed scoped to that account, the console still admin-only, and `/admin/login` skipping itself for a live session. Credentials are used only for the sign-in request — nothing is written to disk. Exit code 1 on any failure. |
 
 ---
 

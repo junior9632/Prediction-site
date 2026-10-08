@@ -50,6 +50,85 @@ test('scripts: no secret, key or upstream host ships in public/', () => {
   assert.match(result.stdout, /no secrets found/i);
 });
 
+test('scripts: the access verifier is wired up and fails loudly on an unreachable site', () => {
+  const { scripts } = require('../package.json');
+  assert.equal(scripts['verify:access'], 'node scripts/verify-access.js', 'npm run verify:access is wired up');
+
+  const source = fs.readFileSync(path.join(ROOT, 'scripts', 'verify-access.js'), 'utf8');
+  // it must check the guest boundary, both signed-in states and the cache rules
+  for (const marker of [
+    "check('guest: GET /api/dashboard/activity is 401'",
+    "'member: GET /api/dashboard/activity is 200'",
+    "'admin: the console API keeps its permissions'",
+    "'guest: /admin/login serves the sign-in page'",
+    'no-store',
+  ]) {
+    assert.ok(source.includes(marker), `verify-access.js must keep the check: ${marker}`);
+  }
+
+  // Against a dead address it must exit non-zero — a verifier that silently
+  // "passes" when the site is unreachable would be worse than no verifier.
+  let exitCode = 0;
+  let output = '';
+  try {
+    output = execFileSync(
+      process.execPath,
+      [path.join(ROOT, 'scripts', 'verify-access.js'), '--base=http://127.0.0.1:1'],
+      { cwd: ROOT, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' }, stdio: 'pipe', timeout: 30000 }
+    );
+  } catch (err) {
+    exitCode = err.status ?? 1;
+    output = `${err.stdout || ''}${err.stderr || ''}`;
+  }
+  assert.notEqual(exitCode, 0, `an unreachable site must fail the verifier: ${output}`);
+  assert.match(output, /cannot reach http:\/\/127\.0\.0\.1:1/);
+});
+
+test('scripts: the doctor diagnoses a broken database instead of hiding it', () => {
+  const { scripts } = require('../package.json');
+  assert.equal(scripts.doctor, 'node scripts/doctor.js', 'npm run doctor is wired up');
+
+  // Point it at a port where nothing listens and skip the running-site section:
+  // it must fail loudly and name the cause + the fix, never pass silently.
+  let exitCode = 0;
+  let output = '';
+  try {
+    output = execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'doctor.js'), '--json'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        DOCTOR_SKIP_SITE: '1',
+        DB_HOST: '127.0.0.1',
+        DB_PORT: '1',
+        DB_USER: 'nobody',
+        DB_PASSWORD: 'nope',
+        DB_NAME: 'nothing',
+      },
+      timeout: 60000,
+    });
+  } catch (err) {
+    exitCode = err.status ?? 1;
+    output = `${err.stdout || ''}${err.stderr || ''}`;
+  }
+  assert.notEqual(exitCode, 0, `a broken database must fail the doctor: ${output}`);
+
+  const report = JSON.parse(output);
+  assert.equal(report.ok, false);
+  const failedChecks = report.results.filter((r) => !r.ok);
+  assert.ok(
+    failedChecks.some((r) => r.group === 'database' && /MySQL connection/.test(r.name)),
+    'the connection failure is reported'
+  );
+  assert.ok(
+    failedChecks.every((r) => r.group !== 'database' || r.fix.length > 0),
+    'every database failure ships an actionable fix'
+  );
+  // and it never prints a secret
+  assert.ok(!output.includes('nope'), 'the database password never appears in the report');
+});
+
 test('package.json: the test script runs on Node 18 and 20, not just 22', () => {
   const { scripts, engines } = require('../package.json');
 
