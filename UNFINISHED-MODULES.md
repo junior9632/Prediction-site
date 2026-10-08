@@ -8,7 +8,7 @@
 
 | Check | Tool / command | Result |
 | --- | --- | --- |
-| Test suite | `npm test` | 105/105 pass, 0 skipped, 0 todo |
+| Test suite | `npm test` | 124/124 pass, 0 skipped, 0 todo |
 | Documented endpoints vs. mounted routes | `docs/API.md` ∩ `server/routes/*.js` | no drift |
 | Frontend `API.*` calls vs. server routes | `public/js/*.js` ∩ `server/routes/*.js` | no drift |
 | Schema tables vs. SQL actually issued | `schema.sql` ∩ `queries.js` | 17/17 tables used |
@@ -85,7 +85,8 @@ module 3 in § 5.
 
 ### 2c. Stale build artefact — `GoalPredict-cPanel-deployment.zip`
 
-The tracked deployment ZIP is **not** the build of the current source:
+**Resolved in module 4** — see § 5. The tracked deployment ZIP was not the build of the current
+source:
 
 * **28 of its 115 files differ** from the working tree — including `README.md`,
   `docs/DEPLOYMENT-CPANEL.md`, `public/index.html`, `public/js/app.js`, `public/js/dashboard.js`,
@@ -138,7 +139,7 @@ Delivered, tested and documented:
 | Test suite (10 tests) | `tests/dashboard-activity.test.js` **new** |
 | Docs | `README.md`, `docs/API.md`, `docs/ARCHITECTURE.md` |
 
-Verification: `npm test` 105/105 · `npm run test:sql` 17 tables / 84 statements · `lint:secrets`
+Verification: `npm test` 124/124 · `npm run test:sql` 17 tables / 84 statements · `lint:secrets`
 26 files clean · `lint:syntax` clean · ESLint clean.
 
 ### Remaining modules
@@ -149,8 +150,18 @@ Verification: `npm test` 105/105 · `npm run test:sql` 17 tables / 84 statements
 | 3 | `scripts/doctor.js` deployment diagnosis | ✅ done (module 2) |
 | 4 | `scripts/verify-access.js` deployment verifier | ✅ done (module 2) |
 | 5 | Inert settings wired up | ✅ done (module 3) |
-| 6 | `GoalPredict-cPanel-deployment.zip` regenerated from source | pending |
+| 6 | Deployment ZIP regenerated + drift-proofed | ✅ done (module 4) |
 | 7 | Homepage redesign (`index.html`, `js/app.js`, `css/style.css`) + `tests/homepage-render.test.js` | pending |
+
+### Module 4 — Deployment artefact — ✅ COMPLETE
+
+| Piece | File |
+| --- | --- |
+| Deterministic ZIP builder (pure Node, `zlib` + a small ZIP writer) | `scripts/build-deployment-zip.js` **new** |
+| `npm run build:zip` and `--check` | `package.json` |
+| Drift guard — fails when the committed ZIP is not the build of the committed tree | `tests/deployment-zip.test.js` **new** |
+| Regenerated archive (128 files) | `GoalPredict-cPanel-deployment.zip` |
+| Docs | `README.md`, `docs/DEPLOYMENT-CPANEL.md` |
 
 ### Module 3 — Inert settings — ✅ COMPLETE
 
