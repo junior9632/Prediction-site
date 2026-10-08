@@ -335,6 +335,10 @@ async function runPipeline(params) {
     maxSelections: Number(settings.maxSelections ?? 6),
     candidatePoolSize: Number(settings.candidatePoolSize ?? 16),
     maxCombinationsTested: Number(settings.maxCombinationsTested ?? 250000),
+    // The admin-editable combination scoring: without these two the builder
+    // silently used its own defaults and the Settings screen did nothing.
+    ...(settings.combinationWeights ? { weights: settings.combinationWeights } : {}),
+    ...(Number.isFinite(Number(settings.legPenalty)) ? { legPenalty: Number(settings.legPenalty) } : {}),
     correlation: {
       enabled: settings.correlationProtection !== false && settings.correlationProtection !== 0,
       maxPerLeague: Number(settings.maxSelectionsPerLeague ?? 2),

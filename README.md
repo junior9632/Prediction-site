@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 108 tests, no test dependencies |
+| Tests | `node:test` (built in) — 120 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -283,7 +283,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 108 tests, ~5s, no database or network required
+npm test          # 120 tests, ~5s, no database or network required
 ```
 
 | File | Covers |
@@ -291,6 +291,7 @@ npm test          # 108 tests, ~5s, no database or network required
 | `tests/engine.test.js` | exact decimal odds maths, the 14-point odds gate, exact Over 1.5 goal-line matching, combination engine, correlation protection, settlement rules, locked settings |
 | `tests/acceptance.test.js` | manual-trigger guards, data-source-unavailable runs, a full qualified generation, regeneration, settlement end to end |
 | `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
+| `tests/settings-wiring.test.js` | every admin-editable setting reaches the code that claims to honour it: the combination weights/leg-penalty reach the builder, `results_settle_mode` is enforced (a tampered value stops settlement with `SETTLE_MODE_UNSUPPORTED`), `sync_timezone` anchors the sync's calendar day with UTC storage and a safe fallback, and no newly declared setting is inert |
 | `tests/dashboard-activity.test.js` | the member boundary: guest `401`/redirect with no payload, self-scoped feed (another member's rows and IPs never leak, query parameters cannot widen the scope), disabled/locked/deleted accounts refused, admin permissions preserved, and the page contract (`no-store`, `noindex`, hidden-until-authenticated card, bfcache re-validation) |
 | `tests/fakeDb.js` | in-memory double for `server/database/connection.js`; the SQL still comes from `queries.js` |
 | `tests/synthetic.js` | fictional fixtures, odds payloads, form rows and an API-Football double |

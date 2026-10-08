@@ -333,6 +333,25 @@ back/forward cache wipes the feed and re-validates before painting it again.
 
 ---
 
+### 8.1 Every setting has a consumer
+
+A setting the console accepts and nothing reads is a lie to the operator, so each one is wired
+and, where the value can be changed under the engine's feet, enforced:
+
+| Setting | Where it acts |
+| --- | --- |
+| `combination_weights`, `combination_leg_penalty` | forwarded by `prediction/pipeline.js` into `ticketBuilder.buildTicket()` — before this they were accepted by the Settings screen and silently ignored (the builder used its own defaults) |
+| `confidence_weights`, `risk_weights`, `quality_weights` | `prediction/confidence.js`, `risk.js`, `quality.js` |
+| `results_settle_mode` | `services/resultService.js` **asserts** it on every settlement and reports the mode it used (`syncResults().settleMode`). Only `fulltime` (the 90 minute score) is supported: a row edited straight in the database to anything else stops the run with `SETTLE_MODE_UNSUPPORTED` instead of quietly settling against the wrong scoreline |
+| `sync_timezone` | `services/syncService.js` anchors every sync run on the calendar day observed in that zone (`time.dateInZone` / `time.zoneDateAnchor`). Storage stays UTC and the default `UTC` reproduces the original behaviour byte-for-byte; an unknown zone is logged and falls back to UTC rather than silently moving the window. The chosen zone is returned as `syncTimezone`/`syncTimezoneValid` and written into the sync log message |
+| `odds_reverify_before_generation` | `services/ticketService.js` (live price re-verification before the ticket is built) |
+
+`tests/settings-wiring.test.js` proves the wiring (including that the combination weights and leg
+penalty actually reach the builder, and that a tampered settle mode is refused) and fails if any
+newly declared setting has no consumer outside `settingsService.js`.
+
+---
+
 ## 10. Failure behaviour (anti-fabrication contract)
 
 | Situation | Behaviour |

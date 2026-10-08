@@ -19,11 +19,37 @@ const time = require('../utils/time');
 const logger = require('../utils/logger');
 const fixtureStatus = require('../utils/fixtureStatus');
 const fixtureService = require('./fixtureService');
+const settingsService = require('./settingsService');
 const { ApiFootballUnavailable, apiFootball: defaultApi } = require('./apiFootball');
 
 const log = logger.child('results');
 
 const OUTCOME = { WON: 'WON', LOST: 'LOST', VOID: 'VOID', POSTPONED: 'POSTPONED', PENDING: 'PENDING' };
+
+/**
+ * Settlement mode — the ONLY supported value is `fulltime` (the 90 minute
+ * score, exactly like the bookmaker market). `results_settle_mode` is locked in
+ * code, but the value is read back and asserted here as well: if a row is ever
+ * edited straight in the database to something the engine cannot honour,
+ * settlement refuses loudly instead of quietly settling against a scoreline the
+ * market does not use.
+ */
+const SUPPORTED_SETTLE_MODES = ['fulltime'];
+
+function assertSettleMode(settings) {
+  const mode = String((settings && settings.resultsSettleMode) || 'fulltime').toLowerCase();
+  if (!SUPPORTED_SETTLE_MODES.includes(mode)) {
+    const err = new Error(`Unsupported results_settle_mode "${mode}" — only ${SUPPORTED_SETTLE_MODES.join(', ')} is valid`);
+    err.code = 'SETTLE_MODE_UNSUPPORTED';
+    throw err;
+  }
+  return mode;
+}
+
+/** The settle mode actually in force (read from the settings service). */
+async function currentSettleMode() {
+  return assertSettleMode(await settingsService.getEngineSettings());
+}
 
 /**
  * Pure settlement rule for one finished fixture.
@@ -109,6 +135,8 @@ async function recomputeTicketResult(ticketId) {
 
 /** Settle every pending leg whose fixture is finished. */
 async function settlePendingSelections(options = {}) {
+  // Refuse an unsupported settlement mode before a single row is touched.
+  assertSettleMode(options.settings || (await settingsService.getEngineSettings()));
   const api = options.api || defaultApi;
   const limit = Number(options.limit) || 200;
   const pending = await db.getPendingSelections(limit);
@@ -163,6 +191,7 @@ async function settlePendingSelections(options = {}) {
  * then settle any affected picks.
  */
 async function syncResults(options = {}) {
+  const settleMode = assertSettleMode(options.settings || (await settingsService.getEngineSettings()));
   const api = options.api || defaultApi;
   const now = options.now ? time.toDate(options.now) || new Date() : new Date();
   const from = time.startOfUtcDay(options.from || time.addDays(now, -(Number(options.days) || 3)));
@@ -198,11 +227,15 @@ async function syncResults(options = {}) {
     resultsRecorded: settledRows.length,
     selectionsSettled: settlement.settled.length,
     ticketsUpdated: (settlement.tickets || []).length,
+    settleMode,
   };
 }
 
 module.exports = {
   OUTCOME,
+  SUPPORTED_SETTLE_MODES,
+  assertSettleMode,
+  currentSettleMode,
   evaluateOver15,
   recordResult,
   recomputeTicketResult,
