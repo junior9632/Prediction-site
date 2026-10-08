@@ -12,7 +12,7 @@
 | Documented endpoints vs. mounted routes | `docs/API.md` ∩ `server/routes/*.js` | no drift |
 | Frontend `API.*` calls vs. server routes | `public/js/*.js` ∩ `server/routes/*.js` | no drift |
 | Schema tables vs. SQL actually issued | `schema.sql` ∩ `queries.js` | 17/17 tables used |
-| Settings declared vs. settings consumed | `settingsService.js` `DEFINITIONS` ∩ `server/` | **5 inert settings** |
+| Settings declared vs. settings consumed | `settingsService.js` `DEFINITIONS` ∩ `server/` | **3 were inert — fixed in module 3** |
 | Deployment artefact vs. source | `GoalPredict-cPanel-deployment.zip` ∩ working tree | **28 of 115 files stale** |
 | Unmerged work | `git ls-tree` `main` vs. `origin/pr#5` | **8 files + 8 npm scripts missing** |
 
@@ -75,23 +75,13 @@ Unmerged supporting changes that ship in the same PR:
 There is **no** `server/routes/dashboard.js`, no `dashboardController`, no `activityService` and
 no `/api/dashboard/*` mount in `main` — the module that fulfils that promise is items 1–4 above.
 
-### 2b. Inert settings — editable in the admin console, read by nothing
+### 2b. Inert settings — ✅ RESOLVED (module 3)
 
-Declared in `server/services/settingsService.js` `DEFINITIONS`, exposed through
-`GET /api/admin/settings` and accepted by `PUT /api/admin/settings`, but with **zero consumers**
-anywhere in `server/`, `scripts/` or `public/`:
-
-| Setting key | Group | Declared at | Consumers |
-| --- | --- | --- | --- |
-| `odds_reverify_before_generation` | `filters` | `settingsService.js:47` | **0** |
-| `confidence_weights` | `scoring` | `settingsService.js:66` | **0** |
-| `combination_leg_penalty` | `scoring` | `settingsService.js:70` | **0** |
-| `sync_timezone` | `sync` | `settingsService.js:83` | **0** |
-| `results_settle_mode` | `site` (locked) | `settingsService.js:90` | **0** — pinned & refused on write, but settlement hard-codes fulltime |
-
-An administrator can change these in the Settings view and nothing in the product changes.
-Each needs either a consumer wired up (re-verify odds, weight overrides, leg penalty,
-sync timezone) or removal from `DEFINITIONS` so the console stops offering them.
+The first scan flagged five settings. Tracing each one's real engine mapping showed **three were
+genuinely inert**; the other two were already live under irregular names
+(`odds_reverify_before_generation` → `reverifyOddsBeforeGeneration`,
+`confidence_weights` → `confidence`). All three real gaps are now wired and enforced — see
+module 3 in § 5.
 
 ### 2c. Stale build artefact — `GoalPredict-cPanel-deployment.zip`
 
@@ -158,9 +148,27 @@ Verification: `npm test` 105/105 · `npm run test:sql` 17 tables / 84 statements
 | 2 | Admin sign-in door `/admin/login` | ✅ done (module 2) |
 | 3 | `scripts/doctor.js` deployment diagnosis | ✅ done (module 2) |
 | 4 | `scripts/verify-access.js` deployment verifier | ✅ done (module 2) |
-| 5 | Five inert settings wired up (or removed) | pending |
+| 5 | Inert settings wired up | ✅ done (module 3) |
 | 6 | `GoalPredict-cPanel-deployment.zip` regenerated from source | pending |
 | 7 | Homepage redesign (`index.html`, `js/app.js`, `css/style.css`) + `tests/homepage-render.test.js` | pending |
+
+### Module 3 — Inert settings — ✅ COMPLETE
+
+| Gap | Fix |
+| --- | --- |
+| `combination_weights` never reached the builder | forwarded by `prediction/pipeline.js` into `ticketBuilder.buildTicket()` |
+| `combination_leg_penalty` never reached the builder | same — forwarded as `legPenalty` |
+| `results_settle_mode` was a dead row | `resultService.assertSettleMode()` enforces it on every settlement; an unsupported value stops the run with `SETTLE_MODE_UNSUPPORTED` instead of settling against the wrong scoreline, and `syncResults()` reports `settleMode` |
+| `sync_timezone` was a dead row | `utils/time.js` gains `isValidTimeZone` / `dateInZone` / `zoneDateAnchor`; `syncService` anchors every sync run on the operator's calendar day (UTC storage kept, `UTC` default byte-identical, unknown zone logged + UTC fallback) and returns `syncTimezone` / `syncTimezoneValid` |
+
+| Piece | File |
+| --- | --- |
+| Zone helpers | `server/utils/time.js` |
+| Combination weights + leg penalty forwarded | `server/prediction/pipeline.js` |
+| Settlement mode enforced | `server/services/resultService.js` |
+| Sync anchored on the configured day | `server/services/syncService.js` |
+| Test suite (12 tests, incl. an inert-settings guard) | `tests/settings-wiring.test.js` **new** |
+| Docs | `README.md`, `docs/ARCHITECTURE.md` |
 
 ### Module 2 — Operator & deployment readiness — ✅ COMPLETE
 
@@ -186,6 +194,6 @@ broken database while naming the cause and the fix and never printing a secret.
 
 1. **Rebase PR #5 onto `main`** and merge it — that lands modules 1–8 above (the single largest
    block of finished-but-unshipped code).
-2. **Wire or delete the five inert settings** in `server/services/settingsService.js`.
+2. ~~Wire or delete the inert settings~~ — **done** (module 3).
 3. **Regenerate `GoalPredict-cPanel-deployment.zip`** from the current `main` after the merge,
    so the deployment artefact and the source stop diverging.
