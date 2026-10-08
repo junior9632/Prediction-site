@@ -204,6 +204,13 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 
 Every `/api/auth/*` response is sent `Cache-Control: no-store`.
 
+### Admin sign-in door
+
+`GET /admin/login` (and `/admin/login.html`) serves the shared sign-in form to anyone who is not
+already an administrator — no admin data, no console shell, no endpoint list — and redirects a
+live administrator session to `/admin.html`. Guests hitting `/admin` or `/admin.html` are
+redirected here. Any other `/admin/<anything>` answers `404`.
+
 ### Member dashboard (`/api/dashboard/*`)
 
 Session-scoped data that belongs to the signed-in account only. `requireAuth` +

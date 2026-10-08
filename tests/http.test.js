@@ -437,15 +437,23 @@ test('security: the admin area is hidden from the public UI', () => {
 });
 
 test('security: typing the admin URL never grants a guest or member access', async () => {
-  // guest: bounced to the public sign-in page, never shown admin content
+  // guest: bounced to the console's own sign-in door, never shown admin content
   for (const url of ['/admin', '/admin.html']) {
     const res = await fetch(`${base}${url}`, { redirect: 'manual' });
     assert.equal(res.status, 302, `${url} redirects guests`);
-    assert.equal(res.headers.get('location'), '/login.html');
+    assert.equal(res.headers.get('location'), '/admin/login');
   }
 
-  // guest: unknown admin-looking URLs simply do not exist
-  for (const url of ['/admin/login', '/admin/admin', '/admin/anything']) {
+  // guest: the sign-in door serves a form — never admin data, never the script
+  for (const url of ['/admin/login', '/admin/login.html']) {
+    const res = await get(url);
+    assert.equal(res.status, 200, `${url} serves the sign-in form`);
+    assert.ok(!res.text.includes('/api/admin'), `${url} ships no admin endpoint list`);
+    assert.ok(!res.text.includes('js/admin.js'), `${url} ships no console script`);
+  }
+
+  // guest: any other admin-looking URL simply does not exist
+  for (const url of ['/admin/admin', '/admin/anything']) {
     const res = await get(url);
     assert.equal(res.status, 404, `${url} must not be revealed`);
   }
@@ -557,7 +565,7 @@ test('security: the frontend is served with a strict CSP and no inline scripts',
   // bounced to the sign-in page, the script answers like an unknown file
   const adminShell = await fetch(`${base}/admin.html`, { redirect: 'manual' });
   assert.equal(adminShell.status, 302, 'the admin console redirects guests away');
-  assert.equal(adminShell.headers.get('location'), '/login.html');
+  assert.equal(adminShell.headers.get('location'), '/admin/login');
   const adminScript = await get('/js/admin.js');
   assert.equal(adminScript.status, 404, 'the admin script is invisible to guests');
 });

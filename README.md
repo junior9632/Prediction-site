@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 105 tests, no test dependencies |
+| Tests | `node:test` (built in) — 108 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -61,6 +61,8 @@ npm run test:sql            # static check: schema.sql vs every query in queries
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
 npm run health              # non-zero exit when the DB or the data source is down
+npm run doctor              # deployment diagnosis: env, MySQL, schema, seed, running site
+npm run verify:access -- --member=user:pw --admin=admin:pw   # prove the guest/member boundary on a live site
 npm run lint:secrets        # verifies no key/secret is shipped in public/
 npm run lint:js             # ESLint (correctness rules only, fetched via npx)
 npm run lint:syntax         # node --check over every JavaScript file in the repo
@@ -136,7 +138,8 @@ server/
                               errors, asyncHandler, validate, fixtureStatus
   jobs/scheduler.js           optional internal sync scheduler (never generates tickets)
 scripts/                      db-migrate, db-seed, cron-sync-*, cron-health-check,
-                              generate-ticket-cli, validate-sql, check-no-secrets
+                              generate-ticket-cli, validate-sql, check-no-secrets,
+                              doctor (deployment diagnosis), verify-access (live boundary proof)
 tests/                        fakeDb.js, synthetic.js, engine/acceptance/http/dashboard tests
 tools/uipreview.js            preview harness (development only)
 docs/                         ARCHITECTURE.md, API.md, DEPLOYMENT-CPANEL.md
@@ -204,10 +207,11 @@ back/forward cache wipes it and re-validates the session before painting it agai
 ## Admin console
 
 The console is **hidden from the public site**: no navigation, footer, sitemap or robots
-entry references it. Guests opening `/admin` or `/admin.html` are redirected to the sign-in
-page, authenticated members receive a bare `403`, and the console shell + its script are
-served `no-store` / `noindex` to administrators only. Administrators reach it by going
-straight to `/admin` (sign-in lives at the equally unlisted `/login`).
+entry references it. Guests opening `/admin` or `/admin.html` are redirected to the console's
+own unlisted sign-in door `/admin/login` (a plain form — no admin data, no endpoint list, no
+console script), authenticated members receive a bare `403`, and the console shell + its script
+are served `no-store` / `noindex` to administrators only. Administrators reach it by going
+straight to `/admin`, which bounces to its own unlisted sign-in door `/admin/login`.
 
 `/admin.html` (superadmin sees everything, `admin` role sees the operational views):
 
@@ -279,7 +283,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 105 tests, ~4s, no database or network required
+npm test          # 108 tests, ~5s, no database or network required
 ```
 
 | File | Covers |
@@ -332,6 +336,17 @@ to be verified on the host with `npm run db:setup` and `npm run sync:all` (see
 > directory form `node --test tests/` either: that executes every `.js` file in the directory,
 > including the `fakeDb.js` and `synthetic.js` fixtures. `tests/scripts.test.js` fails the build
 > if either mistake is reintroduced.
+
+---
+
+## Deployment diagnosis
+
+Two operator commands answer "why is the deployed site broken?" without guessing:
+
+| Command | What it proves |
+| --- | --- |
+| `npm run doctor` | Node version, `NODE_ENV`, every required environment variable (values masked), a real MySQL connection using the **same** credentials as the app — with the MySQL error code translated into the cause *and* the cPanel screen that fixes it — the schema (all 17 tables), the seed (settings + an active administrator), and the running site's own answers (`/api/health`, `/api/meta`, and the guest boundary on `/api/dashboard/activity`, which must be 401). `--json` for machines, `--skip-site` for the database half only. Exit code 1 on any problem, so it can gate a deploy. |
+| `npm run verify:access -- --member=user:pw --admin=admin:pw` | The guest/member/admin boundary against a **live** site: guest `401` with no payload and a redirect on `/dashboard`, the member feed scoped to that account, the console still admin-only, and `/admin/login` skipping itself for a live session. Credentials are used only for the sign-in request — nothing is written to disk. Exit code 1 on any failure. |
 
 ---
 

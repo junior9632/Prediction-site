@@ -140,20 +140,21 @@ function createApp() {
   // The admin console is deliberately undiscoverable: no public page, nav,
   // footer, sitemap or robots entry references it. Server side we never rely
   // on that secrecy alone —
-  //   * guests (or expired/invalid sessions) are redirected to the public
-  //     sign-in page, so the URL never answers with admin content
+  //   * guests (or expired/invalid sessions) are redirected to the console's
+  //     own sign-in door (/admin/login), so the URL never answers with admin
+  //     content
   //   * authenticated non-admins receive a bare 403 with no admin details
   //   * the admin account is re-read from the database, so a deactivated or
   //     locked administrator is refused even with a valid token
   //   * the console shell + its script are never cached or indexed
   const adminPageGuard = (req, res, next) => {
     const { token } = readToken(req);
-    if (!token) return res.redirect(302, '/login.html');
+    if (!token) return res.redirect(302, '/admin/login');
     let claims;
     try {
       claims = verifyToken(token);
     } catch (_err) {
-      return res.redirect(302, '/login.html');
+      return res.redirect(302, '/admin/login');
     }
     if (claims.type !== 'admin') return next(AppError.forbidden());
     req.auth = {
@@ -171,6 +172,29 @@ function createApp() {
       headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
     });
 
+  // Canonical, unlisted sign-in door for the console: /admin/login.
+  // It serves the shared sign-in page — no admin data, no console shell, no
+  // endpoint list — so an operator who types the obvious admin address gets a
+  // form instead of a 404. Every other /admin/<anything> still answers 404.
+  const adminSignInPage = (_req, res) =>
+    res.sendFile(path.join(PUBLIC_DIR, 'login.html'), {
+      headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
+    });
+
+  const alreadySignedInAdmin = (req, res, next) => {
+    const { token } = readToken(req);
+    if (!token) return next();
+    try {
+      const claims = verifyToken(token);
+      if (claims.type === 'admin') return res.redirect(302, '/admin.html');
+    } catch (_err) {
+      /* expired or invalid session: show the form again */
+    }
+    return next();
+  };
+
+  app.get('/admin/login', alreadySignedInAdmin, adminSignInPage);
+  app.get('/admin/login.html', alreadySignedInAdmin, adminSignInPage);
   app.get('/admin', adminPageGuard, requireActiveAdmin, adminConsolePage);
   app.get('/admin.html', adminPageGuard, requireActiveAdmin, adminConsolePage);
 

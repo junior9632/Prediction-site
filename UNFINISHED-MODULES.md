@@ -155,11 +155,30 @@ Verification: `npm test` 105/105 · `npm run test:sql` 17 tables / 84 statements
 
 | # | Module | State |
 | --- | --- | --- |
-| 2 | Homepage redesign (`index.html`, `js/app.js`, `css/style.css`) + `tests/homepage-render.test.js` | pending |
-| 3 | Admin sign-in door `/admin/login` + `scripts/doctor.js` | pending |
-| 4 | `scripts/verify-access.js` deployment verifier | pending |
+| 2 | Admin sign-in door `/admin/login` | ✅ done (module 2) |
+| 3 | `scripts/doctor.js` deployment diagnosis | ✅ done (module 2) |
+| 4 | `scripts/verify-access.js` deployment verifier | ✅ done (module 2) |
 | 5 | Five inert settings wired up (or removed) | pending |
 | 6 | `GoalPredict-cPanel-deployment.zip` regenerated from source | pending |
+| 7 | Homepage redesign (`index.html`, `js/app.js`, `css/style.css`) + `tests/homepage-render.test.js` | pending |
+
+### Module 2 — Operator & deployment readiness — ✅ COMPLETE
+
+| Piece | File |
+| --- | --- |
+| Console sign-in door `/admin/login` + `/admin/login.html` | `server/app.js` |
+| Console guard + client redirects now target the door | `server/app.js`, `public/js/admin.js` |
+| Deployment doctor (`npm run doctor`) | `scripts/doctor.js` **new** |
+| Live access verifier (`npm run verify:access`) | `scripts/verify-access.js` **new** |
+| npm scripts | `package.json` |
+| `AbortSignal` global for the ESLint env | `eslint.config.js` |
+| Existing admin-redirect assertions updated to the door | `tests/http.test.js` |
+| Script wiring + failure-mode tests | `tests/scripts.test.js` |
+| Live-verifier + door assertions | `tests/dashboard-activity.test.js` |
+| Docs | `README.md`, `docs/API.md`, `docs/DEPLOYMENT-CPANEL.md` |
+
+Verified against the running app: `verify-access` **35/35 checks pass**; `doctor` exits 1 on a
+broken database while naming the cause and the fix and never printing a secret.
 
 ---
 

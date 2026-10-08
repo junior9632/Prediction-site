@@ -241,6 +241,17 @@ test('guest: the member page redirects to sign-in and ships no feed', async () =
   }
   // the admin console data stays unreachable as well
   assert.equal((await get('/api/admin/overview')).status, 401);
+
+  // the console redirects to its own sign-in door, which serves a form only
+  const consolePage = await req('GET', '/admin.html', { redirect: 'manual' });
+  assert.equal(consolePage.status, 302);
+  assert.equal(consolePage.headers.get('location'), '/admin/login');
+  const door = await get('/admin/login');
+  assert.equal(door.status, 200);
+  assert.ok(!door.text.includes('/api/admin'), 'the door ships no admin endpoint list');
+  assert.ok(!door.text.includes('js/admin.js'), 'the door ships no console script');
+  assert.match(door.headers.get('x-robots-tag') || '', /noindex/);
+  assert.equal((await get('/js/admin.js')).status, 404, 'the console script does not exist for a guest');
 });
 
 test('guest: no public page carries the feed, its markup or the endpoint', () => {
@@ -390,7 +401,35 @@ test('admin: the console keeps its permissions and the feed stays admin scoped',
 });
 
 /* ------------------------------------------------------------------ */
-/* 4. the activity labels stay honest for unknown events               */
+/* 4. the operator-facing verifier works against this very server      */
+/* ------------------------------------------------------------------ */
+
+test('tooling: scripts/verify-access.js reports a clean pass against the running app', async () => {
+  // Must be ASYNC: execFileSync would block this process's event loop, and the
+  // app under test runs in it — the verifier's requests could never be served.
+  const { execFile } = require('node:child_process');
+  const { promisify } = require('node:util');
+  const report = await promisify(execFile)(
+    process.execPath,
+    [
+      path.join(__dirname, '..', 'scripts', 'verify-access.js'),
+      `--base=${base}`,
+      `--member=${MEMBER.username}:${MEMBER_PASSWORD}`,
+      `--admin=${ADMIN.username}:admin-test-pass-1`,
+      '--json',
+    ],
+    { cwd: path.join(__dirname, '..'), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' }, timeout: 60000 }
+  ).then((r) => r.stdout);
+  const parsed = JSON.parse(report);
+  assert.equal(parsed.failed, 0, report);
+  assert.ok(parsed.passed >= 30, 'the verifier checks the guest, member and admin states');
+  assert.ok(parsed.results.some((r) => r.name.startsWith('guest:')));
+  assert.ok(parsed.results.some((r) => r.name.startsWith('member:')));
+  assert.ok(parsed.results.some((r) => r.name.startsWith('admin:')));
+});
+
+/* ------------------------------------------------------------------ */
+/* 5. the activity labels stay honest for unknown events               */
 /* ------------------------------------------------------------------ */
 
 test('labels: an unmapped event still renders a readable, safe label', async () => {
