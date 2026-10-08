@@ -103,7 +103,7 @@ async function generate(scn, { settings = SETTINGS, now = NOW, overrides = [] } 
 
 test('decimal: exact multiplication with no floating point drift', () => {
   const total = decimal.product(['1.28', '1.30', '1.32']);
-  assert.equal(decimal.format(total, 6), '2.196500');
+  assert.equal(decimal.format(total, 6), '2.196480');
   assert.equal(decimal.format(total, 4), '2.1965');
   assert.equal(decimal.format(total, 2), '2.20');
 
@@ -271,7 +271,7 @@ test('acceptance 1: qualified ticket keeps combined odds inside 2.00 - 4.00', as
   assert.ok(result.ticket);
   assert.equal(result.ticket.selections.length, 3);
   assert.equal(result.counters.selectedPicks, 3);
-  assert.equal(result.ticket.totalOddsExact, '2.1965');
+  assert.equal(Number(result.ticket.totalOddsExact), 2.19648);
   assert.equal(result.ticket.totalOddsDisplay, '2.20');
   assert.equal(decimal.gte(result.ticket.totalOddsScaled, decimal.scaledFromNumber(2)), true);
   assert.equal(decimal.lte(result.ticket.totalOddsScaled, decimal.scaledFromNumber(4)), true);
@@ -386,7 +386,7 @@ test('acceptance 2: the pipeline reports NO QUALIFYING TICKET end to end', async
 
 test('acceptance 3: the pipeline refuses to publish an over-maximum accumulator', async () => {
   // A narrowed (still legal) window of 2.00-2.10 with a 3 leg minimum: the only
-  // reachable combination is 1.28 x 1.30 x 1.32 = 2.1965, which is above it.
+  // reachable combination is 1.28 x 1.30 x 1.32 = 2.19648 (exact), which is above it.
   const result = await generate(scenario(['1.28', '1.30', '1.32']), {
     settings: { ...SETTINGS, minSelections: 3, maxTotalOdds: 2.1 },
   });
@@ -405,7 +405,7 @@ test('acceptance 1: the odds window is applied to the exact total, not the round
     settings: { ...SETTINGS, maxTotalOdds: 2.2 },
   });
   assert.equal(inside.status, 'QUALIFIED');
-  assert.equal(inside.ticket.totalOddsExact, '2.1965');
+  assert.equal(Number(inside.ticket.totalOddsExact), 2.19648);
   assert.equal(inside.ticket.totalOddsDisplay, '2.20');
 
   const outside = await generate(scenario(['1.28', '1.30', '1.32']), {
@@ -658,7 +658,7 @@ test('review 4: 1.30 x 1.50 = 1.95 is below the window and must be rejected', ()
 test('review 5: 1.40 x 1.50 = 2.10 qualifies inside the window', () => {
   const result = ticketBuilder.buildTicket([candidate(1, '1.40'), candidate(2, '1.50')], WINDOW);
   assert.equal(result.status, ticketBuilder.STATUS.QUALIFIED);
-  assert.equal(result.totalOddsExact, '2.1000');
+  assert.equal(Number(result.totalOddsExact), 2.1);
   assert.equal(result.totalOddsDisplay, '2.10');
   assert.equal(result.selections.length, 2);
 });
@@ -698,6 +698,6 @@ test('review 6b: a three-leg accumulator is published when only three legs reach
   );
   assert.equal(result.status, ticketBuilder.STATUS.QUALIFIED);
   assert.equal(result.selections.length, 3);
-  assert.equal(result.totalOddsExact, '2.1970');
+  assert.equal(Number(result.totalOddsExact), 2.197);
   assert.equal(result.totalOddsDisplay, '2.20');
 });

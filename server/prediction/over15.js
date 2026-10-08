@@ -136,13 +136,24 @@ function analyze(context) {
   // modelled from that sample
   const homeLastMatch = time.toDate(homeAll && homeAll.lastMatchAt);
   const awayLastMatch = time.toDate(awayAll && awayAll.lastMatchAt);
-  const homeDaysSince = homeLastMatch ? Math.round(-time.minutesBetween(homeLastMatch, now) / 1440) : null;
-  const awayDaysSince = awayLastMatch ? Math.round(-time.minutesBetween(awayLastMatch, now) / 1440) : null;
+  // minutesBetween(a, b) = b - a, so this is positive for a match in the past
+  const homeDaysSince = homeLastMatch ? Math.round(time.minutesBetween(homeLastMatch, now) / 1440) : null;
+  const awayDaysSince = awayLastMatch ? Math.round(time.minutesBetween(awayLastMatch, now) / 1440) : null;
   if (homeDaysSince !== null && homeDaysSince > settings.maxDaysSinceLastMatch) {
     return rejection(REJECT.INSUFFICIENT_DATA, { reason: 'home team form is stale', homeDaysSince });
   }
   if (awayDaysSince !== null && awayDaysSince > settings.maxDaysSinceLastMatch) {
     return rejection(REJECT.INSUFFICIENT_DATA, { reason: 'away team form is stale', awayDaysSince });
+  }
+
+  /* --- every statistic used by the model and the risk score must be real */
+  // Missing values are never replaced by an assumed average (DATA UNAVAILABLE).
+  const requiredStats = ['over15Rate', 'cleanSheetRate', 'failedToScoreRate', 'totalGoalsStddev'];
+  for (const [side, row] of [['home', homeAll], ['away', awayAll]]) {
+    const missing = requiredStats.filter((f) => !row || row[f] === null || row[f] === undefined || !Number.isFinite(Number(row[f])));
+    if (missing.length) {
+      return rejection(REJECT.INSUFFICIENT_DATA, { reason: 'DATA UNAVAILABLE: statistics missing', side, missing });
+    }
   }
 
   /* --- league baseline ---------------------------------------------- */

@@ -565,7 +565,12 @@ async function persistPredictions(predictions, { now }) {
   }
 }
 
-async function assertTicketReplaceable(ticketDate) {
+/**
+ * A published ticket may only be replaced while none of its legs has kicked
+ * off. Once a leg is live, the stored snapshot is the record of what was
+ * published and must not be deleted by a later run.
+ */
+async function assertTicketReplaceable(ticketDate, now = new Date()) {
   const existing = await db.getTicketByDate(ticketDate);
   if (!existing) return null;
   if (existing.result && existing.result !== 'PENDING' && existing.result !== 'N/A') {
@@ -574,11 +579,24 @@ async function assertTicketReplaceable(ticketDate) {
       'TICKET_ALREADY_SETTLED'
     );
   }
+  const nowMs = (time.toDate(now) || new Date()).getTime();
+  const legs = await db.getSelectionsByTicket(Number(existing.id));
+  const started = legs.filter((leg) => {
+    const kickoff = time.toDate(leg.kickoff_at);
+    return kickoff !== null && kickoff.getTime() <= nowMs;
+  });
+  if (started.length) {
+    throw AppError.conflict(
+      `The ticket for ${ticketDate} has ${started.length} leg(s) that have already kicked off and cannot be replaced`,
+      'TICKET_ALREADY_STARTED',
+      { ticketId: Number(existing.id), startedLegs: started.map((l) => Number(l.fixture_id)) }
+    );
+  }
   return existing;
 }
 
 async function persistQualifiedTicket({ ticketDate, result, settings, adminId, generationId, now }) {
-  const existing = await assertTicketReplaceable(ticketDate);
+  const existing = await assertTicketReplaceable(ticketDate, now);
   if (existing) await db.deleteTicketById(Number(existing.id));
 
   const ticket = result.ticket;
@@ -676,6 +694,8 @@ async function persistNoTicket({ ticketDate, result, settings, adminId, generati
     // settled history is protected; report without touching it
     return { ticketId: Number(existing.id), publicTicket: null, protected: true };
   }
+  // a no-ticket run must not erase a published ticket whose legs have started
+  if (existing) await assertTicketReplaceable(ticketDate, now);
   if (existing) await db.deleteTicketById(Number(existing.id));
 
   const status = result.status === 'NO_QUALIFYING_TICKET' ? 'NO_QUALIFYING_TICKET' : result.status;
@@ -795,7 +815,8 @@ function selectionToPublic(row, now = new Date()) {
     odds: {
       // the frozen snapshot value — never re-read from the bookmaker
       value: row.odd_raw || (row.odd_decimal === null ? null : String(row.odd_decimal)),
-      display: decimal.format(decimal.toScaled(row.odd_raw || row.odd_decimal), 2),
+      // the exact verified price, never rounded for display
+      display: decimal.exactOddsText(row.odd_raw || row.odd_decimal),
       bookmakerId: row.bookmaker_id === null ? null : Number(row.bookmaker_id),
       bookmaker: row.bookmaker_name,
       oddsUpdatedAt: time.toIso(row.odds_updated_at),

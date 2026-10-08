@@ -42,7 +42,7 @@ Target: a standard cPanel account with **Setup Node.js App**, **MySQL Databases*
    ```bash
    cd /home/USER/goalpredict
    cp .env.example .env      # fill in DB_* first (see step 4)
-   npm run db:migrate        # idempotent: CREATE TABLE IF NOT EXISTS only
+   npm run db:migrate        # baseline schema + every pending versioned migration (applied once each)
    ```
 
    **phpMyAdmin**
@@ -228,8 +228,9 @@ Notes:
 cd /home/USER/goalpredict
 git pull                        # or upload the changed files
 npm ci --omit=dev               # only when package.json changed
-npm run db:migrate              # idempotent — safe after every deploy
-npm test                        # optional but cheap: 54 tests, no DB needed
+npm run db:migrate              # applies pending migrations once each — run after every deploy
+#   (001-widen-odds-precision.sql widens price columns to DECIMAL(12,6); existing databases need it)
+npm test                        # optional but cheap: 95 tests, no DB needed
 node scripts/check-no-secrets.js
 ```
 
