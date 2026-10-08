@@ -23,7 +23,18 @@
     .quick-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
     .quick-link{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2);font-weight:700}
     .quick-link:hover{border-color:rgba(34,211,238,.45);color:var(--cyan)}
-    @media(max-width:800px){.dash-card,.dash-card.wide{grid-column:1/-1}.dash-heading{align-items:flex-start;flex-direction:column}}
+    .acc-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px}
+    .acc-cell{padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+    .acc-cell .k{font-size:10px;font-weight:800;letter-spacing:.13em;text-transform:uppercase;color:var(--muted-2)}
+    .acc-cell .v{font-size:17px;font-weight:900;margin-top:4px;font-variant-numeric:tabular-nums}
+    .activity-feed{display:flex;flex-direction:column}
+    .activity-row{display:flex;align-items:flex-start;gap:12px;padding:11px 0;border-bottom:1px solid var(--line-soft)}
+    .activity-row:last-child{border-bottom:0}
+    .activity-dot{width:9px;height:9px;border-radius:50%;margin-top:5px;flex:0 0 auto;background:var(--muted-2)}
+    .activity-dot.good{background:var(--green);box-shadow:0 0 9px rgba(34,197,94,.75)}
+    .activity-dot.info{background:var(--cyan);box-shadow:0 0 9px rgba(34,211,238,.7)}
+    .activity-dot.warn{background:var(--amber)}
+    @media(max-width:800px){.dash-card,.dash-card.wide{grid-column:1/-1}.dash-heading{align-items:flex-start;flex-direction:column}.acc-summary{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -39,6 +50,11 @@
     <section class="card dash-card"><div class="card-head"><h2 class="card-title">Account security</h2></div><div class="card-body"><div class="badge badge-green">Signed in</div><p class="small muted" style="margin:12px 0 16px">Your session is active. You can update your password from account settings.</p><a class="btn btn-ghost btn-block" href="/account.html">Security & settings</a></div></section>
     <section class="card dash-card"><div class="card-head"><h2 class="card-title">Explore GoalPredict</h2></div><div class="card-body"><div class="quick-links"><a class="quick-link" href="/ticket.html">Today's ticket <span>↗</span></a><a class="quick-link" href="/history.html">Results history <span>↗</span></a><a class="quick-link" href="/analytics.html">Performance <span>↗</span></a><a class="quick-link" href="/predictions.html">Fixtures <span>↗</span></a></div></div></section>
     <section class="card dash-card wide"><div class="card-head"><h2 class="card-title">Latest platform status</h2></div><div class="card-body"><div class="row" style="justify-content:space-between;gap:12px"><span class="small muted">Today's ticket</span><strong id="ticketStatus">Checking…</strong></div><p class="small muted" id="ticketMessage" style="margin-top:10px">We are checking the latest published status.</p><a class="btn btn-ghost" href="/ticket.html" style="margin-top:14px">Open ticket details</a></div></section>
+    <section class="card dash-card wide hidden" id="activityCard"><div class="card-head"><h2 class="card-title">Dashboard Activity</h2><span class="badge badge-cyan" id="activityScope">Your account only</span></div><div class="card-body">
+      <div class="acc-summary" id="activitySummary"></div>
+      <div id="activityFeed" class="activity-feed"></div>
+      <p class="tiny muted" style="margin-top:12px">This feed is read from the server for your signed-in account only — it is never shown to visitors and never cached.</p>
+    </div></section>
     <section class="card dash-card"><div class="card-head"><h2 class="card-title">Responsible play</h2></div><div class="card-body"><p class="small muted">Predictions are statistical analysis, not guarantees. Never stake money you cannot afford to lose.</p><a class="small" href="/legal.html">Read our policies →</a></div></section>
   </div>
 </main>

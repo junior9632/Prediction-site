@@ -901,6 +901,28 @@ async function querySystemLogs({ level = null, channel = null, event = null, fro
   return db.query(`SELECT * FROM system_logs${where} ORDER BY id DESC${db.limitClause(limit, offset)}`, params);
 }
 
+/**
+ * Audit entries that belong to ONE actor (a member account or an administrator).
+ *
+ * `actorType` and `actorId` are always taken from the verified session on the
+ * server — never from the request — so a signed-in member can only ever read
+ * their own activity feed. Indexed by `idx_logs_actor (actor_type, actor_id)`.
+ */
+async function listActorSystemLogs(actorType, actorId, limit = 25) {
+  return db.query(
+    `SELECT * FROM system_logs WHERE 1=1 AND actor_type = ? AND actor_id = ? ORDER BY id DESC${db.limitClause(limit)}`,
+    [actorType, actorId]
+  );
+}
+
+async function countActorSystemLogs(actorType, actorId) {
+  const row = await db.queryOne(
+    `SELECT COUNT(*) AS total FROM system_logs WHERE 1=1 AND actor_type = ? AND actor_id = ?`,
+    [actorType, actorId]
+  );
+  return Number(row?.total || 0);
+}
+
 async function countSystemLogs({ level = null, channel = null, from = null, to = null } = {}) {
   const params = [];
   let where = ' WHERE 1=1';
@@ -1105,6 +1127,7 @@ module.exports = {
   insertApiSyncLog, finishApiSyncLog, getApiSyncLogs,
   insertGenerationLog, updateGenerationLog, getGenerationLog, getGenerationLogByDate, listGenerationLogs,
   insertSystemLog, querySystemLogs, countSystemLogs,
+  listActorSystemLogs, countActorSystemLogs,
   // auth
   getAdminByLogin, getAdminById, listAdmins, createAdmin, updateAdminPassword,
   recordAdminLoginSuccess, recordAdminLoginFailure,

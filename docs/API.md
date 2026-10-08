@@ -202,6 +202,25 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 | `POST /api/auth/logout` | — | clears the session cookies for any session type (admin or user) |
 | `POST /api/auth/change-password` | `{currentPassword, newPassword}` | authenticated user session; CSRF required for cookie sessions |
 
+Every `/api/auth/*` response is sent `Cache-Control: no-store`.
+
+### Member dashboard (`/api/dashboard/*`)
+
+Session-scoped data that belongs to the signed-in account only. `requireAuth` +
+`requireActiveAccount` run on **every** route: a guest receives `401 UNAUTHORIZED` with no payload,
+and an account that is deleted, deactivated or locked is refused with `401 ACCOUNT_MISSING`,
+`403 ACCOUNT_DISABLED` or `403 ACCOUNT_LOCKED` even while its token is still valid. Responses are
+always `Cache-Control: no-store`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /activity` | The caller's own feed: `{audience: "authenticated", scope: "self", account {type, id, username, email, plan, memberSince, lastLoginAt}, summary {recordedEvents, shownEvents, lastActivityAt, accountAgeDays}, items[]}`. Items are `{id, event, title, detail, tone, level, channel, at}`, newest first, at most 25. |
+
+The actor type/id are read from the account row the middleware re-read from the database — **query
+parameters can never widen the scope**, and one account can never read another's events. The page
+that renders it (`/dashboard`, `/dashboard.html`) redirects guests to `/account.html`, redirects
+administrators to `/admin.html`, and is served `no-store` + `X-Robots-Tag: noindex`.
+
 ---
 
 ## Admin (`/api/admin/*`)

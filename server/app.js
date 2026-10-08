@@ -30,6 +30,7 @@ const ticketsRoutes = require('./routes/tickets');
 const analyticsRoutes = require('./routes/analytics');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
+const dashboardRoutes = require('./routes/dashboard');
 
 const log = logger.child('app');
 const PUBLIC_DIR = path.join(config.rootDir, 'public');
@@ -110,19 +111,30 @@ function createApp() {
   app.use('/api/analytics', analyticsRoutes);
   app.use('/api/auth', authRoutes);
   app.use('/api/admin', adminRoutes);
+  // Member dashboard data (activity feed, account summary). Guests get 401 —
+  // never a partial payload, never a cached one.
+  app.use('/api/dashboard', dashboardRoutes);
 
   /* ------------------------ protected frontend ---------------------- */
   // The private pages are protected at the server boundary as well as in the
-  // browser. An unauthenticated visitor opening /dashboard.html directly is
-  // bounced to the sign-in page instead of receiving the member area.
-  app.get('/dashboard', requireAuth, (req, res) => {
-    if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
-    return res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
-  });
-  app.get('/dashboard.html', requireAuth, (req, res) => {
-    if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
-    return res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'));
-  });
+  // browser. An unauthenticated visitor opening /dashboard or /dashboard.html
+  // directly is bounced to the member sign-in page instead of receiving the
+  // member area (and the page itself is never cached).
+  const memberPageGuard = (req, res, next) =>
+    requireAuth(req, res, (err) => {
+      if (err && err.status === 401) return res.redirect(302, '/account.html');
+      if (err) return next(err);
+      if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
+      return next();
+    });
+
+  const memberDashboardPage = (_req, res) =>
+    res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'), {
+      headers: { 'Cache-Control': 'no-store, no-cache', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
+    });
+
+  app.get('/dashboard', memberPageGuard, memberDashboardPage);
+  app.get('/dashboard.html', memberPageGuard, memberDashboardPage);
 
   /* ------------------------- hidden admin area ---------------------- */
   // The admin console is deliberately undiscoverable: no public page, nav,

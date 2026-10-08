@@ -19,7 +19,8 @@
  *
  * Usage:  node tools/uipreview.js            (http://localhost:3000)
  *         PORT=8080 node tools/uipreview.js
- * Admin:  username `admin`  password `preview123`
+ * Admin:  username `admin`   password `preview123`
+ * Member: username `member`  password `preview123`  (open /dashboard)
  */
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'development';
@@ -59,6 +60,46 @@ const ADMIN = {
   must_change_password: 0,
   failed_logins: 0,
 };
+
+/** A demo member, so /dashboard and its private activity feed can be reviewed. */
+const MEMBER = {
+  id: 2,
+  email: 'member@preview.local',
+  username: 'member',
+  password_hash: bcrypt.hashSync(PREVIEW_PASSWORD, 8),
+  role: 'user',
+  is_active: 1,
+  failed_logins: 0,
+  locked_until: null,
+  last_login_at: null,
+  last_login_ip: null,
+  created_at: '2026-09-01 09:00:00',
+  updated_at: '2026-09-01 09:00:00',
+};
+
+/** Fictional audit rows for the member's own Dashboard Activity feed. */
+function previewActivityLogs() {
+  const rows = [
+    { event: 'USER_REGISTERED', channel: 'auth', level: 'info', daysAgo: 37, message: 'Member member registered' },
+    { event: 'USER_LOGIN', channel: 'auth', level: 'info', daysAgo: 12, message: 'Member member signed in' },
+    { event: 'LOGIN_FAILED', channel: 'auth', level: 'warn', daysAgo: 9, message: 'Failed user login for member' },
+    { event: 'USER_PASSWORD_CHANGED', channel: 'auth', level: 'info', daysAgo: 4, message: 'Member member changed the password' },
+    { event: 'USER_LOGIN', channel: 'auth', level: 'info', daysAgo: 1, message: 'Member member signed in' },
+  ];
+  return rows.map((row, index) => ({
+    id: index + 1,
+    level: row.level,
+    channel: row.channel,
+    event: row.event,
+    message: row.message,
+    actor_type: 'user',
+    actor_id: MEMBER.id,
+    ip_address: '203.0.113.7',
+    user_agent: 'preview',
+    context_json: null,
+    created_at: mysqlDateTime(new Date(Date.now() - row.daysAgo * 86400000)),
+  }));
+}
 
 const mysqlDateTime = (date) => date.toISOString().replace('T', ' ').slice(0, 19);
 const utcDay = (date) => date.toISOString().slice(0, 10);
@@ -302,7 +343,7 @@ const BANNER_JS = `
     'font:600 12px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:8px 12px;text-align:center;' +
     'border-top:1px solid #f97316;letter-spacing:.02em;';
   bar.textContent = 'PREVIEW MODE \\u2014 sample data only. Fictional teams, leagues, odds and results. ' +
-    'No API-Football key, no database. Production runs on server.js + MySQL. Admin: admin / preview123';
+    'No API-Football key, no database. Production runs on server.js + MySQL. Admin: admin / preview123 · Member: member / preview123 (/dashboard)';
   document.addEventListener('DOMContentLoaded', function () {
     document.body.appendChild(bar);
     document.body.style.paddingBottom = '52px';
@@ -368,6 +409,8 @@ async function main() {
 
   const ctx = fakeDb.install({
     admins: [ADMIN],
+    users: [MEMBER],
+    systemLogs: previewActivityLogs(),
     settings: [],
     fixtures: scn.fixtures,
     teamForms: scn.teamForms,

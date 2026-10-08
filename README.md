@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 95 tests, no test dependencies |
+| Tests | `node:test` (built in) — 105 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -81,6 +81,7 @@ Docker is for local development only — production stays on cPanel.
 
 ```bash
 npm run preview:ui          # http://localhost:3000  — admin / preview123
+#                             member / preview123  →  /dashboard
 # or: node tools/uipreview.js
 ```
 
@@ -107,32 +108,36 @@ public/                       the entire frontend (static, no build step)
   analytics.html              performance analytics (win rate, streaks, monthly)
   predictions.html            every analysed fixture with its evidence
   login.html                  sign-in door (unlisted, never linked from the public UI)
+  account.html                member sign-in / register / profile / change password
+  dashboard.html              member workspace: profile, status, Dashboard Activity
   admin.html                  admin console (10 views, sidebar layout, unlisted + guarded)
   css/style.css               design system: dark navy panels, cyan accents
   js/api.js                   fetch wrapper + CSRF + shared render helpers
-  js/{app,ticket,history,analytics,predictions,account,login,admin}.js
+  js/{app,ticket,history,analytics,predictions,account,dashboard,login,admin}.js
   img/{logo,favicon}.svg
 server/
   config/index.js             typed environment configuration
   app.js  server.js           Express app factory + HTTP bootstrap
   routes/                     health, fixtures, odds, predictions, tickets,
-                              analytics, auth, admin
+                              analytics, auth, dashboard, admin
   controllers/                request validation + response shaping only
   services/                   apiFootball, fixtureService, oddsService, statsService,
                               contextService, syncService, resultService, settingsService,
-                              logService, analyticsService, ticketService, notifyService
+                              logService, analyticsService, ticketService, notifyService,
+                              activityService (member Activity feed)
   prediction/                 over15, confidence, risk, quality, correlation,
                               ticketBuilder, pipeline
   database/                   schema.sql (baseline), migrations/ (versioned, applied
                               once + checksummed), migrate.js, connection.js (pool),
                               queries.js (all SQL)
-  middleware/                 auth, adminAuth (+CSRF), rateLimit, requestLogger, errorHandler
+  middleware/                 auth, adminAuth (+CSRF), account (active-account guard),
+                              rateLimit, requestLogger, errorHandler
   utils/                      decimal (exact odds maths), numbers, time, logger,
                               errors, asyncHandler, validate, fixtureStatus
   jobs/scheduler.js           optional internal sync scheduler (never generates tickets)
 scripts/                      db-migrate, db-seed, cron-sync-*, cron-health-check,
                               generate-ticket-cli, validate-sql, check-no-secrets
-tests/                        fakeDb.js, synthetic.js, engine/acceptance/http tests
+tests/                        fakeDb.js, synthetic.js, engine/acceptance/http/dashboard tests
 tools/uipreview.js            preview harness (development only)
 docs/                         ARCHITECTURE.md, API.md, DEPLOYMENT-CPANEL.md
 ```
@@ -170,6 +175,29 @@ Full details, including the 14 validation points and the scoring maths, are in
 Settlement is equally strict: a finished match with **2 or more total goals is WON**, **0–1 goals
 is LOST**, and **postponed / cancelled / abandoned legs are VOID or POSTPONED** (void legs are
 removed from the accumulator instead of being counted as wins).
+
+---
+
+## Member area
+
+Members are optional readers — the site never requires an account. `/account` handles
+sign-in / registration / profile / password change, and `/dashboard` is the private workspace:
+profile, plan, today's ticket status and the **Dashboard Activity** feed.
+
+The feed is not hidden with CSS. It is protected at the server boundary:
+
+| Principal | `/dashboard` | `GET /api/dashboard/activity` |
+| --- | --- | --- |
+| Guest / expired token | `302` → `/account.html` | `401 UNAUTHORIZED`, no payload |
+| Deleted account | `302` → `/account.html` | `401 ACCOUNT_MISSING` |
+| Disabled or locked account | `302` → `/account.html` | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` |
+| Member | page served `no-store` + `noindex` | `200`, own events only |
+| Administrator | `302` → `/admin.html` | `200`, admin-scoped feed |
+
+The actor type and id come from the account row re-read from the database on every request, so a
+query string can never widen the scope and one member can never read another's events. The card
+starts hidden in the markup and is only revealed by the authenticated payload; a restore from the
+back/forward cache wipes it and re-validates the session before painting it again.
 
 ---
 
@@ -251,7 +279,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 95 tests, ~3s, no database or network required
+npm test          # 105 tests, ~4s, no database or network required
 ```
 
 | File | Covers |
@@ -259,6 +287,7 @@ npm test          # 95 tests, ~3s, no database or network required
 | `tests/engine.test.js` | exact decimal odds maths, the 14-point odds gate, exact Over 1.5 goal-line matching, combination engine, correlation protection, settlement rules, locked settings |
 | `tests/acceptance.test.js` | manual-trigger guards, data-source-unavailable runs, a full qualified generation, regeneration, settlement end to end |
 | `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
+| `tests/dashboard-activity.test.js` | the member boundary: guest `401`/redirect with no payload, self-scoped feed (another member's rows and IPs never leak, query parameters cannot widen the scope), disabled/locked/deleted accounts refused, admin permissions preserved, and the page contract (`no-store`, `noindex`, hidden-until-authenticated card, bfcache re-validation) |
 | `tests/fakeDb.js` | in-memory double for `server/database/connection.js`; the SQL still comes from `queries.js` |
 | `tests/synthetic.js` | fictional fixtures, odds payloads, form rows and an API-Football double |
 | `tests/scripts.test.js` | runs `scripts/validate-sql.js` and `scripts/check-no-secrets.js` and fails when they do; also guards the `test` script itself (see below) |

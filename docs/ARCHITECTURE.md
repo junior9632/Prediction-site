@@ -312,6 +312,25 @@ Static files only, mobile-first, no build step and no framework:
 * The admin console is a single page with hash routing over ten views; generation is a
   confirm dialog → `202 Accepted` → 900 ms polling of the progress endpoint → refresh.
 
+### 9.1 Member area (`/dashboard`)
+
+The member workspace is a private page, not a public one, and it is guarded at the server
+boundary rather than by CSS:
+
+| Principal | `/dashboard`, `/dashboard.html` | `GET /api/dashboard/activity` |
+| --- | --- | --- |
+| Guest / expired token | `302` → `/account.html` | `401 UNAUTHORIZED`, no payload |
+| Deleted account | `302` → `/account.html` | `401 ACCOUNT_MISSING` |
+| Disabled / locked account | `302` → `/account.html` | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` |
+| Member | page served `no-store`, `noindex` | `200`, feed scoped to that account |
+| Administrator | `302` → `/admin.html` | `200`, admin-scoped feed |
+
+`middleware/account.js` re-reads the account row on every request (like `requireActiveAdmin` does
+for the console) and publishes it as `req.member`. `services/activityService.js` builds the feed
+from `system_logs` using **only** that row's `type`/`id` — the request cannot influence the scope.
+The card is hidden in the markup until the server confirms the session, and a restore from the
+back/forward cache wipes the feed and re-validates before painting it again.
+
 ---
 
 ## 10. Failure behaviour (anti-fabrication contract)
