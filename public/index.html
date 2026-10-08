@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>GoalPredict — AI-Powered Football Predictions · Over 1.5 Goals</title>
-  <meta name="description" content="GoalPredict is a sports-intelligence platform for one market: Over 1.5 Goals. Real fixtures, historical goal trends and verified bookmaker odds, published in public with a full record.">
-  <meta property="og:title" content="GoalPredict — AI-Powered Football Predictions"><meta property="og:description" content="Real football data, verified bookmaker odds, one market: Over 1.5 Goals. Free to read — no account needed."><meta property="og:type" content="website"><meta name="twitter:card" content="summary">
+  <meta name="description" content="GoalPredict is a sports-intelligence platform for one market: Over 1.5 Goals. Real fixtures, historical goal trends and verified bookmaker odds. Predictions, tickets and analytics are for signed-in members.">
+  <meta property="og:title" content="GoalPredict — AI-Powered Football Predictions"><meta property="og:description" content="Real football data, verified bookmaker odds, one market: Over 1.5 Goals. Sign in to open today’s predictions."><meta property="og:type" content="website"><meta name="twitter:card" content="summary">
   <meta name="theme-color" content="#04080f">
   <link rel="icon" type="image/svg+xml" href="/img/favicon.svg"><link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/css/style.css">
@@ -27,9 +27,12 @@
 
       <nav class="main-nav lp-nav" aria-label="Primary">
         <a href="/" class="active">Home</a>
-        <a href="/ticket.html">Today's Predictions</a>
-        <a href="/predictions.html">Matches</a>
-        <a href="/analytics.html">Analytics</a>
+        <a href="/about.html">About</a>
+        <a class="hidden" href="/dashboard" data-member-only>Dashboard</a>
+        <a class="hidden" href="/predictions.html" data-member-only>Predictions</a>
+        <a class="hidden" href="/ticket.html" data-member-only>Today's Ticket</a>
+        <a class="hidden" href="/history.html" data-member-only>Ticket History</a>
+        <a class="hidden" href="/analytics.html" data-member-only>Analytics</a>
       </nav>
 
       <div class="header-actions">
@@ -49,9 +52,12 @@
     <div class="lp-mobile-menu" id="mobileMenu" hidden>
       <nav class="container" aria-label="Mobile">
         <a href="/" class="active">Home</a>
-        <a href="/ticket.html">Today's Predictions</a>
-        <a href="/predictions.html">Matches</a>
-        <a href="/analytics.html">Analytics</a>
+        <a href="/about.html">About</a>
+        <a class="hidden" href="/dashboard" data-member-only>Dashboard</a>
+        <a class="hidden" href="/predictions.html" data-member-only>Predictions</a>
+        <a class="hidden" href="/ticket.html" data-member-only>Today's Ticket</a>
+        <a class="hidden" href="/history.html" data-member-only>Ticket History</a>
+        <a class="hidden" href="/analytics.html" data-member-only>Analytics</a>
         <div class="lp-mobile-actions">
           <a class="btn btn-ghost" href="/login" data-auth-login>Login</a>
           <a class="btn btn-primary" href="/account.html#register" data-auth-register>Create Account</a>
@@ -75,11 +81,12 @@
           <h1 class="lp-h1">AI-Powered<br><span class="accent">Football Predictions</span></h1>
           <p class="lp-lede">
             Smarter football insights built from real fixtures, verified bookmaker odds and
-            data-driven analysis — published in public, one market at a time.
+            data-driven analysis. Sign in to open today's selections — one market, one honest
+            record.
           </p>
           <div class="lp-hero-actions">
-            <a class="btn btn-primary btn-lg" href="/ticket.html">
-              View Today's Predictions
+            <a class="btn btn-primary btn-lg" href="/login?next=/predictions">
+              Login to view today's predictions
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
             </a>
             <a class="btn btn-ghost btn-lg" href="/account.html#register" data-auth-register>Create Free Account</a>
@@ -92,45 +99,50 @@
           </ul>
         </div>
 
-        <!-- Public preview: the same published ticket every visitor can read
-             on /ticket. Nothing account-scoped is fetched or rendered here. -->
+        <!-- Marketing preview only. No team, price, confidence or selection is
+             fetched or rendered here — those live in the member area, where the
+             server refuses every anonymous request with 401 Unauthorized. -->
         <aside class="pv-panel reveal" aria-labelledby="pvTitle">
           <div class="pv-panel-head">
-            <span class="pv-panel-title" id="pvTitle">Today's prediction · Over 1.5 Goals</span>
-            <span class="pv-pill" id="pvPill"><span class="dot" aria-hidden="true"></span><span id="pvPillText">Loading…</span></span>
+            <span class="pv-panel-title" id="pvTitle">Unlock AI Football Predictions</span>
+            <span class="pv-pill lock"><span class="dot" aria-hidden="true"></span><span>Members only</span></span>
           </div>
           <div class="pv-figures">
-            <div class="pv-figure"><div class="k">Picks</div><div class="v" id="pvPicks">—</div></div>
-            <div class="pv-figure"><div class="k">Total odds</div><div class="v cyan" id="pvOdds">—</div></div>
-            <div class="pv-figure"><div class="k">Model probability</div><div class="v" id="pvProbability">—</div></div>
+            <div class="pv-figure"><div class="k">Picks</div><div class="v lock-mask">•••</div></div>
+            <div class="pv-figure"><div class="k">Total odds</div><div class="v cyan lock-mask">•••</div></div>
+            <div class="pv-figure"><div class="k">Confidence</div><div class="v lock-mask">•••</div></div>
           </div>
-          <p class="pv-note" id="pvNote">Loading today's published selection…</p>
+          <p class="pv-note">
+            Today's Over 1.5 selections, their verified bookmaker prices and the confidence behind
+            each one are served to signed-in members only.
+          </p>
           <div class="pv-panel-foot">
-            <span class="tiny muted" id="pvGenerated">—</span>
-            <a class="lp-link" href="/ticket.html">Full ticket &amp; evidence<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+            <span class="tiny muted">Never invented — published only when the data qualifies</span>
+            <a class="lp-link" href="/login?next=/predictions">Login to view today's predictions<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
           </div>
         </aside>
       </div>
     </section>
 
-    <!-- ===================== PUBLIC PERFORMANCE RECORD ================== -->
-    <section class="lp-section pv-record" id="public-record">
+    <!-- ================== THE RECORD LIVES IN THE MEMBER AREA ============= -->
+    <section class="lp-section pv-record" id="member-record">
       <div class="container">
         <div class="lp-section-head reveal">
           <span class="lp-label">The published record</span>
-          <h2 class="lp-h2">Every published ticket, win or loss, on the record</h2>
+          <h2 class="lp-h2">Every ticket, win or loss, on the record</h2>
           <p class="lp-body">
-            These are the platform's own published results — 1 unit flat-staked on every settled
-            ticket, losses included. They are public, and they are not personalised in any way.
+            Settled tickets, win rates, Over 1.5 hit rate and flat-stake ROI are prediction data,
+            so they are served to signed-in members only — 1 unit flat-staked per ticket, losses
+            included, nothing personalised.
           </p>
         </div>
         <div class="pv-tiles reveal">
-          <div class="pv-tile"><div class="k">Settled tickets</div><div class="v" id="statSettled">—</div><div class="d" id="statSettledNote">Tickets with a final result</div></div>
-          <div class="pv-tile"><div class="k">Ticket win rate</div><div class="v green" id="statTicketWinRate">—</div><div class="d">Won ÷ settled tickets</div></div>
-          <div class="pv-tile"><div class="k">Over 1.5 legs won</div><div class="v" id="statLegWinRate">—</div><div class="d">Individual selections settled</div></div>
-          <div class="pv-tile"><div class="k">Flat-stake ROI</div><div class="v" id="statRoi">—</div><div class="d" id="statRoiNote">1 unit per settled ticket</div></div>
+          <div class="pv-tile"><div class="k">Settled tickets</div><div class="v lock-mask">•••</div><div class="d">Opens in the member area</div></div>
+          <div class="pv-tile"><div class="k">Ticket win rate</div><div class="v green lock-mask">•••</div><div class="d">Won ÷ settled tickets</div></div>
+          <div class="pv-tile"><div class="k">Over 1.5 legs won</div><div class="v lock-mask">•••</div><div class="d">Individual selections settled</div></div>
+          <div class="pv-tile"><div class="k">Flat-stake ROI</div><div class="v lock-mask">•••</div><div class="d">1 unit per settled ticket</div></div>
         </div>
-        <a class="lp-link pv-record-link" href="/history.html">See the full record, date by date<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+        <a class="lp-link pv-record-link" href="/login?next=/analytics">Login to open analytics<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
       </div>
     </section>
 
@@ -141,13 +153,53 @@
           <span class="lp-label">Today's matches</span>
           <h2 class="lp-h2">Fixtures under analysis</h2>
           <p class="lp-body">
-            Fixtures are scored on goal trends, form, expected goals and the live bookmaker price.
-            Everything shown here is public, and readable without an account.
+            Every fixture is scored on goal trends, form, expected goals and the live bookmaker
+            price. The scored cards — teams, model probability and verified prices — open in the
+            member area.
           </p>
         </div>
-        <div class="pv-match-grid" id="matchCards"></div>
-        <div class="pv-empty hidden" id="matchEmpty"></div>
-        <a class="lp-link pv-matches-link" href="/predictions.html">All analysed fixtures &amp; evidence<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+        <div class="pv-match-grid" aria-hidden="true">
+          <article class="pv-match pv-match-locked">
+            <div class="pv-match-top">
+              <span class="league-chip"><span class="lock-mask">League</span></span>
+              <span class="tiny muted">Today · ••:••</span>
+            </div>
+            <div class="pv-match-teams"><span class="lock-mask">Home</span><span class="vs">vs</span><span class="lock-mask">Away</span></div>
+            <div class="pv-match-meta">
+              <span class="pv-metric"><span class="k">Model</span><span class="v lock-mask">•••</span></span>
+              <span class="pv-metric"><span class="k">xG total</span><span class="v lock-mask">•••</span></span>
+              <span class="pv-metric"><span class="k">Over 1.5 form</span><span class="v lock-mask">•••</span></span>
+            </div>
+            <div class="pv-match-foot"><span class="verified-chip stale">Members only</span></div>
+          </article>
+          <article class="pv-match pv-match-locked">
+            <div class="pv-match-top">
+              <span class="league-chip"><span class="lock-mask">League</span></span>
+              <span class="tiny muted">Today · ••:••</span>
+            </div>
+            <div class="pv-match-teams"><span class="lock-mask">Home</span><span class="vs">vs</span><span class="lock-mask">Away</span></div>
+            <div class="pv-match-meta">
+              <span class="pv-metric"><span class="k">Model</span><span class="v lock-mask">•••</span></span>
+              <span class="pv-metric"><span class="k">xG total</span><span class="v lock-mask">•••</span></span>
+              <span class="pv-metric"><span class="k">Over 1.5 form</span><span class="v lock-mask">•••</span></span>
+            </div>
+            <div class="pv-match-foot"><span class="verified-chip stale">Members only</span></div>
+          </article>
+          <article class="pv-match pv-match-locked">
+            <div class="pv-match-top">
+              <span class="league-chip"><span class="lock-mask">League</span></span>
+              <span class="tiny muted">Today · ••:••</span>
+            </div>
+            <div class="pv-match-teams"><span class="lock-mask">Home</span><span class="vs">vs</span><span class="lock-mask">Away</span></div>
+            <div class="pv-match-meta">
+              <span class="pv-metric"><span class="k">Model</span><span class="v lock-mask">•••</span></span>
+              <span class="pv-metric"><span class="k">xG total</span><span class="v lock-mask">•••</span></span>
+              <span class="pv-metric"><span class="k">Over 1.5 form</span><span class="v lock-mask">•••</span></span>
+            </div>
+            <div class="pv-match-foot"><span class="verified-chip stale">Members only</span></div>
+          </article>
+        </div>
+        <a class="lp-link pv-matches-link" href="/login?next=/predictions">Login to see today's analysed fixtures<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
       </div>
     </section>
 
@@ -348,13 +400,13 @@
       <div class="container">
         <div class="lp-cta reveal">
           <span class="lp-cta-glow" aria-hidden="true"></span>
-          <h2 class="lp-cta-title">Ready to see the predictions?</h2>
+          <h2 class="lp-cta-title">Unlock AI Football Predictions</h2>
           <p class="lp-cta-body">
-            Explore today's football predictions and follow GoalPredict's latest results.
-            Everything public stays free — an account adds your own dashboard.
+            Create a free account or sign in to open today's Over 1.5 selections, the verified
+            prices behind them, the ticket record and the performance analytics.
           </p>
           <div class="lp-cta-actions">
-            <a class="btn btn-primary btn-lg" href="/predictions.html">View Predictions</a>
+            <a class="btn btn-primary btn-lg" href="/login?next=/predictions">Login to view today's predictions →</a>
             <a class="btn btn-ghost btn-lg" href="/account.html#register" data-auth-register>Create Account</a>
           </div>
         </div>
@@ -375,13 +427,14 @@
       <div>
         <div class="footer-links lp-footer-links">
           <a href="/">Home</a>
-          <a href="/ticket.html">Today's Predictions</a>
-          <a href="/predictions.html">Matches</a>
-          <a href="/analytics.html">Analytics</a>
-          <a href="/history.html">Results</a>
           <a href="/about.html">About</a>
-          <a href="/login">Login</a>
-          <a href="/account.html#register">Register</a>
+          <a class="hidden" href="/dashboard" data-member-only>Dashboard</a>
+          <a class="hidden" href="/predictions.html" data-member-only>Predictions</a>
+          <a class="hidden" href="/ticket.html" data-member-only>Today's Ticket</a>
+          <a class="hidden" href="/history.html" data-member-only>Ticket History</a>
+          <a class="hidden" href="/analytics.html" data-member-only>Analytics</a>
+          <a href="/login" data-auth-login>Login</a>
+          <a href="/account.html#register" data-auth-register>Register</a>
           <a href="/legal.html#terms">Terms</a>
           <a href="/legal.html#privacy">Privacy</a>
         </div>

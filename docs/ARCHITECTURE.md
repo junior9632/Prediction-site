@@ -305,14 +305,49 @@ Static files only, mobile-first, no build step and no framework:
   is no inline JavaScript anywhere.
 * The UI never computes odds, confidence, totals or results: it renders the server payload and
   links to the date-specific views. Diagnostics grids are populated from the server's counters
-  (10 keys publicly, 18 in the admin report).
+  (10 keys to members, 18 in the admin report).
 * States that must be visible: `QUALIFIED`, `NO_QUALIFYING_TICKET` (with the reason and the
   diagnostic grid), `DATA_SOURCE_UNAVAILABLE` ("DATA SOURCE TEMPORARILY UNAVAILABLE"),
   `PENDING` (not generated yet), and per-leg `WON` / `LOST` / `VOID` / `POSTPONED` / `PENDING`.
 * The admin console is a single page with hash routing over ten views; generation is a
   confirm dialog → `202 Accepted` → 900 ms polling of the progress endpoint → refresh.
 
-### 9.1 Member area (`/dashboard`)
+### 9.1 Member-only football surfaces (login required)
+
+Every football surface is **login only**, and the rule is enforced by middleware before any
+controller, query or template runs — never by CSS, never by hiding a link:
+
+| Surface | Routes | API |
+| --- | --- | --- |
+| Predictions | `/predictions`, `/predictions.html` | `/api/predictions`, `/api/predictions/:id` |
+| Today's ticket | `/ticket`, `/today-ticket`, `/ticket.html` | `/api/ticket/today`, `/api/ticket/:date`, `/api/tickets/*` |
+| Ticket history | `/history`, `/history.html` | `/api/tickets/history` |
+| Analytics | `/analytics`, `/analytics.html` | `/api/analytics` |
+| Fixtures / odds | — | `/api/fixtures`, `/api/odds` |
+
+| Principal | Prediction API | Prediction page |
+| --- | --- | --- |
+| Guest | `401 UNAUTHORIZED`, no `data` key, `no-store` | `401` + the "login required" page |
+| Expired / forged / `alg=none` token | `401 TOKEN_EXPIRED` / `TOKEN_INVALID` | `401` + the login-required page |
+| Deleted account | `401 ACCOUNT_MISSING` | `401` + the login-required page |
+| Disabled / locked account | `403 ACCOUNT_DISABLED` / `ACCOUNT_LOCKED` | `403` + the door, with the reason |
+| Member / administrator | `200` | page served `no-store`, `noindex` |
+
+* `middleware/account.js` exports `memberGuard = [noStore, requireAuth, requireActiveAccount]` and
+  each prediction router mounts it with `router.use(memberGuard)` — so an alias prefix
+  (`/api/tickets/...` as well as `/api/ticket/...`) cannot slip past.
+* `app.js` wraps each page in `memberAreaGuard(section)`, registered **before** `express.static`,
+  which is what makes the `.html` aliases safe too. A refusal renders
+  `server/views/login-required.html` (outside `public/`, so it is never a static asset) with
+  `401`/`403`, `no-store` and `X-Robots-Tag: noindex`.
+* The **authenticated principal always comes from the session**: `requireAuth` verifies the JWT,
+  then `requireActiveAccount` re-reads the account row. A `userId` query parameter, a `role`
+  parameter or an `X-User-Id` header is ignored — there is no code path that reads one.
+* Client side, the shared helper wires `[data-member-only]` (hidden in the markup, revealed only
+  after `GET /api/auth/me` succeeds) and walks an expired session to `/login?next=…`. That is
+  ergonomics only; the server is what enforces it.
+
+### 9.2 Member area (`/dashboard`)
 
 The member workspace is a private page, not a public one, and it is guarded at the server
 boundary rather than by CSS:
@@ -326,7 +361,8 @@ boundary rather than by CSS:
 | Administrator | `302` → `/admin.html` | `200`, admin-scoped feed |
 
 `middleware/account.js` re-reads the account row on every request (like `requireActiveAdmin` does
-for the console) and publishes it as `req.member`. `services/activityService.js` builds the feed
+for the console) and publishes it as `req.member`; the same guard is what makes the football
+surfaces member only (see 9.1). `services/activityService.js` builds the feed
 from `system_logs` using **only** that row's `type`/`id` — the request cannot influence the scope.
 The card is hidden in the markup until the server confirms the session, and a restore from the
 back/forward cache wipes the feed and re-validates before painting it again.

@@ -11,10 +11,15 @@
  * It also normalises the principal into `req.member`: the handlers only ever
  * see an account that exists and is active, and the actor type/id they use to
  * scope dashboard data come from the database row, never from the request.
+ *
+ * The same chain is exported as `memberGuard` and is what makes every football
+ * surface (predictions, ticket, history, analytics, fixtures, odds) member
+ * only — see the notes above the export.
  */
 
 const db = require('../database/queries');
 const { AppError } = require('../utils/errors');
+const { requireAuth } = require('./auth');
 
 /** Throw unless the row exists and the account may still be used. */
 function assertAccountUsable(row, kind) {
@@ -59,4 +64,27 @@ async function requireActiveAccount(req, _res, next) {
   }
 }
 
-module.exports = { requireActiveAccount, assertAccountUsable };
+/**
+ * PREDICTION-SURFACE GUARD.
+ *
+ * Every football surface — predictions, today's ticket, ticket history,
+ * analytics, fixtures and odds — is member only. The chain is deliberately
+ * the same one the member dashboard already uses:
+ *
+ *   noStore             -> no shared cache may ever replay the answer
+ *   requireAuth         -> a verified session token (cookie or bearer) or 401
+ *   requireActiveAccount-> the account is re-read from the database, so a
+ *                          deleted / disabled / locked account is refused too
+ *
+ * Nothing about the caller's identity is ever taken from the request body,
+ * query string or headers: `req.member` comes from the database row the guard
+ * looked up from the token's `sub` claim.
+ */
+function noStore(_req, res, next) {
+  res.set('Cache-Control', 'no-store');
+  next();
+}
+
+const memberGuard = [noStore, requireAuth, requireActiveAccount];
+
+module.exports = { requireActiveAccount, assertAccountUsable, noStore, memberGuard };

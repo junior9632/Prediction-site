@@ -19,6 +19,33 @@ Authentication for `/api/admin/*`: either `Authorization: Bearer <jwt>` (CLI) or
 cookie **plus** an `X-CSRF-Token` header equal to the `fp_csrf` cookie (browser). Cookie
 mutations without a matching CSRF token are rejected with `CSRF_MISSING` / `CSRF_INVALID`.
 
+## Access model
+
+Football data is **login only**. Three tiers, enforced by middleware before any controller runs:
+
+| Tier | Routes |
+| --- | --- |
+| Public | `/`, `/about`, `/legal`, `/login`, `/account`, `GET /api/health`, `GET /api/meta` |
+| Member | `/predictions`, `/ticket`, `/today-ticket`, `/history`, `/analytics`, `/dashboard` and every `/api/predictions`, `/api/ticket`, `/api/tickets`, `/api/analytics`, `/api/fixtures`, `/api/odds`, `/api/dashboard` route |
+| Admin | `/admin` and every `/api/admin` route |
+
+A member route is refused at the server boundary — never by CSS or by hiding a link:
+
+| Principal | Prediction / ticket / analytics **API** | Prediction / ticket / history / analytics **page** |
+| --- | --- | --- |
+| Guest | `401 UNAUTHORIZED`, `{"ok":false,…}`, no `data` key, `Cache-Control: no-store` | `401` + the "login required" page (`no-store`, `X-Robots-Tag: noindex`) |
+| Expired / forged token | `401 TOKEN_EXPIRED` / `401 TOKEN_INVALID` | `401` + the "login required" page |
+| Deleted account | `401 ACCOUNT_MISSING` | `401` + the "login required" page |
+| Disabled / locked account | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` | `403` + the "login required" page with the reason |
+| Member / admin | `200`, scoped to the session | page served `no-store`, `noindex` |
+
+The authenticated principal is always resolved from the session token (`requireAuth`) and then
+**re-read from the database** (`requireActiveAccount`). No `userId`, `user_id`, account header or
+query parameter can widen or change the scope.
+
+The landing page is marketing only: it fetches nothing but the shared session check
+(`GET /api/auth/me`), shows a locked preview, and names no prediction endpoint.
+
 Nothing below ever accepts odds, picks, confidence values, totals or results from a client:
 those fields are dropped and reported back in `ignoredClientFields`.
 
@@ -26,20 +53,22 @@ those fields are dropped and reported back in `ignoredClientFields`.
 
 ## Pages
 
-| Page | Route | Notes |
-| --- | --- | --- |
-| Landing page | `/` (`/index.html`) | Marketing + **public preview**: hero, today's published selection, the published record, today's analysed fixtures, trust strip, process, CTA. It reads only `/api/ticket/today`, `/api/analytics` and `/api/predictions` — endpoints an anonymous visitor can read anyway. It calls **no** dashboard or console endpoint, and renders no account-scoped data |
-| About | `/about` (`/about.html`) | Product story, the single market, the rules, the no-guarantee position |
-| Predictions | `/predictions` | Every analysed fixture with its evidence |
-| Today's ticket | `/ticket` | The published ticket for a date (`?date=YYYY-MM-DD`) |
-| Results | `/history` | Settled record with filters and pagination |
-| Analytics | `/analytics` | Win rate, streaks, flat-stake ROI |
-| Legal | `/legal` | Legal and responsible play, terms (`#terms`), privacy (`#privacy`) |
-| Member sign-in | `/login`, `/account` | Sign in, register, profile, change password |
-| Member dashboard | `/dashboard` | Authenticated only: profile, status, account activity |
-| Console | `/admin`, `/admin/login` | Administrators only |
+| Page | Route | Access | Notes |
+| --- | --- | --- | --- |
+| Landing page | `/` (`/index.html`) | Public | Pure marketing: hero, locked preview, how the AI works, trust strip, process, CTA. It reads **no** prediction, ticket or analytics endpoint — only the shared session check — and renders no football data |
+| About | `/about` (`/about.html`) | Public | Product story, the single market, the rules, the no-guarantee position |
+| Legal | `/legal` | Public | Legal and responsible play, terms (`#terms`), privacy (`#privacy`) |
+| Member sign-in | `/login`, `/account` | Public | Sign in, register, profile, change password |
+| Predictions | `/predictions`, `/predictions.html` | **Member** | Every analysed fixture with its evidence |
+| Today's ticket | `/ticket`, `/today-ticket`, `/ticket.html` | **Member** | The published ticket for a date (`?date=YYYY-MM-DD`) |
+| Results | `/history`, `/history.html` | **Member** | Settled record with filters and pagination |
+| Analytics | `/analytics`, `/analytics.html` | **Member** | Win rate, streaks, flat-stake ROI |
+| Member dashboard | `/dashboard`, `/dashboard.html` | **Member** | Profile, status, Dashboard Activity |
+| Console | `/admin`, `/admin/login` | Admin | Unlisted and guarded |
 
 ## Public
+
+Only these two. Everything else under `/api` needs a session.
 
 ### `GET /api/health`
 
@@ -65,6 +94,12 @@ Branding + the published product rules: `siteName`, `tagline`, `displayTimezone`
 `oddsWindow {min: 2, max: 4}`, `thresholds {minConfidence, maxRisk, minDataQuality,
 minSelections, maxSelections}`, `autoTicketGeneration: false`, `correlationProtection`,
 `oddsFreshnessMinutes`, `serverTime`.
+
+## Member only
+
+Every endpoint in this section runs behind `requireAuth` → `requireActiveAccount`
+(`memberGuard`). A guest is answered with `401 Unauthorized` and an empty body; see
+[Access model](#access-model).
 
 ### `GET /api/ticket/today` · `GET /api/ticket/:date` · `GET /api/tickets/:date`
 
@@ -208,6 +243,10 @@ One prediction with its component breakdown (`prediction_scores`) so every numbe
 `flatStake` is illustrative accounting for 1 unit staked on every qualified ticket: won tickets
 return their void-adjusted real odds, lost tickets return 0, fully void tickets return the stake.
 
+---
+
+## Sessions & accounts
+
 ### Auth
 
 | Endpoint | Body | Notes |
@@ -237,7 +276,8 @@ it as `Login` and link `/account.html#register` as `Get Started`.
 ### Member dashboard (`/api/dashboard/*`)
 
 Session-scoped data that belongs to the signed-in account only. Nothing here is ever rendered on
-a public page: the homepage shows public previews, the account area shows the session's own data. `requireAuth` +
+a public page: the landing page is pure marketing (a locked preview, no football data), the
+account area shows the session's own data. `requireAuth` +
 `requireActiveAccount` run on **every** route: a guest receives `401 UNAUTHORIZED` with no payload,
 and an account that is deleted, deactivated or locked is refused with `401 ACCOUNT_MISSING`,
 `403 ACCOUNT_DISABLED` or `403 ACCOUNT_LOCKED` even while its token is still valid. Responses are

@@ -28,12 +28,24 @@ const ticketService = require('../server/services/ticketService');
 const { createApp, PUBLIC_DIR } = require('../server/app');
 
 const ADMIN = { id: 1, email: 'admin@test.local', username: 'admin', password_hash: 'x', role: 'superadmin', is_active: 1, locked_until: null, must_change_password: 0 };
+const MEMBER = {
+  id: 77, email: 'seeded@test.local', username: 'seededfan', password_hash: 'x', role: 'user',
+  is_active: 1, failed_logins: 0, locked_until: null, last_login_at: null,
+  created_at: '2026-09-01 10:00:00', updated_at: '2026-09-01 10:00:00',
+};
+const DISABLED_MEMBER = {
+  id: 78, email: 'deactivated@test.local', username: 'deactivatedfan', password_hash: 'x', role: 'user',
+  is_active: 0, failed_logins: 0, locked_until: null, last_login_at: null,
+  created_at: '2026-09-01 10:00:00', updated_at: '2026-09-01 10:00:00',
+};
 
 let server;
 let base;
 let ctx;
 let scn;
 let bearer;
+let memberBearer;
+let disabledBearer;
 let ticketDate;
 let otherDate;
 
@@ -80,6 +92,7 @@ before(async () => {
 
   ctx = fakeDb.install({
     admins: [ADMIN],
+    users: [MEMBER, DISABLED_MEMBER],
     settings: [],
     fixtures: scn.fixtures,
     teamForms: scn.teamForms,
@@ -99,6 +112,8 @@ before(async () => {
   assert.equal(progress.status, 'QUALIFIED', String(progress.error || ''));
 
   bearer = auth.signToken({ sub: ADMIN.id, type: 'admin', role: ADMIN.role, username: ADMIN.username });
+  memberBearer = auth.signToken({ sub: MEMBER.id, type: 'user', role: MEMBER.role, username: MEMBER.username });
+  disabledBearer = auth.signToken({ sub: DISABLED_MEMBER.id, type: 'user', role: 'user', username: DISABLED_MEMBER.username });
 
   const app = createApp();
   server = app.listen(0, '127.0.0.1');
@@ -153,8 +168,8 @@ test('acceptance 6: forged odds, picks and totals in the request body are ignore
   assert.ok(!ctx.store.selections.some((s) => String(s.bookmaker_name) === 'Invented Bookmaker'));
 });
 
-test('acceptance 7: the public page reports DATA SOURCE TEMPORARILY UNAVAILABLE', async () => {
-  const res = await get(`/api/ticket/${otherDate}`);
+test('acceptance 7: the member ticket page reports DATA SOURCE TEMPORARILY UNAVAILABLE', async () => {
+  const res = await get(`/api/ticket/${otherDate}`, { token: memberBearer });
   assert.equal(res.status, 200);
   assert.equal(res.json.data.status, 'DATA_SOURCE_UNAVAILABLE');
   assert.equal(res.json.data.headline, 'DATA SOURCE TEMPORARILY UNAVAILABLE');
@@ -163,7 +178,7 @@ test('acceptance 7: the public page reports DATA SOURCE TEMPORARILY UNAVAILABLE'
 });
 
 test('acceptance 6: query string odds filters cannot change what is published', async () => {
-  const res = await get(`/api/ticket/${ticketDate}?odds=9.99&status=WON&result=WON&selections=99`);
+  const res = await get(`/api/ticket/${ticketDate}?odds=9.99&status=WON&result=WON&selections=99`, { token: memberBearer });
   assert.equal(res.status, 200);
   assert.equal(res.json.data.status, 'QUALIFIED');
   assert.equal(res.json.data.totalOdds, '2.20');
@@ -175,7 +190,7 @@ test('acceptance 6: query string odds filters cannot change what is published', 
 /* ------------------------------------------------------------------ */
 
 test('acceptance 9: the generated ticket is served with verified prices only', async () => {
-  const res = await get(`/api/ticket/${ticketDate}`);
+  const res = await get(`/api/ticket/${ticketDate}`, { token: memberBearer });
   assert.equal(res.status, 200);
   const data = res.json.data;
   assert.equal(data.status, 'QUALIFIED');
@@ -252,14 +267,14 @@ test('acceptance 9: the admin dashboard endpoints describe the same run', async 
   assert.ok(progress.json.data.progress.length >= 5);
 });
 
-test('public reads: history, predictions, analytics and health', async () => {
-  const history = await get('/api/tickets/history?limit=5');
+test('member reads: history, predictions, analytics and health', async () => {
+  const history = await get('/api/tickets/history?limit=5', { token: memberBearer });
   assert.equal(history.status, 200);
   assert.ok(history.json.data.items.length >= 1);
   assert.equal(history.json.data.items[0].status, 'QUALIFIED');
   assert.equal(history.json.data.items[0].selections.length, 3);
 
-  const predictions = await get(`/api/predictions?date=${ticketDate}&eligible=1&limit=10`);
+  const predictions = await get(`/api/predictions?date=${ticketDate}&eligible=1&limit=10`, { token: memberBearer });
   assert.equal(predictions.status, 200);
   assert.equal(predictions.json.data.total, 3);
   assert.equal(predictions.json.data.items.length, 3);
@@ -276,7 +291,7 @@ test('public reads: history, predictions, analytics and health', async () => {
     assert.ok(['1.28', '1.30', '1.32'].includes(String(p.odds && (p.odds.display || p.odds.value))));
   }
 
-  const analytics = await get('/api/analytics');
+  const analytics = await get('/api/analytics', { token: memberBearer });
   assert.equal(analytics.status, 200);
   assert.ok(analytics.json.data.tickets.total >= 1);
   assert.equal(analytics.json.data.market.key, 'over_1_5');
@@ -284,7 +299,7 @@ test('public reads: history, predictions, analytics and health', async () => {
   assert.ok(Array.isArray(analytics.json.data.monthly));
   assert.doesNotThrow(() => JSON.stringify(analytics.json.data));
 
-  const today = await get('/api/ticket/today');
+  const today = await get('/api/ticket/today', { token: memberBearer });
   assert.equal(today.status, 200);
   assert.equal(today.json.data.autoTicketGeneration, false);
   assert.deepEqual(today.json.data.oddsWindow, { min: 2, max: 4 });
@@ -342,7 +357,7 @@ test('operations: logs are readable and a sync cannot run without a data source'
 
 test('contract: every field the frontend renders is present in the payload', async () => {
   // analytics.html reads all of these counters directly
-  const analytics = await get('/api/analytics');
+  const analytics = await get('/api/analytics', { token: memberBearer });
   assert.equal(analytics.status, 200);
   const a = analytics.json.data;
   for (const key of ['total', 'qualified', 'noTicketDays', 'won', 'lost', 'void', 'pending', 'settled', 'winRate', 'avgOdds', 'highestOdds', 'lowestOdds']) {
@@ -361,7 +376,7 @@ test('contract: every field the frontend renders is present in the payload', asy
   }
 
   // predictions.html reads these from every item
-  const predictions = await get(`/api/predictions?date=${ticketDate}&limit=5`);
+  const predictions = await get(`/api/predictions?date=${ticketDate}&limit=5`, { token: memberBearer });
   const item = predictions.json.data.items[0];
   for (const key of ['fixtureId', 'kickoffAt', 'league', 'homeTeam', 'awayTeam', 'eligible', 'rejectReason', 'confidence', 'quality', 'risk', 'expectedGoals', 'odds']) {
     assert.ok(key in item, `predictions item.${key}`);
@@ -369,13 +384,13 @@ test('contract: every field the frontend renders is present in the payload', asy
   for (const key of ['available', 'value', 'bookmaker']) assert.ok(key in item.odds, `predictions odds.${key}`);
   assert.ok('total' in item.expectedGoals);
 
-  const detail = await get(`/api/predictions/${item.fixtureId}`);
+  const detail = await get(`/api/predictions/${item.fixtureId}`, { token: memberBearer });
   assert.equal(detail.status, 200);
   assert.ok(detail.json.data.prediction);
   assert.ok(Array.isArray(detail.json.data.scoreBreakdown));
 
   // history.html reads these from every ticket
-  const history = await get('/api/tickets/history?limit=5');
+  const history = await get('/api/tickets/history?limit=5', { token: memberBearer });
   const past = history.json.data.items.find((t) => t.status === 'QUALIFIED');
   for (const key of ['date', 'status', 'result', 'selectionCount', 'totalOdds', 'settledOdds', 'selections']) {
     assert.ok(key in past, `history item.${key}`);
@@ -383,6 +398,17 @@ test('contract: every field the frontend renders is present in the payload', asy
   for (const key of ['homeTeam', 'awayTeam', 'league', 'kickoffAt', 'odds', 'result', 'score']) {
     assert.ok(key in past.selections[0], `history selection.${key}`);
   }
+});
+
+test('member-only surfaces: a deactivated account is refused even with a valid token', async () => {
+  for (const endpoint of ['/api/predictions', '/api/analytics', '/api/ticket/today', '/api/tickets/history', '/api/fixtures', '/api/odds']) {
+    const res = await get(endpoint, { token: disabledBearer });
+    assert.equal(res.status, 403, `${endpoint} refuses a deactivated account (got ${res.status})`);
+    assert.equal(res.json.data, undefined, `${endpoint} hands a deactivated account no data`);
+  }
+  const page = await get('/predictions', { token: disabledBearer });
+  assert.equal(page.status, 403, 'the predictions page refuses a deactivated account');
+  assert.match(page.text, /Login or create an account/, 'and shows the login door instead');
 });
 
 test('security: admin routes reject anonymous and non admin callers', async () => {
@@ -416,16 +442,24 @@ test('security: the admin area is hidden from the public UI', () => {
     assert.ok(!/admin login/i.test(html), `${entry} must not advertise an admin login`);
   }
 
-  // The public navigation is the marketing nav — Home, Today's Predictions,
-  // Matches, Analytics — plus Login / Create Account in the header. No account
-  // or operator surface is ever named here.
+  // The public navigation is the marketing nav — Home, About — plus Login /
+  // Create Account in the header. Every member surface (Dashboard,
+  // Predictions, Today's Ticket, Ticket History, Analytics) is declared as
+  // `data-member-only` and ships HIDDEN, so a guest never sees the link; the
+  // server is what actually refuses the page.
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   const nav = indexHtml.match(/<nav class="main-nav lp-nav"[\s\S]*?<\/nav>/)[0];
   assert.ok(!/admin/i.test(nav), 'no admin entry in the primary navigation');
-  assert.ok(!/dashboard/i.test(nav), 'no dashboard entry in the primary navigation');
-  for (const label of ['Home', "Today's Predictions", 'Matches', 'Analytics']) {
+  for (const label of ['Home', 'About']) {
     assert.ok(nav.includes(`>${label}<`), `the nav keeps ${label}`);
   }
+  const memberEntries = [...nav.matchAll(/<a\s([^>]*data-member-only[^>]*)>/g)].map((m) => m[1]);
+  assert.ok(memberEntries.length >= 5, 'the member entries are declared');
+  for (const attrs of memberEntries) {
+    assert.match(attrs, /class="[^"]*\bhidden\b/, 'a member entry ships hidden for a guest');
+  }
+  assert.ok(!nav.includes('<a href="/dashboard">'), 'the dashboard is never a plain public link');
+  assert.ok(!nav.includes('<a href="/predictions.html">'), 'predictions is never a plain public link');
 
   // The JavaScript loaded by public pages contains no privileged endpoints;
   // only the console itself (admin.js) and the unlisted sign-in door
@@ -644,9 +678,13 @@ test('compliance & SEO: legal page, robots.txt and sitemap.xml are served', asyn
   assert.equal(sitemap.status, 200);
   assert.match(sitemap.headers.get('content-type'), /xml/);
   assert.match(sitemap.text, /<urlset/);
-  assert.match(sitemap.text, /\/ticket<\/loc>/);
-  assert.match(sitemap.text, /\/legal<\/loc>/);
+  assert.match(sitemap.text, /\/legal<\/loc>/, 'the legal page is indexable');
+  assert.match(sitemap.text, /\/about<\/loc>/, 'the about page is indexable');
   assert.doesNotMatch(sitemap.text, /admin|login/, 'private pages are never in the sitemap');
+  // member-only football pages are not advertised to crawlers either
+  for (const page of ['predictions', 'ticket', 'history', 'analytics']) {
+    assert.doesNotMatch(sitemap.text, new RegExp(`/${page}</loc>`), `${page} must stay out of the sitemap`);
+  }
 
   // every public page carries the responsible-gambling footer + legal link
   for (const page of ['ticket.html', 'history.html', 'analytics.html', 'predictions.html']) {
@@ -763,8 +801,8 @@ test('PWA: manifest, service worker and offline page — API traffic is never ca
 });
 
 test('analytics page: flat-stake ROI and monthly chart are rendered from real data only', async () => {
-  // the public stats endpoint ships the flat-stake record the page renders
-  const stats = await get('/api/analytics');
+  // the member stats endpoint ships the flat-stake record the page renders
+  const stats = await get('/api/analytics', { token: memberBearer });
   assert.equal(stats.status, 200);
   assert.ok('flatStake' in stats.json.data, 'flat-stake record is part of the public payload');
   assert.ok(Array.isArray(stats.json.data.monthly));

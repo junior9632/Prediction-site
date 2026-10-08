@@ -8,16 +8,21 @@
  *   node scripts/verify-access.js --member=member:pw --admin=admin:pw
  *   node scripts/verify-access.js --json
  *
- * The automated suite (tests/dashboard-activity.test.js) proves the rules with
- * an in-memory database. This script proves the DEPLOYED site: it makes real
- * HTTP requests and checks that
+ * The automated suite (tests/dashboard-activity.test.js and
+ * tests/predictions-auth.test.js) proves the rules with an in-memory database.
+ * This script proves the DEPLOYED site: it makes real HTTP requests and checks
+ * that
  *
- *   guest         -> /api/dashboard/activity is 401 with no payload, the member
- *                    page redirects to sign-in, no public page carries the feed,
- *                    and the admin surface is refused
+ *   guest         -> every football surface is closed: the prediction, ticket,
+ *                    history, analytics, fixtures and odds APIs answer 401 with
+ *                    no payload, the pages answer 401 with the login-required
+ *                    door, the homepage shows no prediction data, and the admin
+ *                    surface is refused
  *   member        -> /api/dashboard/activity is 200, scoped to that account
- *                    (audience "authenticated", scope "self") and the member
- *                    page is served no-store / noindex
+ *                    (audience "authenticated", scope "self"), the member page
+ *                    is served no-store / noindex, and every prediction,
+ *                    ticket, history, analytics, fixture and odds surface
+ *                    opens for the session
  *   administrator -> the console API keeps its permissions, /dashboard still
  *                    redirects administrators to the console, and the sign-in
  *                    door skips itself for a live session
@@ -62,8 +67,8 @@ function parseArgs(argv) {
   return options;
 }
 
-async function request(path, { method = 'GET', body = null, token = null, redirect = 'manual', timeoutMs = TIMEOUT_MS } = {}) {
-  const headers = { Accept: 'application/json' };
+async function request(path, { method = 'GET', body = null, token = null, redirect = 'manual', timeoutMs = TIMEOUT_MS, headers: extraHeaders = null } = {}) {
+  const headers = Object.assign({ Accept: 'application/json' }, extraHeaders || {});
   if (token) {
     headers.Authorization = `Bearer ${token}`;
     // the same session, as a browser would send it
@@ -149,6 +154,130 @@ async function verifyGuest() {
 }
 
 /* ------------------------------------------------------------------ */
+/* the football surfaces: guest vs member                             */
+/* ------------------------------------------------------------------ */
+
+const PREDICTION_APIS = [
+  '/api/predictions',
+  '/api/predictions?date=2026-10-08&limit=5',
+  '/api/predictions/1',
+  '/api/ticket/today',
+  '/api/tickets/today',
+  '/api/tickets/history',
+  '/api/analytics',
+  '/api/fixtures',
+  '/api/odds',
+];
+
+const PREDICTION_PAGES = [
+  '/predictions', '/predictions.html', '/ticket', '/ticket.html', '/today-ticket',
+  '/history', '/history.html', '/analytics', '/analytics.html',
+];
+
+/** Words that would mean football data escaped to an anonymous caller. */
+const DATA_MARKERS = [
+  'homeTeam', 'awayTeam', 'expectedGoals', 'totalOdds', 'selectionCount',
+  'modelProbability', 'predList', 'pick-row', 'history-row', 'monthlyChart',
+];
+
+async function verifyGuestFootball() {
+  for (const endpoint of PREDICTION_APIS) {
+    const res = await request(endpoint);
+    check(`guest: GET ${endpoint} is 401`, res.status === 401, `got ${res.status}`);
+    check(
+      `guest: ${endpoint} carries no payload`,
+      !res.json || res.json.data === undefined,
+      (res.text || '').slice(0, 120)
+    );
+    check(
+      `guest: ${endpoint} is never cached`,
+      /no-store/i.test(res.headers.get('cache-control') || ''),
+      res.headers.get('cache-control') || '(none)'
+    );
+    for (const marker of DATA_MARKERS) {
+      check(`guest: ${endpoint} leaks no "${marker}"`, !(res.text || '').includes(marker));
+    }
+  }
+
+  for (const page of PREDICTION_PAGES) {
+    const res = await request(page);
+    check(`guest: ${page} is 401`, res.status === 401, `got ${res.status}`);
+    check(
+      `guest: ${page} shows the login-required door`,
+      /Login or create an account|Login to access/.test(res.text || ''),
+      (res.text || '').slice(0, 120)
+    );
+    check(
+      `guest: ${page} offers Login and Create Account`,
+      (res.text || '').includes('href="/login?next=') && (res.text || '').includes('/account.html#register')
+    );
+    check(
+      `guest: ${page} is never cached or indexed`,
+      /no-store/i.test(res.headers.get('cache-control') || '') && /noindex/i.test(res.headers.get('x-robots-tag') || ''),
+      `${res.headers.get('cache-control')} / ${res.headers.get('x-robots-tag')}`
+    );
+    for (const marker of DATA_MARKERS) {
+      check(`guest: ${page} leaks no "${marker}"`, !(res.text || '').includes(marker));
+    }
+  }
+
+  // the public landing page must stay marketing only
+  const home = await request('/', { redirect: 'follow' });
+  check('guest: the homepage is served', home.status === 200, `got ${home.status}`);
+  check('guest: the homepage carries the unlock CTA', /Unlock AI Football Predictions/.test(home.text));
+  for (const needle of ['/api/predictions', '/api/ticket', '/api/analytics', '/api/fixtures', '/api/odds']) {
+    check(`guest: the homepage never references ${needle}`, !home.text.includes(needle));
+  }
+  const homeJs = await request('/js/app.js');
+  check('guest: the landing script reads no prediction endpoint', !/API\.get\(/.test(homeJs.text), homeJs.text.slice(0, 120));
+  const sharedJs = await request('/js/api.js');
+  check('guest: the shared script hides the member navigation', /\[data-member-only\]/.test(sharedJs.text));
+
+  // the login-required view is server rendered, never a fetchable asset
+  const view = await request('/login-required.html');
+  check('guest: the login-required view is not a static file', view.status === 404, `got ${view.status}`);
+
+  // identity is taken from the session, never from the request
+  const spoofed = await request('/api/predictions', { headers: { 'X-User-Id': '1', 'X-Role': 'admin' } });
+  check('guest: a spoofed identity header never authenticates', spoofed.status === 401, `got ${spoofed.status}`);
+  for (const suffix of ['?userId=1', '?user_id=1&role=admin', '?account=1']) {
+    const res = await request(`/api/predictions${suffix}`);
+    check(`guest: /api/predictions${suffix} is still 401`, res.status === 401, `got ${res.status}`);
+  }
+}
+
+async function verifyMemberFootball(token) {
+  for (const endpoint of PREDICTION_APIS) {
+    const res = await request(endpoint, { token });
+    check(
+      `member: GET ${endpoint} opens`,
+      [200, 404].includes(res.status),
+      `got ${res.status}`
+    );
+    if (res.status === 200) {
+      check(`member: ${endpoint} returns the success envelope`, res.json && res.json.ok === true);
+    }
+  }
+  for (const page of ['/predictions', '/ticket', '/history', '/analytics']) {
+    const res = await request(page, { token });
+    check(`member: ${page} is served`, res.status === 200, `got ${res.status}`);
+    check(
+      `member: ${page} is never cached or indexed`,
+      /no-store/i.test(res.headers.get('cache-control') || ''),
+      res.headers.get('cache-control') || '(none)'
+    );
+  }
+
+  // the browser must not be able to widen the scope with a supplied id: the
+  // answer has to be byte for byte the one the session is entitled to
+  const own = await request('/api/tickets/history?limit=3');
+  const widened = await request('/api/tickets/history?limit=3&userId=1', { token });
+  const plain = await request('/api/tickets/history?limit=3', { token });
+  check('member: a userId query parameter is ignored (same payload)', widened.text === plain.text);
+  check('member: the history payload is only served to the session', own.status === 401, `guest got ${own.status}`);
+}
+
+/* ------------------------------------------------------------------ */
 /* member / administrator                                             */
 /* ------------------------------------------------------------------ */
 
@@ -165,7 +294,7 @@ async function verifyMember(creds) {
   const session = await signIn('member', creds);
   if (session.error) {
     check('member: sign-in succeeds', false, session.error);
-    return;
+    return null;
   }
   check('member: sign-in succeeds', true);
 
@@ -204,6 +333,8 @@ async function verifyMember(creds) {
 
   const adminApi = await request('/api/admin/overview', { token: session.token });
   check('member: the admin API stays forbidden', adminApi.status === 401 || adminApi.status === 403, `got ${adminApi.status}`);
+
+  return session.token;
 }
 
 async function verifyAdmin(creds) {
@@ -262,7 +393,11 @@ async function main() {
   }
 
   await verifyGuest();
-  if (options.member) await verifyMember(options.member);
+  await verifyGuestFootball();
+  if (options.member) {
+    const memberToken = await verifyMember(options.member);
+    if (memberToken) await verifyMemberFootball(memberToken);
+  }
   if (options.admin) await verifyAdmin(options.admin);
 
   if (options.json) {
