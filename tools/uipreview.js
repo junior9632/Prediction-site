@@ -499,11 +499,14 @@ async function main() {
   wrapper.disable('x-powered-by');
   wrapper.get('/preview-banner.js', (_req, res) => res.type('application/javascript').send(BANNER_JS));
   wrapper.get('/', (_req, res) => sendHtml(res, 'index.html'));
-  // The protected pages must never bypass the app's guards, so they are NOT
-  // served by the banner injector — they fall through to the real app, which
-  // enforces the same hidden-admin rules as production.
+  // The banner injector may only ever serve a PUBLIC page. Every other page
+  // (predictions, ticket, history, analytics, dashboard, admin) is guarded by
+  // the app, so it must fall through to it — an allowlist, not a blocklist, so
+  // a page that becomes private later cannot be leaked by this harness. The
+  // preview must show the same access rules production enforces.
+  const PUBLIC_PREVIEW_PAGES = new Set(['/index.html', '/about.html', '/legal.html', '/account.html', '/login.html', '/offline.html']);
   wrapper.get(/^\/[A-Za-z0-9_-]+\.html$/, (req, res, next) => {
-    if (req.path === '/admin.html' || req.path === '/dashboard.html') return next();
+    if (!PUBLIC_PREVIEW_PAGES.has(req.path)) return next();
     return sendHtml(res, req.path.slice(1));
   });
   wrapper.use(app);

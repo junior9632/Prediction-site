@@ -291,6 +291,30 @@ const App = (() => {
     </div>`;
   }
 
+  /**
+   * The state a MEMBER page shows when the server refuses the data because the
+   * session is gone (401). It is deliberately not a generic "error": the page
+   * is members only, so the honest answer is the sign-in door.
+   */
+  function lockedState(message) {
+    return `<div class="empty-state locked">
+      <div class="icon">${icons.lock}</div>
+      <h3>Login required</h3>
+      <p>${escapeHtml(
+        message || 'Your session has ended. Login to load GoalPredict predictions, odds and the ticket history.'
+      )}</p>
+      <div class="row" style="justify-content:center; gap:10px; margin-top:14px;">
+        <a class="btn btn-primary" href="/login">Login</a>
+        <a class="btn btn-ghost" href="/account.html#register">Create Account</a>
+      </div>
+    </div>`;
+  }
+
+  /** True when the API refused the request because nobody is signed in. */
+  function isUnauthorized(err) {
+    return Boolean(err) && (err.status === 401 || err.code === 'UNAUTHORIZED' || err.code === 'TOKEN_EXPIRED' || err.code === 'TOKEN_INVALID');
+  }
+
   function skeletonRows(count = 3) {
     return Array.from({ length: count })
       .map(() => `<div class="skeleton block" style="margin:10px 16px;"></div>`)
@@ -320,11 +344,22 @@ const App = (() => {
      * offers one, "Get Started" (data-auth-register). A signed-in visitor sees
      * the account chip (data-auth-signed) with their dashboard link instead.
      * Pages opt in per element; anything absent is simply skipped.
+     *
+     * NAVIGATION IS SESSION AWARE, and this is cosmetic only — the server
+     * guard is what actually protects the member pages:
+     *   data-auth-only        -> hidden until the session is verified
+     *                            (Predictions, Today's Ticket, Ticket History,
+     *                             Analytics, Dashboard)
+     *   data-auth-guest-only  -> hidden once somebody is signed in
+     * An element marked data-auth-only ships with class="hidden", so a visitor
+     * never sees a member link, not even for a frame.
      */
     bindHeader() {
       const loginBtns = document.querySelectorAll('[data-auth-login]');
       const registerBtns = document.querySelectorAll('[data-auth-register]');
       const signedBlocks = document.querySelectorAll('[data-auth-signed]');
+      const memberOnly = document.querySelectorAll('[data-auth-only]');
+      const guestOnly = document.querySelectorAll('[data-auth-guest-only]');
       const nameNodes = document.querySelectorAll('[data-auth-name], [data-auth-name-mobile]');
       const logoutBtns = document.querySelectorAll('[data-auth-logout], [data-auth-logout-mobile]');
 
@@ -334,6 +369,8 @@ const App = (() => {
         loginBtns.forEach((node) => node.classList.toggle('hidden', isAuthed));
         registerBtns.forEach((node) => node.classList.toggle('hidden', isAuthed));
         signedBlocks.forEach((node) => node.classList.toggle('hidden', !isAuthed));
+        memberOnly.forEach((node) => node.classList.toggle('hidden', !isAuthed));
+        guestOnly.forEach((node) => node.classList.toggle('hidden', isAuthed));
         nameNodes.forEach((node) => {
           node.classList.toggle('hidden', !me);
           if (!me) return;
@@ -361,7 +398,26 @@ const App = (() => {
     },
   };
 
-  return { API, fmt, el, clear, setText, show, escapeHtml, icons, statusBadge, verifiedChip, pickRow, pickEvidence, emptyState, skeletonRows, session, readCookie };
+  return {
+    API,
+    fmt,
+    el,
+    clear,
+    setText,
+    show,
+    escapeHtml,
+    icons,
+    statusBadge,
+    verifiedChip,
+    pickRow,
+    pickEvidence,
+    emptyState,
+    lockedState,
+    isUnauthorized,
+    skeletonRows,
+    session,
+    readCookie,
+  };
 })();
 
 window.App = App;

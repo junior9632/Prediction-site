@@ -18,6 +18,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const jwt = require('jsonwebtoken');
 
 const fakeDb = require('./fakeDb');
 const { buildScenario, FakeApi, todayUtc } = require('./synthetic');
@@ -34,6 +35,7 @@ let base;
 let ctx;
 let scn;
 let bearer;
+let memberBearer;
 let ticketDate;
 let otherDate;
 
@@ -100,6 +102,23 @@ before(async () => {
 
   bearer = auth.signToken({ sub: ADMIN.id, type: 'admin', role: ADMIN.role, username: ADMIN.username });
 
+  // A real MEMBER session. The prediction surface (predictions, tickets,
+  // odds, fixtures, analytics) is members only, so every read below is made
+  // with an authenticated account — a guest is refused and
+  // tests/prediction-access.test.js proves that half of the boundary.
+  ctx.store.users.push({
+    id: 7,
+    email: 'predfan@test.local',
+    username: 'predfan',
+    password_hash: 'x',
+    role: 'user',
+    is_active: 1,
+    locked_until: null,
+    created_at: new Date().toISOString(),
+    last_login_at: null,
+  });
+  memberBearer = auth.signToken({ sub: 7, type: 'user', role: 'user', username: 'predfan' });
+
   const app = createApp();
   server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
@@ -153,8 +172,8 @@ test('acceptance 6: forged odds, picks and totals in the request body are ignore
   assert.ok(!ctx.store.selections.some((s) => String(s.bookmaker_name) === 'Invented Bookmaker'));
 });
 
-test('acceptance 7: the public page reports DATA SOURCE TEMPORARILY UNAVAILABLE', async () => {
-  const res = await get(`/api/ticket/${otherDate}`);
+test('acceptance 7: the ticket page reports DATA SOURCE TEMPORARILY UNAVAILABLE', async () => {
+  const res = await get(`/api/ticket/${otherDate}`, { token: memberBearer });
   assert.equal(res.status, 200);
   assert.equal(res.json.data.status, 'DATA_SOURCE_UNAVAILABLE');
   assert.equal(res.json.data.headline, 'DATA SOURCE TEMPORARILY UNAVAILABLE');
@@ -163,7 +182,7 @@ test('acceptance 7: the public page reports DATA SOURCE TEMPORARILY UNAVAILABLE'
 });
 
 test('acceptance 6: query string odds filters cannot change what is published', async () => {
-  const res = await get(`/api/ticket/${ticketDate}?odds=9.99&status=WON&result=WON&selections=99`);
+  const res = await get(`/api/ticket/${ticketDate}?odds=9.99&status=WON&result=WON&selections=99`, { token: memberBearer });
   assert.equal(res.status, 200);
   assert.equal(res.json.data.status, 'QUALIFIED');
   assert.equal(res.json.data.totalOdds, '2.20');
@@ -175,7 +194,7 @@ test('acceptance 6: query string odds filters cannot change what is published', 
 /* ------------------------------------------------------------------ */
 
 test('acceptance 9: the generated ticket is served with verified prices only', async () => {
-  const res = await get(`/api/ticket/${ticketDate}`);
+  const res = await get(`/api/ticket/${ticketDate}`, { token: memberBearer });
   assert.equal(res.status, 200);
   const data = res.json.data;
   assert.equal(data.status, 'QUALIFIED');
@@ -252,14 +271,16 @@ test('acceptance 9: the admin dashboard endpoints describe the same run', async 
   assert.ok(progress.json.data.progress.length >= 5);
 });
 
-test('public reads: history, predictions, analytics and health', async () => {
-  const history = await get('/api/tickets/history?limit=5');
+test('member reads: history, predictions, analytics and health', async () => {
+  // Predictions, tickets and analytics are members only; health and meta stay
+  // public (they carry no prediction data) so monitoring keeps working.
+  const history = await get('/api/tickets/history?limit=5', { token: memberBearer });
   assert.equal(history.status, 200);
   assert.ok(history.json.data.items.length >= 1);
   assert.equal(history.json.data.items[0].status, 'QUALIFIED');
   assert.equal(history.json.data.items[0].selections.length, 3);
 
-  const predictions = await get(`/api/predictions?date=${ticketDate}&eligible=1&limit=10`);
+  const predictions = await get(`/api/predictions?date=${ticketDate}&eligible=1&limit=10`, { token: memberBearer });
   assert.equal(predictions.status, 200);
   assert.equal(predictions.json.data.total, 3);
   assert.equal(predictions.json.data.items.length, 3);
@@ -276,7 +297,7 @@ test('public reads: history, predictions, analytics and health', async () => {
     assert.ok(['1.28', '1.30', '1.32'].includes(String(p.odds && (p.odds.display || p.odds.value))));
   }
 
-  const analytics = await get('/api/analytics');
+  const analytics = await get('/api/analytics', { token: memberBearer });
   assert.equal(analytics.status, 200);
   assert.ok(analytics.json.data.tickets.total >= 1);
   assert.equal(analytics.json.data.market.key, 'over_1_5');
@@ -284,7 +305,7 @@ test('public reads: history, predictions, analytics and health', async () => {
   assert.ok(Array.isArray(analytics.json.data.monthly));
   assert.doesNotThrow(() => JSON.stringify(analytics.json.data));
 
-  const today = await get('/api/ticket/today');
+  const today = await get('/api/ticket/today', { token: memberBearer });
   assert.equal(today.status, 200);
   assert.equal(today.json.data.autoTicketGeneration, false);
   assert.deepEqual(today.json.data.oddsWindow, { min: 2, max: 4 });
@@ -311,6 +332,98 @@ test('public reads: history, predictions, analytics and health', async () => {
   const notFound = await get('/api/does-not-exist');
   assert.equal(notFound.status, 404);
   assert.equal(notFound.json.ok, false);
+});
+
+test('security: the prediction surface refuses a guest on every endpoint', async () => {
+  // The whole point of the member boundary: no session, no prediction data.
+  // Not one of these may answer 200, and none may carry a payload.
+  const guestUrls = [
+    '/api/predictions',
+    '/api/predictions/1',
+    '/api/ticket/today',
+    '/api/tickets/today',
+    '/api/tickets/history',
+    `/api/ticket/${ticketDate}`,
+    '/api/analytics',
+    '/api/fixtures',
+    '/api/fixtures/1',
+    '/api/odds',
+    '/api/odds/bookmakers',
+    '/api/odds/fixture/1',
+  ];
+  for (const url of guestUrls) {
+    const res = await get(url);
+    assert.equal(res.status, 401, `${url} must refuse a guest`);
+    assert.equal(res.json.ok, false, `${url} reports the refusal`);
+    assert.equal(res.json.data, undefined, `${url} carries no prediction data`);
+    assert.match(res.headers.get('cache-control') || '', /no-store/, `${url} is never cached`);
+  }
+
+  // ... and the same member session is let through
+  for (const url of ['/api/predictions', '/api/ticket/today', '/api/tickets/history', '/api/analytics', '/api/fixtures', '/api/odds']) {
+    const res = await get(url, { token: memberBearer });
+    assert.equal(res.status, 200, `${url} serves the signed-in member`);
+    assert.equal(res.json.ok, true);
+  }
+
+  // A forged or expired token is a refusal too, not a partial answer.
+  const garbage = await get('/api/predictions', { token: 'not-a-jwt' });
+  assert.equal(garbage.status, 401);
+  assert.equal(garbage.json.error.code, 'TOKEN_INVALID');
+
+  const expiredToken = jwt.sign({ sub: 7, type: 'user' }, process.env.JWT_SECRET, {
+    algorithm: 'HS256',
+    expiresIn: '-1h',
+  });
+  const expired = await get('/api/predictions', { token: expiredToken });
+  assert.equal(expired.status, 401);
+  assert.equal(expired.json.error.code, 'TOKEN_EXPIRED');
+
+  // Query parameters can never talk the guard into answering: no userId,
+  // token or "public=1" flag changes who the server thinks is asking.
+  const spoof = await get('/api/predictions?userId=7&user_id=7&token=' + encodeURIComponent(memberBearer) + '&public=1&auth=1');
+  assert.equal(spoof.status, 401);
+  assert.equal(spoof.json.data, undefined);
+});
+
+test('security: the member pages redirect a visitor to the sign-in door', async () => {
+  for (const [url, next] of [
+    ['/predictions', '%2Fpredictions'],
+    ['/predictions.html', '%2Fpredictions.html'],
+    ['/ticket', '%2Fticket'],
+    ['/ticket.html', '%2Fticket.html'],
+    ['/history', '%2Fhistory'],
+    ['/history.html', '%2Fhistory.html'],
+    ['/analytics', '%2Fanalytics'],
+    ['/analytics.html', '%2Fanalytics.html'],
+  ]) {
+    const res = await fetch(`${base}${url}`, { redirect: 'manual' });
+    assert.equal(res.status, 302, `${url} redirects a guest instead of serving the page`);
+    assert.equal(res.headers.get('location'), `/login?next=${next}`);
+    const body = await res.text();
+    assert.ok(!body.includes('predList'), `${url} ships no prediction markup`);
+  }
+
+  // the member session gets the real page, uncached and unindexed
+  const page = await get('/predictions', { token: memberBearer });
+  assert.equal(page.status, 200);
+  assert.match(page.text, /id="predList"/);
+  assert.match(page.headers.get('cache-control') || '', /no-store/);
+  assert.match(page.headers.get('x-robots-tag') || '', /noindex/);
+
+  // the sign-in door explains what was refused, by name, with both actions
+  const door = await get('/login?next=%2Fpredictions');
+  assert.equal(door.status, 200);
+  assert.match(door.text, /Football Predictions/);
+  assert.match(door.text, /Login or create an account to access GoalPredict AI football predictions\./);
+  assert.match(door.text, />Login</);
+  assert.match(door.text, />Create Account</);
+
+  // an off-site `next` is ignored — the door is not an open redirect
+  const evil = await get('/login?next=%2F%2Fevil.example%2Fsteal');
+  assert.equal(evil.status, 200);
+  assert.ok(!evil.text.includes('evil.example'));
+  assert.ok(!evil.text.includes('loginRequired'), 'no login-required panel for an unknown target');
 });
 
 /* ------------------------------------------------------------------ */
@@ -342,7 +455,7 @@ test('operations: logs are readable and a sync cannot run without a data source'
 
 test('contract: every field the frontend renders is present in the payload', async () => {
   // analytics.html reads all of these counters directly
-  const analytics = await get('/api/analytics');
+  const analytics = await get('/api/analytics', { token: memberBearer });
   assert.equal(analytics.status, 200);
   const a = analytics.json.data;
   for (const key of ['total', 'qualified', 'noTicketDays', 'won', 'lost', 'void', 'pending', 'settled', 'winRate', 'avgOdds', 'highestOdds', 'lowestOdds']) {
@@ -361,7 +474,7 @@ test('contract: every field the frontend renders is present in the payload', asy
   }
 
   // predictions.html reads these from every item
-  const predictions = await get(`/api/predictions?date=${ticketDate}&limit=5`);
+  const predictions = await get(`/api/predictions?date=${ticketDate}&limit=5`, { token: memberBearer });
   const item = predictions.json.data.items[0];
   for (const key of ['fixtureId', 'kickoffAt', 'league', 'homeTeam', 'awayTeam', 'eligible', 'rejectReason', 'confidence', 'quality', 'risk', 'expectedGoals', 'odds']) {
     assert.ok(key in item, `predictions item.${key}`);
@@ -369,13 +482,13 @@ test('contract: every field the frontend renders is present in the payload', asy
   for (const key of ['available', 'value', 'bookmaker']) assert.ok(key in item.odds, `predictions odds.${key}`);
   assert.ok('total' in item.expectedGoals);
 
-  const detail = await get(`/api/predictions/${item.fixtureId}`);
+  const detail = await get(`/api/predictions/${item.fixtureId}`, { token: memberBearer });
   assert.equal(detail.status, 200);
   assert.ok(detail.json.data.prediction);
   assert.ok(Array.isArray(detail.json.data.scoreBreakdown));
 
   // history.html reads these from every ticket
-  const history = await get('/api/tickets/history?limit=5');
+  const history = await get('/api/tickets/history?limit=5', { token: memberBearer });
   const past = history.json.data.items.find((t) => t.status === 'QUALIFIED');
   for (const key of ['date', 'status', 'result', 'selectionCount', 'totalOdds', 'settledOdds', 'selections']) {
     assert.ok(key in past, `history item.${key}`);
@@ -416,16 +529,22 @@ test('security: the admin area is hidden from the public UI', () => {
     assert.ok(!/admin login/i.test(html), `${entry} must not advertise an admin login`);
   }
 
-  // The public navigation is the marketing nav — Home, Today's Predictions,
-  // Matches, Analytics — plus Login / Create Account in the header. No account
-  // or operator surface is ever named here.
+  // The public navigation is the marketing nav — Home, About — plus Login /
+  // Create Account in the header. The member entries (Dashboard, Predictions,
+  // Today's Ticket, Ticket History, Analytics) exist but ship hidden behind
+  // data-auth-only, so a visitor is never offered one. No account or operator
+  // surface is ever named here.
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   const nav = indexHtml.match(/<nav class="main-nav lp-nav"[\s\S]*?<\/nav>/)[0];
   assert.ok(!/admin/i.test(nav), 'no admin entry in the primary navigation');
-  assert.ok(!/dashboard/i.test(nav), 'no dashboard entry in the primary navigation');
-  for (const label of ['Home', "Today's Predictions", 'Matches', 'Analytics']) {
+  for (const label of ['Home', 'About']) {
     assert.ok(nav.includes(`>${label}<`), `the nav keeps ${label}`);
   }
+  // every member entry is hidden for a visitor and only revealed by the session
+  for (const entry of nav.match(/<a[^>]*data-auth-only[^>]*>[^<]*<\/a>/g) || []) {
+    assert.match(entry, /class="[^"]*\bhidden\b/, `the member entry ${entry} ships hidden`);
+  }
+  assert.ok((nav.match(/data-auth-only/g) || []).length >= 5, 'the member entries are all session aware');
 
   // The JavaScript loaded by public pages contains no privileged endpoints;
   // only the console itself (admin.js) and the unlisted sign-in door
@@ -644,9 +763,13 @@ test('compliance & SEO: legal page, robots.txt and sitemap.xml are served', asyn
   assert.equal(sitemap.status, 200);
   assert.match(sitemap.headers.get('content-type'), /xml/);
   assert.match(sitemap.text, /<urlset/);
-  assert.match(sitemap.text, /\/ticket<\/loc>/);
   assert.match(sitemap.text, /\/legal<\/loc>/);
+  assert.match(sitemap.text, /\/about<\/loc>/);
   assert.doesNotMatch(sitemap.text, /admin|login/, 'private pages are never in the sitemap');
+  // member pages redirect a crawler to the sign-in door: they are not indexed
+  for (const memberPage of ['/ticket<', '/predictions<', '/history<', '/analytics<']) {
+    assert.ok(!sitemap.text.includes(memberPage), `the member page ${memberPage} is not in the sitemap`);
+  }
 
   // every public page carries the responsible-gambling footer + legal link
   for (const page of ['ticket.html', 'history.html', 'analytics.html', 'predictions.html']) {
@@ -763,10 +886,10 @@ test('PWA: manifest, service worker and offline page — API traffic is never ca
 });
 
 test('analytics page: flat-stake ROI and monthly chart are rendered from real data only', async () => {
-  // the public stats endpoint ships the flat-stake record the page renders
-  const stats = await get('/api/analytics');
+  // the member stats endpoint ships the flat-stake record the page renders
+  const stats = await get('/api/analytics', { token: memberBearer });
   assert.equal(stats.status, 200);
-  assert.ok('flatStake' in stats.json.data, 'flat-stake record is part of the public payload');
+  assert.ok('flatStake' in stats.json.data, 'flat-stake record is part of the member payload');
   assert.ok(Array.isArray(stats.json.data.monthly));
 
   const html = fs.readFileSync(path.join(PUBLIC_DIR, 'analytics.html'), 'utf8');

@@ -61,6 +61,14 @@ test('scripts: the access verifier is wired up and fails loudly on an unreachabl
     "'member: GET /api/dashboard/activity is 200'",
     "'admin: the console API keeps its permissions'",
     "'guest: /admin/login serves the sign-in page'",
+    // the prediction boundary: guests refused, members served, on both sides
+    'PREDICTION_APIS',
+    'MEMBER_PAGES',
+    "is 401`, res.status === 401",
+    'redirects to the sign-in door',
+    "member: GET ${url} is 200",
+    'the homepage renders no prediction markup',
+    'the service worker never caches a member page',
     'no-store',
   ]) {
     assert.ok(source.includes(marker), `verify-access.js must keep the check: ${marker}`);

@@ -1,7 +1,10 @@
-/* GoalPredict — ticket history with selections and final scores */
+/* GoalPredict — ticket history with selections and final scores (members only)
+ *
+ * /api/tickets/history is behind the member guard: a signed-out caller is
+ * answered 401 with no payload, and this page then shows the sign-in door. */
 'use strict';
 (function () {
-  const { API, fmt, icons, escapeHtml, emptyState, skeletonRows } = App;
+  const { API, fmt, icons, escapeHtml, emptyState, lockedState, isUnauthorized, skeletonRows } = App;
   const $ = (s) => document.querySelector(s);
   let page = 1;
 
@@ -45,7 +48,9 @@
       if (prev) prev.onclick = () => { page -= 1; load(); };
       if (next) next.onclick = () => { page += 1; load(); };
     } catch (err) {
-      list.innerHTML = emptyState('alert', 'History unavailable', err.message);
+      list.innerHTML = isUnauthorized(err)
+        ? lockedState('Login to access the published ticket history and settled results.')
+        : emptyState('alert', 'History unavailable', err.message);
     }
   }
   document.addEventListener('DOMContentLoaded', () => {

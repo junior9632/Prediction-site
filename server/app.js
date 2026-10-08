@@ -6,6 +6,7 @@
  * Browser -> Express -> API-Football. The API key never leaves this process.
  */
 
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const helmet = require('helmet');
@@ -18,6 +19,7 @@ const logger = require('./utils/logger');
 const { AppError } = require('./utils/errors');
 const { requestLogger } = require('./middleware/requestLogger');
 const { optionalAuth, requireAuth, readToken, verifyToken } = require('./middleware/auth');
+const { requireActiveAccount } = require('./middleware/account');
 const { requireActiveAdmin } = require('./middleware/adminAuth');
 const { apiLimiter } = require('./middleware/rateLimit');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
@@ -34,6 +36,85 @@ const dashboardRoutes = require('./routes/dashboard');
 
 const log = logger.child('app');
 const PUBLIC_DIR = path.join(config.rootDir, 'public');
+
+/* ------------------------------------------------------------------ *
+ * MEMBER-ONLY PAGES
+ *
+ * Football predictions and everything built on them are the product, so they
+ * are members only: the page, the data behind it and the navigation entry.
+ * Each entry maps the public URL to the file it serves and to the copy shown
+ * on the sign-in door when a visitor is bounced there.
+ * ------------------------------------------------------------------ */
+const MEMBER_PAGES = [
+  {
+    path: '/predictions',
+    file: 'predictions.html',
+    title: 'Football Predictions',
+    message: 'Login or create an account to access GoalPredict AI football predictions.',
+  },
+  {
+    path: '/ticket',
+    file: 'ticket.html',
+    title: "Today's AI Ticket",
+    message: 'Login to access today’s verified football selections.',
+  },
+  {
+    path: '/history',
+    file: 'history.html',
+    title: 'Ticket History',
+    message: 'Login to access the published ticket history and settled results.',
+  },
+  {
+    path: '/analytics',
+    file: 'analytics.html',
+    title: 'Prediction Analytics',
+    message: 'Login to access GoalPredict prediction analytics and the performance record.',
+  },
+];
+
+/** The page entry a `?next=` target refers to — never anything off-site. */
+function protectedTarget(next) {
+  const raw = typeof next === 'string' ? next.trim() : '';
+  // a relative same-site path only: "//evil.example" is a protocol-relative URL
+  if (!raw.startsWith('/') || raw.startsWith('//')) return null;
+  const pathname = raw.split('?')[0].split('#')[0].replace(/\.html$/, '').replace(/\/+$/, '') || '/';
+  return MEMBER_PAGES.find((page) => page.path === pathname) || null;
+}
+
+/** Where a visitor is sent instead of the member area they asked for. */
+function signInRedirect(target) {
+  const clean = String(target || '/').split('?')[0];
+  return `/login?next=${encodeURIComponent(clean)}`;
+}
+
+const LOCK_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>';
+
+/**
+ * The login-required panel shown on the sign-in door.
+ *
+ * It is rendered on the SERVER from the fixed page table above — the `next`
+ * value only selects an entry, it is never interpolated — so a visitor with
+ * JavaScript disabled still sees why they were redirected, and no attacker
+ * supplied string can ever reach the markup.
+ */
+function loginRequiredBanner(page) {
+  return [
+    '<section class="auth-required" id="loginRequired">',
+    `<span class="auth-required-icon" aria-hidden="true">${LOCK_ICON}</span>`,
+    '<div>',
+    '<p class="auth-required-eyebrow">Members only</p>',
+    `<h2 class="auth-required-title">${page.title}</h2>`,
+    `<p class="auth-required-body">${page.message}</p>`,
+    '<div class="auth-required-actions">',
+    '<a class="btn btn-primary" href="#signin">Login</a>',
+    '<a class="btn btn-ghost" href="#register">Create Account</a>',
+    '</div>',
+    '<p class="auth-required-note">Predictions, odds, confidence scores and the ticket history are never shown to signed-out visitors.</p>',
+    '</div>',
+    '</section>',
+  ].join('\n    ');
+}
 
 function corsOptions() {
   const origins = config.security.corsOrigins;
@@ -116,25 +197,59 @@ function createApp() {
   app.use('/api/dashboard', dashboardRoutes);
 
   /* ------------------------ protected frontend ---------------------- */
-  // The private pages are protected at the server boundary as well as in the
-  // browser. An unauthenticated visitor opening /dashboard or /dashboard.html
-  // directly is bounced to the member sign-in page instead of receiving the
-  // member area (and the page itself is never cached).
+  // The member pages are protected at the server boundary as well as in the
+  // browser. An unauthenticated visitor opening /predictions, /ticket,
+  // /history, /analytics or /dashboard directly — typed in the address bar,
+  // followed from an old bookmark or from a search result — is bounced to the
+  // member sign-in door instead of receiving the page. The HTML itself is
+  // therefore never handed to a guest, and it is never cached or indexed.
+  //
+  // These routes are registered BEFORE the static file handler below, so the
+  // static middleware can never serve the underlying .html file to a visitor.
+  const sendToSignIn = (req, res) => res.redirect(302, signInRedirect(req.path));
+
   const memberPageGuard = (req, res, next) =>
     requireAuth(req, res, (err) => {
-      if (err && err.status === 401) return res.redirect(302, '/account.html');
+      if (err) {
+        // missing, forged or expired session: the door, never the page
+        if (err.status === 401) return sendToSignIn(req, res);
+        return next(err);
+      }
+      // A genuine token is still not enough: the account is re-read from the
+      // database, exactly like the API guard does, so a disabled, locked or
+      // deleted account is turned away from the page as well.
+      return requireActiveAccount(req, res, (accountErr) => {
+        if (!accountErr) return next();
+        if (accountErr.status === 401 || accountErr.status === 403) return sendToSignIn(req, res);
+        return next(accountErr);
+      });
+    });
+
+  // /dashboard keeps one extra rule from the existing system: an
+  // administrator belongs in the console, not the member workspace.
+  const dashboardPageGuard = (req, res, next) =>
+    memberPageGuard(req, res, (err) => {
       if (err) return next(err);
       if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
       return next();
     });
 
-  const memberDashboardPage = (_req, res) =>
-    res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html'), {
-      headers: { 'Cache-Control': 'no-store, no-cache', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
-    });
+  const noStoreHeaders = {
+    'Cache-Control': 'no-store, no-cache',
+    Pragma: 'no-cache',
+    'X-Robots-Tag': 'noindex, nofollow',
+  };
 
-  app.get('/dashboard', memberPageGuard, memberDashboardPage);
-  app.get('/dashboard.html', memberPageGuard, memberDashboardPage);
+  const sendMemberPage = (file) => (_req, res) =>
+    res.sendFile(path.join(PUBLIC_DIR, file), { headers: noStoreHeaders });
+
+  for (const page of MEMBER_PAGES) {
+    app.get(page.path, memberPageGuard, sendMemberPage(page.file));
+    app.get(`${page.path}.html`, memberPageGuard, sendMemberPage(page.file));
+  }
+
+  app.get('/dashboard', dashboardPageGuard, sendMemberPage('dashboard.html'));
+  app.get('/dashboard.html', dashboardPageGuard, sendMemberPage('dashboard.html'));
 
   /* ------------------------- hidden admin area ---------------------- */
   // The admin console is deliberately undiscoverable: no public page, nav,
@@ -226,16 +341,39 @@ function createApp() {
     })
   );
 
-  // Friendly URLs (no .html needed). /login is the MEMBER sign-in — the same
-  // page as /account, register form included — so a visitor who types it lands
-  // on something useful. The console's own unlisted door is /admin/login (and
+  // Friendly URLs (no .html needed). Only PUBLIC pages are listed here: the
+  // member pages (predictions, ticket, history, analytics, dashboard) are
+  // registered above behind the session guard, so this list must never grow
+  // one of them back. /login is the MEMBER sign-in — the same page as
+  // /account, register form included — so a visitor who types it lands on
+  // something useful. The console's own unlisted door is /admin/login (and
   // the legacy /login.html that the deployment guide still prints).
-  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'about', 'account'];
+  const pages = ['legal', 'about', 'account'];
   for (const page of pages) {
     app.get(`/${page}`, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, `${page}.html`)));
   }
 
-  app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
+  /* ------------------------- member sign-in door --------------------- */
+  // /login is where every guarded page sends a signed-out visitor, carrying
+  // the page they asked for in `?next=`. The page answers with the shared
+  // account page plus a server-rendered "login required" panel naming that
+  // page, so the visitor is told what is behind the door (and the message
+  // survives JavaScript being switched off). A visitor who is already signed
+  // in is sent straight back to the page they wanted.
+  const accountPageHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'account.html'), 'utf8');
+  const LOGIN_REQUIRED_SLOT = '<!--login-required-banner-->';
+
+  app.get('/login', (req, res) => {
+    const target = protectedTarget(req.query.next);
+    if (target && req.auth) return res.redirect(302, target.path);
+
+    const body = target ? accountPageHtml.replace(LOGIN_REQUIRED_SLOT, loginRequiredBanner(target)) : accountPageHtml;
+    res
+      .set({ 'Cache-Control': 'no-store', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' })
+      .type('html')
+      .send(body);
+    return undefined;
+  });
 
   // The robots file must never advertise private areas (/admin, the sign-in
   // pages): a Disallow entry would point crawlers straight at them. The
@@ -250,9 +388,13 @@ function createApp() {
       );
   });
 
-  // Public, indexable pages only — the sign-in pages are deliberately excluded.
+  // Public, indexable pages only — the sign-in pages are deliberately
+  // excluded, and so is every member page: a crawler reaching /predictions,
+  // /ticket, /history or /analytics is answered with a redirect to the
+  // sign-in door and a noindex header, so advertising them here would only
+  // fill a search index with login redirects.
   app.get('/sitemap.xml', (_req, res) => {
-    const publicPages = ['', 'ticket', 'history', 'analytics', 'predictions', 'about', 'legal'];
+    const publicPages = ['', 'about', 'legal'];
     const today = new Date().toISOString().slice(0, 10);
     const urls = publicPages
       .map(

@@ -2,17 +2,21 @@
  *
  * Two jobs, checked from both ends:
  *
- *   1. It is a MARKETING / SPORTS-INTELLIGENCE page. It may show the public
- *      preview (today's published ticket, the published record, today's
- *      analysed fixtures) because every one of those is already served to an
- *      anonymous visitor on /ticket, /analytics and /predictions.
+ *   1. It is a MARKETING page. It explains the product, how the AI works and
+ *      what a membership unlocks. It renders NO prediction data: no fixture,
+ *      no team, no league, no odds, no pick, no confidence figure, no ticket
+ *      total, no win rate, no ROI. The figures that used to sit in the hero,
+ *      in the record tiles and in the match grid are prediction data, so they
+ *      moved behind the login with the pages they belong to.
  *
- *   2. It must never show or fetch anything ACCOUNT-SCOPED. Dashboard
- *      activity, account statistics, personal ticket history and notifications
+ *   2. It must never show, fetch or link anything ACCOUNT-SCOPED either.
+ *      Dashboard activity, account statistics and personal ticket history
  *      belong to /dashboard, and the server refuses them without a verified,
  *      active session (`tests/dashboard-activity.test.js` proves that side).
  *      Here we prove the public side: the page it serves, the endpoints its
- *      script is allowed to touch, and what it actually requests at runtime.
+ *      script is allowed to touch (only the session check), what it actually
+ *      requests at runtime, and that the prediction APIs it no longer calls
+ *      would answer a visitor with 401 anyway.
  */
 'use strict';
 
@@ -35,10 +39,25 @@ const css = read('css/style.css');
 const js = read('js/app.js');
 const aboutHtml = read('about.html');
 
-/* The public endpoints the landing page is allowed to read. Each one is
-   asserted below to answer 200 for a guest. */
-const PUBLIC_ENDPOINTS = ['/api/ticket/today', '/api/analytics', '/api/predictions?limit=6'];
-const PRIVATE_MARKERS = ['dashboard', 'admin', 'activity', 'auth/me', 'auth/login', 'auth/register'];
+/* The only request the landing page may make: the shared session check that
+   tells the header WHO is signed in. It answers with the account name and
+   nothing else — no prediction, no ticket, no activity feed. */
+const SESSION_ENDPOINT = '/api/auth/me';
+
+/* The prediction surface. Every one of these is members only, so the landing
+   page must not call them and a visitor must not be able to read them. */
+const MEMBER_ENDPOINTS = [
+  '/api/predictions',
+  '/api/predictions/1',
+  '/api/ticket/today',
+  '/api/tickets/today',
+  '/api/tickets/history',
+  '/api/analytics',
+  '/api/fixtures',
+  '/api/odds',
+];
+
+const PRIVATE_MARKERS = ['dashboard', 'admin', 'activity', 'predictions', 'ticket', 'analytics', 'fixtures', 'odds'];
 
 /* The product's own rule statements are the only place dashboard vocabulary
    may appear; they explain the rules, they do not render a dashboard. */
@@ -59,8 +78,8 @@ test('homepage: the sports-intelligence structure from the brief is complete and
   const order = [
     'class="site-header lp-header"',
     'class="lp-hero"',
-    'id="public-record"',
-    'id="todays-matches"',
+    'id="member-access"',
+    'id="inside-the-product"',
     'class="lp-trust"',
     'id="what-is-goalpredict"',
     'id="our-market"',
@@ -82,7 +101,8 @@ test('homepage: the sports-intelligence structure from the brief is complete and
   assert.match(html, /AI Sports Intelligence/, 'the hero carries the AI/intelligence badge');
   assert.match(html, /AI-Powered/, 'the hero headline is the AI pitch');
   assert.match(html, /Football Predictions/, 'the hero headline names the product');
-  assert.match(html, /href="\/ticket\.html"[^>]*>\s*View Today's Predictions/s, "the hero CTA opens today's predictions");
+  assert.match(html, /Unlock AI Football Predictions/, 'the hero CTA is the unlock pitch');
+  assert.match(html, /Login to view today's predictions →/, "the hero offers the login CTA");
   assert.match(html, /href="\/account\.html#register"[^>]*data-auth-register>Create Free Account/, 'the hero offers account creation');
 
   // what is GoalPredict — the AI explanation
@@ -127,26 +147,32 @@ test('homepage: the sports-intelligence structure from the brief is complete and
   }
 
   // final CTA
-  assert.match(html, /Ready to see the predictions\?/, 'the final CTA heading exists');
-  assert.match(html, /href="\/predictions\.html"[^>]*>View Predictions/, 'the final CTA links the predictions page');
-  assert.match(html, /href="\/account\.html#register"[^>]*>Create Account/, 'the final CTA links registration');
+  assert.match(html, /Unlock AI Football Predictions/, 'the final CTA heading is the unlock pitch');
+  assert.match(html, /href="\/login\?next=%2Fticket"[^>]*data-auth-guest-only>Login to view today's predictions →/, 'the final CTA sends a visitor to the sign-in door');
+  assert.match(html, /href="\/account\.html#register"[^>]*data-auth-register>Create Account/, 'the final CTA links registration');
 });
 
-test('homepage: ACCEPTANCE — a visitor sees the PUBLIC preview and no dashboard activity', () => {
-  // 1. the public preview surfaces exist and are wired to the public endpoints
-  for (const id of ['pvPill', 'pvPillText', 'pvPicks', 'pvOdds', 'pvProbability', 'pvNote', 'pvGenerated']) {
-    assert.ok(html.includes(`id="${id}"`), `the hero preview renders #${id}`);
+test('homepage: ACCEPTANCE — a visitor sees marketing only, never prediction data', () => {
+  // 1. the preview surfaces are LOCKED placeholders, not data containers
+  assert.ok(html.includes('class="pv-panel pv-locked'), 'the hero panel is the locked preview');
+  assert.ok(html.includes('id="pvTitle"'), 'the locked panel is labelled');
+  assert.match(html, /Members only/, 'the panel says the data is members only');
+  for (const phrase of [
+    "Today's verified Over 1.5 selections",
+    'Bookmaker odds, frozen at generation time',
+    'Confidence, data-quality and risk scores',
+    'The transparent breakdown behind every pick',
+  ]) {
+    assert.ok(html.includes(phrase), `the locked panel names ${phrase}`);
   }
-  for (const id of ['statSettled', 'statTicketWinRate', 'statLegWinRate', 'statRoi']) {
-    assert.ok(html.includes(`id="${id}"`), `the public record renders #${id}`);
-  }
-  assert.ok(html.includes('id="matchCards"'), 'the match/prediction card grid exists');
-  assert.match(html, /Today's matches/, 'the match section is titled');
-  assert.match(js, /API\.get\(PUBLIC\.ticket\)/, "js/app.js reads today's published ticket");
-  assert.match(js, /API\.get\(PUBLIC\.analytics\)/, 'js/app.js reads the published record');
-  assert.match(js, /API\.get\(PUBLIC\.predictions\)/, 'js/app.js reads the analysed fixtures');
 
-  // 2. dashboard / account-scoped vocabulary and surfaces are absent
+  // none of the old live-data hooks survive: they could only ever be filled
+  // by calling a prediction endpoint
+  for (const id of ['pvPicks', 'pvOdds', 'pvProbability', 'pvNote', 'pvGenerated', 'pvPillText', 'matchCards', 'statSettled', 'statTicketWinRate', 'statLegWinRate', 'statRoi']) {
+    assert.ok(!new RegExp(`id="${id}"`).test(html), `the homepage no longer renders #${id}`);
+  }
+
+  // 2. no prediction vocabulary that would indicate live data
   const forbidden = [
     'Dashboard Activity',
     'Activity Feed',
@@ -167,7 +193,8 @@ test('homepage: ACCEPTANCE — a visitor sees the PUBLIC preview and no dashboar
     );
   }
   for (const needle of [
-    '/api/dashboard', '/api/admin', 'activityFeed', 'js/dashboard.js', 'js/admin.js',
+    '/api/dashboard', '/api/admin', '/api/predictions', '/api/ticket', '/api/analytics', '/api/fixtures', '/api/odds',
+    'activityFeed', 'js/dashboard.js', 'js/admin.js', 'js/predictions.js', 'js/ticket.js', 'js/analytics.js',
     'data-auth-admin', 'dashboardActivity',
   ]) {
     assert.ok(!html.includes(needle), `index.html must not reference ${needle}`);
@@ -177,50 +204,45 @@ test('homepage: ACCEPTANCE — a visitor sees the PUBLIC preview and no dashboar
   assert.ok(!/\/admin\b/.test(html), 'the homepage must not link the admin surface');
   assert.ok(!/admin/i.test(html), 'the word "admin" must not appear on the homepage at all');
 
-  // the member area is named only by the session-aware chips
-  const accountChips = [
-    ...(html.match(/data-auth-signed[\s\S]*?<\/span>/g) || []),
-    ...(html.match(/<a[^>]*data-auth-name-mobile[\s\S]*?<\/a>/g) || []),
-  ];
-  assert.equal(accountChips.length, 2, 'the header carries two signed-in chips (desktop + mobile)');
-  // one marketing sentence is allowed to explain that an account adds a
-  // personal area; it is not a link and it names no data
-  const EXPLAINER = 'Everything public stays free — an account adds your own dashboard.';
+  // the member area is named only by the session-aware controls
+  const memberControls = html.match(/data-auth-only/g) || [];
+  assert.ok(memberControls.length >= 10, 'the header, drawer, sections and footer all carry session-aware member links');
+  for (const entry of html.match(/<a[^>]*data-auth-only[^>]*>[^<]*<\/a>/g) || []) {
+    assert.match(entry, /class="[^"]*\bhidden\b/, `a member-only link ships hidden: ${entry}`);
+  }
+
+  const EXPLAINER = 'Login or create a free account to open them.';
   assert.ok(html.includes(EXPLAINER), 'the CTA explains what an account adds');
-  const withoutChips = accountChips
+  const sessionChips = [
+    ...(html.match(/<a[^>]*data-auth-only[^>]*>[^<]*<\/a>/g) || []),
+    ...(html.match(/data-auth-signed[\s\S]*?<\/span>/g) || []),
+    ...(html.match(/<a[^>]*data-auth-name-mobile[^>]*>[^<]*<\/a>/g) || []),
+  ];
+  assert.ok(sessionChips.length >= 12, 'the member surfaces are all session aware');
+  const withoutMemberLinks = sessionChips
     .reduce((text, chip) => text.split(chip).join(''), html)
     .split(EXPLAINER)
     .join('');
-  assert.ok(!/dashboard/i.test(withoutChips), 'the member area is only named by the signed-in chips');
-  assert.ok(!/href="\/dashboard"/.test(withoutChips), 'no dashboard link exists for a visitor');
+  assert.ok(!/href="\/dashboard"/.test(withoutMemberLinks), 'no dashboard link exists for a visitor');
 });
 
-test('homepage: the script can only reach public endpoints (static allowlist)', () => {
-  const calls = [...js.matchAll(/API\.get\(\s*(?:'([^']+)'|PUBLIC\.(\w+))/g)].map((m) => m[1] || `PUBLIC.${m[2]}`);
-  assert.ok(calls.length >= 3, 'the homepage reads the public preview endpoints');
-
-  // every literal path must be a documented public endpoint
-  const literal = calls.filter((c) => c.startsWith('/'));
-  for (const call of literal) {
-    assert.ok(PUBLIC_ENDPOINTS.includes(`/api${call}`), `${call} must be one of the public endpoints`);
-  }
-  // ... and resolving the PUBLIC map (used for the rest) must stay public too
-  const mapBlock = js.match(/const PUBLIC = \{[\s\S]*?\};/);
-  assert.ok(mapBlock, 'js/app.js declares its public endpoint map');
-  const map = [...mapBlock[0].matchAll(/(\w+):\s*'([^']+)'/g)].map((m) => `/api${m[2]}`);
-  assert.deepEqual([...map].sort(), [...PUBLIC_ENDPOINTS].sort(), 'the PUBLIC map is exactly the public preview set');
-
-  // no call may name a private surface at all
-  for (const call of [...calls, ...map]) {
-    for (const marker of PRIVATE_MARKERS) {
-      assert.ok(!call.toLowerCase().includes(marker), `${call} must not touch ${marker}`);
-    }
-  }
+test('homepage: the script can only reach the session endpoint (static allowlist)', () => {
+  // js/app.js makes no API.get / fetch of its own any more
+  assert.ok(!/API\.get\(/.test(js), 'js/app.js reads no endpoint directly');
   assert.ok(!/\bfetch\(/.test(js), 'js/app.js opens no raw fetch of its own');
   assert.ok(!/XMLHttpRequest/.test(js), 'js/app.js opens no XHR of its own');
+  assert.match(js, /App\.session\.bindHeader\(\)/, 'the header session check is the one request it makes');
+
+  // the shared session helper is the only thing that may name an endpoint
+  const apiJs = read('js/api.js');
+  const sessionCalls = [...apiJs.matchAll(/API\.get\('([^']+)'\)/g)].map((m) => m[1]);
+  assert.ok(sessionCalls.includes('/auth/me'), 'the session helper calls /auth/me');
+  for (const call of sessionCalls) {
+    assert.ok(!PRIVATE_MARKERS.some((marker) => call.toLowerCase().includes(marker)), `the session helper must not call ${call}`);
+  }
 });
 
-test('homepage: at runtime it requests nothing private (executed script trace)', async () => {
+test('homepage: at runtime it requests nothing but the session check (executed script trace)', async () => {
   // A minimal DOM so the real public/js/app.js runs, with a recording fetch.
   const asked = [];
   const makeEl = (id) => ({
@@ -253,16 +275,10 @@ test('homepage: at runtime it requests nothing private (executed script trace)',
     createElement: () => makeEl('created'),
   };
 
-  const replies = {
-    '/api/ticket/today': { status: 'QUALIFIED', selectionCount: 3, totalOdds: '2.20', estimatedProbability: 0.5916, generatedAt: '2026-10-08T13:51:46.000Z', oddsWindow: { min: 2, max: 4 }, selections: [] },
-    '/api/analytics': { tickets: { total: 15, settled: 9, winRate: 66.67, pending: 1 }, over15: { winRate: 85.71 }, flatStake: { staked: 10, profit: 4.18, roi: 41.79 } },
-    '/api/predictions?limit=6': { items: [{ fixtureId: 1, kickoffAt: '2026-10-08T15:00:00.000Z', league: { name: 'Test League' }, homeTeam: { name: 'A' }, awayTeam: { name: 'B' }, eligible: true, modelProbability: 0.88, expectedGoals: { total: 3.9 }, over15Rates: { home: 85 }, odds: { available: true, value: '1.28', bookmaker: 'Bet365', verifiedAt: '2026-10-08T13:00:00.000Z' } }] },
-  };
-
   const fetchStub = async (url) => {
     asked.push(url);
-    if (url.endsWith('/api/auth/me')) return { ok: false, status: 401, json: async () => ({ ok: false, error: { code: 'UNAUTHORIZED' } }) };
-    if (Object.prototype.hasOwnProperty.call(replies, url)) return { ok: true, status: 200, json: async () => ({ ok: true, data: replies[url] }) };
+    // the session check answers "nobody is signed in"; anything else is a leak
+    if (url.endsWith(SESSION_ENDPOINT)) return { ok: false, status: 401, json: async () => ({ ok: false, error: { code: 'UNAUTHORIZED' } }) };
     throw new Error(`the homepage tried to load ${url}`);
   };
 
@@ -280,32 +296,19 @@ test('homepage: at runtime it requests nothing private (executed script trace)',
   await document._h.DOMContentLoaded();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  const paths = asked.map((u) => u.replace(/^\/api/, '/api'));
-  // exactly the public preview set, plus the shared session check
-  const expected = new Set(['/api/auth/me', ...PUBLIC_ENDPOINTS]);
-  for (const p of paths) assert.ok(expected.has(p), `the homepage requested ${p}, which is not a public endpoint`);
-  for (const p of PUBLIC_ENDPOINTS) assert.ok(paths.includes(p), `the homepage requested ${p}`);
-  for (const p of paths) {
+  assert.deepEqual(asked, [SESSION_ENDPOINT], 'exactly one request: the shared session check');
+  for (const url of asked) {
     for (const marker of PRIVATE_MARKERS.filter((m) => m !== 'auth/me')) {
-      assert.ok(!p.toLowerCase().includes(marker), `no dashboard/admin request may be made (saw ${p})`);
+      assert.ok(!url.toLowerCase().includes(marker), `no prediction or dashboard request may be made (saw ${url})`);
     }
   }
-
-  // and the public data actually painted the preview
-  assert.equal(nodes.get('pvPillText').textContent, 'Published');
-  assert.equal(nodes.get('pvPicks').textContent, '3');
-  assert.equal(nodes.get('pvOdds').textContent, '2.20');
-  assert.equal(nodes.get('pvProbability').textContent, '59%');
-  assert.equal(nodes.get('statSettled').textContent, '9');
-  assert.equal(nodes.get('statTicketWinRate').textContent, '67%');
-  assert.match(nodes.get('matchCards').innerHTML, /pv-match/, 'the match cards render');
 });
 
 /* ------------------------------------------------------------------ */
-/* server side: public is public, private is private                    */
+/* server side: the landing page is public, the data behind it is not    */
 /* ------------------------------------------------------------------ */
 
-test('homepage: every endpoint it reads is public, and the private ones are refused', async () => {
+test('homepage: it is public, and every prediction endpoint it does not call is refused anyway', async () => {
   const ctx = fakeDb.install({ admins: [], settings: [], fixtures: [], teamForms: [], leagues: [] });
   settingsService.invalidateCache();
   const app = createApp();
@@ -313,33 +316,52 @@ test('homepage: every endpoint it reads is public, and the private ones are refu
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    // 1. what the homepage shows is readable by a guest — no session, no cookie
-    for (const endpoint of PUBLIC_ENDPOINTS) {
-      const res = await fetch(`${base}${endpoint}`, { headers: { Accept: 'application/json' } });
-      assert.equal(res.status, 200, `${endpoint} must answer a guest with 200`);
-      const body = await res.json();
-      assert.equal(body.ok, true, `${endpoint} returns the public envelope`);
-      assert.ok(!/dashboard|activity/i.test(JSON.stringify(body)), `${endpoint} carries no activity data`);
-    }
-
-    // 2. the account-scoped side is refused for a guest: 401, no payload
-    const activity = await fetch(`${base}/api/dashboard/activity`, { headers: { Accept: 'application/json' } });
-    assert.equal(activity.status, 401, 'a guest gets 401 from the activity API');
-    const payload = await activity.json();
-    assert.equal(payload.data, undefined, 'the refusal carries no data');
-    assert.equal(activity.headers.get('cache-control'), 'no-store');
-
-    // 3. and the page that renders it is not even served to a guest
-    const dashboard = await fetch(`${base}/dashboard`, { redirect: 'manual' });
-    assert.equal(dashboard.status, 302);
-    assert.equal(dashboard.headers.get('location'), '/account.html');
-
-    // 4. the homepage HTML a guest receives contains no activity payload
+    // 1. the marketing page itself is public
     const home = await fetch(`${base}/`);
-    assert.equal(home.status, 200);
+    assert.equal(home.status, 200, 'the homepage answers a visitor');
     const servedHtml = await home.text();
     assert.ok(!/dashboard activity/i.test(servedHtml), 'the served homepage has no dashboard activity block');
     assert.ok(!servedHtml.includes('/api/dashboard'), 'the served homepage names no dashboard endpoint');
+    assert.ok(!/\/api\/(predictions|ticket|tickets|analytics|fixtures|odds)/.test(servedHtml), 'the served homepage names no prediction endpoint');
+
+    // 2. every prediction endpoint a visitor might try from DevTools is 401
+    for (const endpoint of MEMBER_ENDPOINTS) {
+      const res = await fetch(`${base}${endpoint}`, { headers: { Accept: 'application/json' } });
+      assert.equal(res.status, 401, `${endpoint} refuses a visitor`);
+      const body = await res.json();
+      assert.equal(body.ok, false, `${endpoint} reports the refusal`);
+      assert.equal(body.data, undefined, `${endpoint} carries no prediction data`);
+      assert.match(res.headers.get('cache-control') || '', /no-store/, `${endpoint} is never cached`);
+    }
+
+    // 3. and the pages that render them redirect to the sign-in door
+    for (const page of ['/predictions', '/ticket', '/history', '/analytics', '/dashboard']) {
+      const res = await fetch(`${base}${page}`, { redirect: 'manual' });
+      assert.equal(res.status, 302, `${page} redirects a visitor`);
+      assert.equal(res.headers.get('location'), `/login?next=${encodeURIComponent(page)}`);
+    }
+
+    // 4. the sign-in door names what was refused and offers both actions
+    const door = await fetch(`${base}/login?next=%2Fpredictions`);
+    assert.equal(door.status, 200);
+    const doorHtml = await door.text();
+    assert.match(doorHtml, /Football Predictions/);
+    assert.match(doorHtml, /Login or create an account to access GoalPredict AI football predictions\./);
+    assert.match(doorHtml, />Login</);
+    assert.match(doorHtml, />Create Account</);
+
+    // 5. the still-public endpoints carry branding and rules only — no fixture,
+    //    team, odds, pick, confidence value or history row
+    for (const endpoint of ['/api/health', '/api/meta']) {
+      const res = await fetch(`${base}${endpoint}`, { headers: { Accept: 'application/json' } });
+      assert.equal(res.status, 200, `${endpoint} stays public`);
+      const body = await res.json();
+      const text = JSON.stringify(body);
+      assert.equal(body.ok, true);
+      for (const leak of ['"homeTeam"', '"awayTeam"', '"selections"', '"confidence"', '"fixtureId"', '"bookmaker"', '"odds"', '"items"', '"prediction"']) {
+        assert.ok(!text.includes(leak), `${endpoint} carries no ${leak}`);
+      }
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
     ctx.restore();
@@ -353,20 +375,29 @@ test('homepage: every endpoint it reads is public, and the private ones are refu
 
 test('homepage: navigation, footer and session-aware header', () => {
   const nav = html.match(/<nav class="main-nav lp-nav"[\s\S]*?<\/nav>/)[0];
-  for (const label of ['Home', "Today's Predictions", 'Matches', 'Analytics']) {
+  for (const label of ['Home', 'About']) {
     assert.ok(nav.includes(`>${label}<`), `the desktop nav keeps ${label}`);
   }
+  // the member navigation the brief asks for after login
+  for (const label of ['Dashboard', 'Predictions', "Today's Ticket", 'Ticket History', 'Analytics']) {
+    assert.ok(nav.includes(`>${label}<`), `the desktop nav carries ${label} for a member`);
+  }
   assert.ok(!/admin/i.test(nav), 'no admin entry in the primary navigation');
-  assert.ok(!/dashboard/i.test(nav), 'no dashboard entry in the primary navigation');
+  for (const entry of nav.match(/<a[^>]*data-auth-only[^>]*>[^<]*<\/a>/g) || []) {
+    assert.match(entry, /class="[^"]*\bhidden\b/, `${entry} is hidden until the session is verified`);
+  }
 
   assert.match(html, /data-auth-login>Login</, 'the header offers Login');
   assert.match(html, /data-auth-register>Create Account</, 'the header offers Create Account');
-  assert.match(read('js/api.js'), /\[data-auth-register\]/, 'the Create Account button is session aware');
+  const apiJs = read('js/api.js');
+  assert.match(apiJs, /\[data-auth-register\]/, 'the Create Account button is session aware');
+  assert.match(apiJs, /\[data-auth-only\]/, 'the member navigation is revealed by the session check');
+  assert.match(apiJs, /\[data-auth-guest-only\]/, 'the guest CTAs are hidden once somebody is signed in');
 
   assert.ok(html.includes('id="navToggle"'), 'the header renders a hamburger toggle');
   assert.match(html, /aria-controls="mobileMenu"/, 'the toggle controls the drawer');
   const drawer = html.match(/<div class="lp-mobile-menu"[\s\S]*?<\/div>\s*<\/header>/)[0];
-  for (const label of ['Home', "Today's Predictions", 'Matches', 'Analytics']) {
+  for (const label of ['Home', 'About', 'Dashboard', 'Predictions', "Today's Ticket", 'Ticket History', 'Analytics']) {
     assert.ok(drawer.includes(`>${label}<`), `the mobile drawer keeps ${label}`);
   }
   assert.ok(drawer.includes('data-auth-login') && drawer.includes('data-auth-register'), 'the drawer offers both account actions');
@@ -375,12 +406,18 @@ test('homepage: navigation, footer and session-aware header', () => {
 
   const footer = html.match(/<footer[\s\S]*?<\/footer>/)[0];
   for (const [label, href] of [
-    ['Home', '/'], ["Today's Predictions", '/ticket.html'], ['Matches', '/predictions.html'],
-    ['Analytics', '/analytics.html'], ['Results', '/history.html'], ['About', '/about.html'],
+    ['Home', '/'], ['About', '/about.html'],
     ['Login', '/login'], ['Register', '/account.html#register'],
     ['Terms', '/legal.html#terms'], ['Privacy', '/legal.html#privacy'],
   ]) {
     assert.ok(footer.includes(`href="${href}"`), `the footer links ${label}`);
+  }
+  // member destinations stay in the footer, hidden for a visitor
+  for (const href of ['/predictions.html', '/ticket.html', '/history.html', '/analytics.html']) {
+    const link = (footer.match(new RegExp(`<a[^>]*href="${href.replace(/\./g, '\\.')}"[^>]*>[^<]*<\\/a>`)) || [])[0];
+    assert.ok(link, `the footer keeps a ${href} link for members`);
+    assert.match(link, /data-auth-only/, `the ${href} footer link is session aware`);
+    assert.match(link, /class="[^"]*\bhidden\b/, `the ${href} footer link ships hidden`);
   }
   assert.ok(!/admin/i.test(footer), 'no admin link in the footer');
   assert.match(footer, /18\+/, 'the footer carries the 18+ notice');
@@ -388,15 +425,18 @@ test('homepage: navigation, footer and session-aware header', () => {
   assert.ok(html.includes('Data-driven football predictions focused on Over 1.5 Goals.'), 'the footer tagline ships');
 });
 
-test('landing styles: preview surfaces, timeline, reveals and mobile layouts', () => {
-  for (const cls of ['lp-header', 'lp-hero', 'lp-badge', 'pv-panel', 'pv-figures', 'pv-tile',
-    'pv-match', 'pv-metric', 'lp-trust', 'lp-split', 'lp-market', 'lp-target', 'lp-steps',
-    'lp-features', 'lp-cta', 'lp-footer']) {
-    assert.ok(css.includes(`.${cls}`), `css/style.css must style .${cls}`);
+test('landing styles: locked surfaces, timeline, reveals and mobile layouts', () => {
+  for (const cls of ['lp-header', 'lp-hero', 'lp-badge', 'pv-panel', 'pv-locked', 'pv-locked-list',
+    'pv-tile', 'pv-match', 'pv-match-locked', 'lp-trust', 'lp-split', 'lp-market', 'lp-target',
+    'lp-steps', 'lp-features', 'lp-cta', 'lp-footer', 'auth-required', 'empty-state.locked']) {
+    assert.ok(css.includes(`.${cls.split('.')[0]}`), `css/style.css must style .${cls}`);
   }
-  assert.match(css, /\.pv-match-grid[^{]*\{[^}]*grid-template-columns: repeat\(3/, 'the match cards form a grid');
-  assert.match(css, /@media \(max-width: 1099\.98px\)[\s\S]*?\.pv-match-grid \{ grid-template-columns: repeat\(2/, 'the match grid steps down on tablets');
-  assert.match(css, /@media \(max-width: 599\.98px\)[\s\S]*?\.pv-tiles \{ grid-template-columns: 1fr/, 'the record tiles stack on phones');
+  assert.ok(css.includes('.pv-panel.pv-locked'), 'the locked hero panel is styled');
+  assert.ok(css.includes('.pv-match-locked'), 'the locked fixture cards are styled');
+  assert.ok(css.includes('.auth-required'), 'the login-required panel is styled');
+  assert.match(css, /\.pv-match-grid[^{]*\{[^}]*grid-template-columns: repeat\(3/, 'the fixture cards form a grid');
+  assert.match(css, /@media \(max-width: 1099\.98px\)[\s\S]*?\.pv-match-grid \{ grid-template-columns: repeat\(2/, 'the card grid steps down on tablets');
+  assert.match(css, /@media \(max-width: 599\.98px\)[\s\S]*?\.pv-tiles \{ grid-template-columns: 1fr/, 'the tiles stack on phones');
   assert.match(css, /\.lp-steps\s*\{[^}]*grid-template-columns: repeat\(4/, 'the process is a four-column timeline');
   assert.match(css, /@media \(max-width: 899\.98px\)[\s\S]*?\.lp-steps \{ grid-template-columns: 1fr/, 'the process stacks on phones');
   assert.match(css, /\.reveal-ready \.reveal\.in/, 'reveal transitions exist');
@@ -410,18 +450,21 @@ test('landing styles: preview surfaces, timeline, reveals and mobile layouts', (
   assert.ok(html.includes('manifest.webmanifest'), 'the manifest is linked');
 });
 
-test('homepage: no fabricated data — every figure is painted from a public endpoint', () => {
-  // static copy may state the product's rules, never invented results
-  assert.ok(!/1\.\d\d\b/.test(html.replace(/2\.00|4\.00|1\.5/g, '')), 'no fabricated decimal odds');
+test('homepage: no fabricated data — the page publishes no figure at all', () => {
+  // static copy may state the product's rules, never invented results.
+  // Stripped first: the market name (Over 1.5), the published 2.00-4.00 odds
+  // window, and the decorative aria-hidden pipeline bars (style="--h: 42%"),
+  // which are a graphic, not a figure.
+  const prose = html
+    .replace(/style="--h:\s*\d+%"/g, '')
+    .replace(/2\.00|4\.00|1\.5/g, '');
+  assert.ok(!/1\.\d\d\b/.test(prose), 'no fabricated decimal odds');
   assert.ok(!/\b\d{1,2}\s+(?:vs|v)\s+\d{1,2}\b/i.test(html), 'no fabricated scores');
   assert.ok(!/\bWON\b|\bLOST\b/.test(html), 'no fabricated results');
-  assert.ok(!/\b(\d+)\s*(picks?|selections?|wins?|losses?)\b/i.test(html), 'no fabricated pick counts');
+  assert.ok(!/\b(\d+)\s*(picks?|selections?|wins?|losses?)\b/i.test(prose), 'no fabricated pick counts');
+  assert.ok(!/\b\d{1,3}%/.test(prose), 'no fabricated percentage (win rate, confidence, probability)');
   assert.match(html, /id="year">\d{4}</, 'the copyright year ships as a no-JS fallback');
   assert.ok(js.includes('#year'), 'and is refreshed from the clock');
-  // the figure placeholders render as em-dashes until real data arrives
-  for (const id of ['pvPicks', 'pvOdds', 'pvProbability', 'statSettled', 'statTicketWinRate', 'statLegWinRate', 'statRoi']) {
-    assert.match(html, new RegExp(`id="${id}"[^>]*>—<`), `#${id} starts as an empty placeholder`);
-  }
 });
 
 test('about page: public, static and admin-free', () => {
@@ -429,7 +472,8 @@ test('about page: public, static and admin-free', () => {
   assert.match(aboutHtml, /football analysis service, not a betting shop/i, 'about explains what GoalPredict is');
   assert.match(aboutHtml, /No fabricated fixtures, teams or markets\./, 'about states the fabrication rule');
   assert.match(aboutHtml, /No guarantee of profit, ever\./, 'about states the no-guarantee rule');
-  assert.ok(aboutHtml.includes('href="/predictions.html"'), 'about links the predictions page');
+  assert.ok(aboutHtml.includes('href="/predictions.html"'), 'about keeps a predictions link for members');
+  assert.ok(aboutHtml.includes('/login?next=%2Fpredictions'), 'about sends a visitor to the sign-in door instead');
   assert.ok(!/\/api\//.test(aboutHtml), 'about makes no API call of its own');
   assert.ok(!/admin/i.test(aboutHtml), 'the about page never mentions the console');
 });

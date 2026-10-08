@@ -12,12 +12,17 @@
  * an in-memory database. This script proves the DEPLOYED site: it makes real
  * HTTP requests and checks that
  *
- *   guest         -> /api/dashboard/activity is 401 with no payload, the member
- *                    page redirects to sign-in, no public page carries the feed,
- *                    and the admin surface is refused
- *   member        -> /api/dashboard/activity is 200, scoped to that account
- *                    (audience "authenticated", scope "self") and the member
- *                    page is served no-store / noindex
+ *   guest         -> EVERY prediction endpoint (predictions, tickets, odds,
+ *                    fixtures, analytics) and the member dashboard feed answer
+ *                    401 with no payload; every member page (/predictions,
+ *                    /ticket, /history, /analytics, /dashboard) redirects to
+ *                    the sign-in door; the homepage publishes no prediction
+ *                    data and names no prediction endpoint; the admin surface
+ *                    is refused
+ *   member        -> the same endpoints answer 200 with data, the member pages
+ *                    are served no-store / noindex, and
+ *                    /api/dashboard/activity is scoped to that account
+ *                    (audience "authenticated", scope "self")
  *   administrator -> the console API keeps its permissions, /dashboard still
  *                    redirects administrators to the console, and the sign-in
  *                    door skips itself for a live session
@@ -91,6 +96,30 @@ async function request(path, { method = 'GET', body = null, token = null, redire
 /* guest                                                              */
 /* ------------------------------------------------------------------ */
 
+/* Every URL that carries prediction data. A guest must be refused by all of
+   them — page or API, friendly URL or .html, singular or plural prefix. */
+const PREDICTION_APIS = [
+  '/api/predictions',
+  '/api/predictions/1',
+  '/api/ticket/today',
+  '/api/tickets/today',
+  '/api/tickets/history',
+  '/api/ticket/2026-01-01',
+  '/api/analytics',
+  '/api/fixtures',
+  '/api/fixtures/1',
+  '/api/odds',
+  '/api/odds/bookmakers',
+  '/api/odds/fixture/1',
+  '/api/dashboard/activity',
+];
+
+const MEMBER_PAGES = ['/predictions', '/predictions.html', '/ticket', '/ticket.html', '/history', '/history.html', '/analytics', '/analytics.html', '/dashboard', '/dashboard.html'];
+
+/* Words that can only appear on a page that is actually rendering prediction
+   data. The homepage and the sign-in door must not contain any of them. */
+const DATA_MARKERS = ['pv-match-teams', 'pick-teams', 'odds-badge', 'conf-pill', 'id="predList"', 'id="pickList"', 'id="historyList"'];
+
 async function verifyGuest() {
   const api = await request('/api/dashboard/activity');
   check('guest: GET /api/dashboard/activity is 401', api.status === 401, `got ${api.status}`);
@@ -110,24 +139,91 @@ async function verifyGuest() {
     const location = page.headers.get('location') || '';
     check(
       `guest: ${url} redirects to the sign-in page`,
-      page.status === 302 && location.endsWith('/account.html'),
+      page.status === 302 && location.startsWith('/login?next='),
       `got ${page.status} -> ${location || '(no location)'}`
     );
     check(`guest: ${url} ships no member feed`, !/Dashboard Activity/i.test(page.text));
   }
 
+  /* ---- the prediction surface: no session, no data, on any URL ---- */
+  for (const url of PREDICTION_APIS) {
+    const res = await request(url);
+    check(`guest: GET ${url} is 401`, res.status === 401, `got ${res.status}`);
+    check(`guest: GET ${url} carries no data`, res.json && res.json.ok === false && !('data' in res.json), res.text.slice(0, 120));
+    check(
+      `guest: GET ${url} is never cached`,
+      /no-store/i.test(res.headers.get('cache-control') || ''),
+      res.headers.get('cache-control') || '(none)'
+    );
+  }
+
+  // A forged token or a "public" flag changes nothing: the server decides.
+  const spoof = await request('/api/predictions?userId=1&user_id=1&public=1&auth=1&token=x');
+  check('guest: query parameters cannot unlock the prediction API', spoof.status === 401, `got ${spoof.status}`);
+  const forged = await request('/api/ticket/today', { token: 'not-a-real-jwt' });
+  check('guest: a forged token is refused', forged.status === 401, `got ${forged.status}`);
+
+  for (const url of MEMBER_PAGES) {
+    const page = await request(url);
+    const location = page.headers.get('location') || '';
+    check(
+      `guest: ${url} redirects to the sign-in door`,
+      page.status === 302 && location.startsWith('/login?next='),
+      `got ${page.status} -> ${location || '(no location)'}`
+    );
+    check(`guest: ${url} ships no prediction markup`, !DATA_MARKERS.some((m) => page.text.includes(m)));
+  }
+
+  // The door itself explains what was refused, by name, with both actions.
+  const door = await request('/login?next=%2Fpredictions');
+  check('guest: the sign-in door names the refused page', door.status === 200 && /Football Predictions/.test(door.text), `got ${door.status}`);
+  check(
+    'guest: the sign-in door offers Login and Create Account',
+    />Login</.test(door.text) && />Create Account</.test(door.text)
+  );
+  const evil = await request('/login?next=%2F%2Fevil.example%2Fsteal');
+  check('guest: an off-site next is ignored (no open redirect)', evil.status === 200 && !evil.text.includes('evil.example'));
+
   const home = await request('/', { redirect: 'follow' });
   check('guest: the homepage is served', home.status === 200, `got ${home.status}`);
   check('guest: the homepage mentions no dashboard activity', !/dashboard activity/i.test(home.text));
   check('guest: the homepage references no dashboard endpoint', !home.text.includes('/api/dashboard'));
+  check(
+    'guest: the homepage references no prediction endpoint',
+    !/\/api\/(predictions|ticket|tickets|analytics|fixtures|odds)/.test(home.text)
+  );
+  check('guest: the homepage renders no prediction markup', !DATA_MARKERS.some((m) => home.text.includes(m)));
+  check('guest: the homepage offers the unlock CTA', /Unlock AI Football Predictions/.test(home.text));
+  check('guest: the homepage offers the login CTA', /Login to view today's predictions/.test(home.text));
+  check(
+    'guest: the homepage hides the member navigation',
+    (home.text.match(/<a[^>]*data-auth-only[^>]*>/g) || []).every((tag) => /class="[^"]*\bhidden\b/.test(tag))
+  );
 
   // The public page scripts must read public feeds only.
   const homeJs = await request('/js/app.js');
   check('guest: the shared script calls no dashboard endpoint', homeJs.status === 200 && !homeJs.text.includes('/api/dashboard'), `got ${homeJs.status}`);
   check('guest: the shared script calls no admin endpoint', homeJs.status === 200 && !homeJs.text.includes('/api/admin'));
+  check(
+    'guest: the shared script calls no prediction endpoint',
+    homeJs.status === 200 && !/\/api\/(predictions|ticket|tickets|analytics|fixtures|odds)/.test(homeJs.text)
+  );
+
+  // The worker must never replay a member page from its cache.
+  const worker = await request('/sw.js');
+  check('guest: the service worker never caches a member page', worker.status === 200 && worker.text.includes('isMemberPage'), `got ${worker.status}`);
 
   const adminApi = await request('/api/admin/overview');
   check('guest: the admin API is refused', adminApi.status === 401, `got ${adminApi.status}`);
+
+  // Still public on purpose: uptime probes and the deployment checklist read
+  // them. They carry branding and published rules, never a fixture, a price,
+  // a pick, a confidence value or a history row.
+  for (const url of ['/api/health', '/api/meta']) {
+    const res = await request(url);
+    const text = JSON.stringify((res.json && res.json.data) || {});
+    check(`guest: ${url} stays public and carries no prediction data`, res.status === 200 && !/homeTeam|selections|fixtureId|bookmaker|confidence/.test(text), `got ${res.status}`);
+  }
 
   // The console's own sign-in door: a form, never admin data.
   const signIn = await request('/admin/login');
@@ -204,6 +300,36 @@ async function verifyMember(creds) {
 
   const adminApi = await request('/api/admin/overview', { token: session.token });
   check('member: the admin API stays forbidden', adminApi.status === 401 || adminApi.status === 403, `got ${adminApi.status}`);
+
+  /* ---- the prediction surface opens for the signed-in account ---- */
+  for (const url of ['/api/predictions', '/api/ticket/today', '/api/tickets/history', '/api/analytics', '/api/fixtures', '/api/odds']) {
+    const res = await request(url, { token: session.token });
+    check(`member: GET ${url} is 200`, res.status === 200, `got ${res.status}`);
+    check(`member: GET ${url} returns data`, Boolean(res.json && res.json.ok === true && res.json.data), res.text.slice(0, 120));
+    check(
+      `member: GET ${url} is never cached`,
+      /no-store/i.test(res.headers.get('cache-control') || ''),
+      res.headers.get('cache-control') || '(none)'
+    );
+  }
+
+  for (const url of ['/predictions', '/ticket', '/history', '/analytics']) {
+    const page = await request(url, { token: session.token });
+    check(`member: ${url} is served`, page.status === 200, `got ${page.status}`);
+    check(
+      `member: ${url} is no-store and noindex`,
+      /no-store/i.test(page.headers.get('cache-control') || '') && /noindex/i.test(page.headers.get('x-robots-tag') || ''),
+      `${page.headers.get('cache-control')} / ${page.headers.get('x-robots-tag')}`
+    );
+  }
+
+  // A member is sent back to the page they were refused instead of the door.
+  const bounced = await request('/login?next=%2Fpredictions', { token: session.token });
+  check(
+    'member: the sign-in door sends a live session back to the page',
+    bounced.status === 302 && (bounced.headers.get('location') || '').endsWith('/predictions'),
+    `got ${bounced.status} -> ${bounced.headers.get('location') || '(no location)'}`
+  );
 }
 
 async function verifyAdmin(creds) {

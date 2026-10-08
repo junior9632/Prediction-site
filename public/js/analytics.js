@@ -1,7 +1,10 @@
-/* GoalPredict — public analytics */
+/* GoalPredict — prediction analytics (members only)
+ *
+ * /api/analytics is behind the member guard: the performance record is
+ * prediction data, so a signed-out caller is answered 401 with no payload. */
 'use strict';
 (function () {
-  const { API, fmt, escapeHtml, icons } = App;
+  const { API, fmt, escapeHtml, icons, lockedState, isUnauthorized } = App;
   const $ = (s) => document.querySelector(s);
 
   function card(k, v, d, tone) {
@@ -95,7 +98,9 @@
         card('Pending legs', a.selections.pending, 'waiting for final scores'),
       ].join('');
     } catch (err) {
-      $('#statCards').innerHTML = `<div class="alert error">${icons.alert}<div>${escapeHtml(err.message)}</div></div>`;
+      $('#statCards').innerHTML = isUnauthorized(err)
+        ? lockedState('Login to access GoalPredict prediction analytics and the performance record.')
+        : `<div class="alert error">${icons.alert}<div>${escapeHtml(err.message)}</div></div>`;
     }
   }
   document.addEventListener('DOMContentLoaded', load);

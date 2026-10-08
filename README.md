@@ -98,19 +98,41 @@ It exists so the interface can be reviewed before deployment — production alwa
 
 ---
 
-## Public page vs dashboard
+## Guest vs member
 
-The homepage is marketing with a **public preview**: it reads `/api/ticket/today`, `/api/analytics`
-and `/api/predictions` — the same three endpoints an anonymous visitor can already read on
-`/ticket`, `/analytics` and `/predictions` — and renders today's published selection, the published
-record and today's analysed fixtures.
+**Football predictions are login-only.** The prediction surface — analysis, AI selections,
+confidence, verified odds, tickets, history, fixtures and analytics — is served to authenticated,
+active accounts only, and the enforcement is on the server:
 
-Everything account-scoped lives at `/dashboard`, which is served `no-store` + `noindex` and
-redirects guests to `/account.html`, and its API (`/api/dashboard/activity`) answers a guest with
-**401 and no payload** (`requireAuth` → `requireActiveAccount`, scoped to the session's own
-account). `tests/homepage-render.test.js` pins both halves: no dashboard endpoint may appear in the
-homepage's markup or script, no private request may be made at runtime, and every endpoint the
-homepage does read must answer a guest with `200`.
+| | Guest | Member |
+| --- | --- | --- |
+| `/` homepage | Public marketing: what the product is, how the AI works, `Unlock AI Football Predictions` | The same page, with the member navigation revealed |
+| `/predictions`, `/ticket`, `/history`, `/analytics`, `/dashboard` | `302` → `/login?next=<page>` (sign-in door with a *login required* panel) | `200`, `no-store` + `noindex` |
+| `/api/predictions`, `/api/ticket*`, `/api/tickets*`, `/api/odds*`, `/api/fixtures*`, `/api/analytics`, `/api/dashboard/*` | `401`, **no `data`**, `no-store` | `200` with data |
+| Navigation | Home · About · Login · Create Account | Dashboard · Predictions · Today's Ticket · Ticket History · Analytics · Logout |
+| `/api/health`, `/api/meta` | `200` (uptime probes + published rules; no prediction data) | `200` |
+
+The guard is `memberApiGuard` (`server/middleware/account.js`: `no-store` + `requireAuth` +
+`requireActiveAccount`) mounted by each router, plus the page guards in `server/app.js` registered
+*before* the static file handler — so hiding a menu item is not what protects the data, and removing
+every line of frontend JavaScript would not open a single endpoint. A disabled, locked or deleted
+account loses access immediately even with a valid token, and the acting account always comes from
+the session (never from a `userId` in the query string).
+
+The homepage renders **no** fixture, team, odds, pick, confidence figure, ticket or win rate, and
+makes exactly one request: the session check that decides which navigation to show.
+
+Three suites pin this down:
+
+* `tests/prediction-access.test.js` — the boundary itself: guest `401`/redirect with no payload on
+  every URL (both mount prefixes, `HEAD`, forged and expired tokens, query-string spoofing), member
+  `200` with data, administrator preserved, disabled/locked/deleted accounts refused, and the guard
+  provably mounted in the routers rather than in the frontend.
+* `tests/homepage-render.test.js` — the public page publishes no prediction data, requests nothing
+  but the session check at runtime, and hides the member navigation.
+* `tests/dashboard-activity.test.js` — the account-scoped feed stays self-scoped.
+
+`npm run verify:access` proves the same rules against a **running deployment** (see below).
 
 ## Project layout
 
@@ -119,13 +141,13 @@ server.js                     startup entry point (cPanel "Application startup f
 package.json                  scripts + the 9 runtime dependencies
 .env.example                  every environment variable, documented
 public/                       the entire frontend (static, no build step)
-  index.html                  public landing page: hero + public preview (today's ticket,
-                              published record, today's matches), trust strip, process, CTA
-  about.html                  what GoalPredict is: one market, the rules, no guarantees
-  ticket.html                 full ticket page (also accepts ?date=YYYY-MM-DD)
-  history.html                ticket history with result filters + pagination
-  analytics.html              performance analytics (win rate, streaks, monthly)
-  predictions.html            every analysed fixture with its evidence
+  index.html                  public landing page: hero + members-only preview, how the AI
+                              works, trust strip, process, unlock CTA (no prediction data)
+  about.html                  public: what GoalPredict is — one market, the rules, no guarantees
+  ticket.html                 member page: full ticket (also accepts ?date=YYYY-MM-DD)
+  history.html                member page: ticket history with result filters + pagination
+  analytics.html              member page: performance analytics (win rate, streaks, monthly)
+  predictions.html            member page: every analysed fixture with its evidence
   login.html                  console sign-in door, unlisted: served at /admin/login and /login.html
   account.html                member sign-in / register / profile / change password
   dashboard.html              member workspace: profile, status, Dashboard Activity
@@ -283,6 +305,11 @@ Documentation:
 * Helmet with a strict CSP — **no inline JavaScript anywhere**; `script-src 'self'`.
 * `bcryptjs` password hashing, JWT sessions in `httpOnly` + `SameSite=strict` cookies.
 * Double-submit CSRF token on every cookie-authenticated mutation (bearer/CLI clients exempt).
+* **Predictions are login-only, enforced server side**: `memberApiGuard` (no-store +
+  `requireAuth` + `requireActiveAccount`) is mounted by the predictions, tickets, odds,
+  fixtures, analytics and dashboard routers, and the member pages are guarded before the
+  static handler runs. A guest gets `401` with no payload from the APIs and a redirect to
+  the sign-in door from the pages; responses are never cacheable and never indexed.
 * The admin console is unlisted (no public links, robots.txt/sitemap stay silent) **and**
   server-side protected: guest → redirect to sign-in, non-admin session → `403`, admin
   account re-read from the database on every privileged request, so a disabled or locked
@@ -300,7 +327,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 133 tests, ~6s, no database or network required
+npm test          # 150 tests, ~6s, no database or network required
 ```
 
 | File | Covers |
@@ -310,6 +337,7 @@ npm test          # 133 tests, ~6s, no database or network required
 | `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
 | `tests/deployment-zip.test.js` | `GoalPredict-cPanel-deployment.zip` is the build of the current tree, byte for byte: it contains every file the host needs (never `node_modules`, `.git`, logs, `.env`), the build is deterministic, and the committed archive matches the source |
 | `tests/settings-wiring.test.js` | every admin-editable setting reaches the code that claims to honour it: the combination weights/leg-penalty reach the builder, `results_settle_mode` is enforced (a tampered value stops settlement with `SETTLE_MODE_UNSUPPORTED`), `sync_timezone` anchors the sync's calendar day with UTC storage and a safe fallback, and no newly declared setting is inert |
+| `tests/prediction-access.test.js` | the prediction boundary: every prediction endpoint answers a guest `401` with no payload (both mount prefixes, `HEAD`, forged/expired tokens, query-string spoofing), every member page redirects to `/login?next=…` and ships no prediction markup, the sign-in door names the refused page and ignores off-site targets, the homepage publishes no prediction data, members get `200` + `no-store`/`noindex`, administrators keep the console, disabled/locked/deleted accounts are refused, and the guard is provably mounted in the routers |
 | `tests/dashboard-activity.test.js` | the member boundary: guest `401`/redirect with no payload, self-scoped feed (another member's rows and IPs never leak, query parameters cannot widen the scope), disabled/locked/deleted accounts refused, admin permissions preserved, and the page contract (`no-store`, `noindex`, hidden-until-authenticated card, bfcache re-validation) |
 | `tests/fakeDb.js` | in-memory double for `server/database/connection.js`; the SQL still comes from `queries.js` |
 | `tests/synthetic.js` | fictional fixtures, odds payloads, form rows and an API-Football double |
@@ -383,7 +411,7 @@ Two operator commands answer "why is the deployed site broken?" without guessing
 | Command | What it proves |
 | --- | --- |
 | `npm run doctor` | Node version, `NODE_ENV`, every required environment variable (values masked), a real MySQL connection using the **same** credentials as the app — with the MySQL error code translated into the cause *and* the cPanel screen that fixes it — the schema (all 17 tables), the seed (settings + an active administrator), and the running site's own answers (`/api/health`, `/api/meta`, and the guest boundary on `/api/dashboard/activity`, which must be 401). `--json` for machines, `--skip-site` for the database half only. Exit code 1 on any problem, so it can gate a deploy. |
-| `npm run verify:access -- --member=user:pw --admin=admin:pw` | The guest/member/admin boundary against a **live** site: guest `401` with no payload and a redirect on `/dashboard`, the member feed scoped to that account, the console still admin-only, and `/admin/login` skipping itself for a live session. Credentials are used only for the sign-in request — nothing is written to disk. Exit code 1 on any failure. |
+| `npm run verify:access -- --member=user:pw --admin=admin:pw` | The guest/member/admin boundary against a **live** site: every prediction endpoint (`/api/predictions`, `/api/ticket*`, `/api/tickets*`, `/api/odds*`, `/api/fixtures*`, `/api/analytics`, `/api/dashboard/activity`) refused with `401` + no payload + `no-store`, every member page redirected to `/login?next=…` with no prediction markup, the homepage publishing no prediction data and naming no prediction endpoint, the service worker caching no member page, then the same endpoints and pages served `200` to the member and the console still admin-only. Credentials are used only for the sign-in request — nothing is written to disk. Exit code 1 on any failure. |
 
 ---
 

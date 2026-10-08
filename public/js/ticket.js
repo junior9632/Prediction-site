@@ -1,7 +1,10 @@
-/* GoalPredict — today's ticket detail */
+/* GoalPredict — today's ticket detail (members only)
+ *
+ * /api/ticket/* is behind the member guard, so an ended session answers 401
+ * and the page shows the sign-in door instead of ticket data. */
 'use strict';
 (function () {
-  const { API, fmt, icons, escapeHtml, pickRow, pickEvidence, statusBadge, emptyState, skeletonRows } = App;
+  const { API, fmt, icons, escapeHtml, pickRow, pickEvidence, statusBadge, emptyState, lockedState, isUnauthorized, skeletonRows } = App;
   const $ = (s) => document.querySelector(s);
 
   function diagnostics(diag) {
@@ -53,7 +56,9 @@
         $('#diagGrid').innerHTML = diagnostics(nt.diagnostics);
       }
     } catch (err) {
-      $('#pickList').innerHTML = emptyState('alert', 'Ticket unavailable', err.message);
+      $('#pickList').innerHTML = isUnauthorized(err)
+        ? lockedState("Login to access today's verified football selections.")
+        : emptyState('alert', 'Ticket unavailable', err.message);
     }
   }
   document.addEventListener('DOMContentLoaded', load);

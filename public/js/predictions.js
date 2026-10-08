@@ -1,7 +1,12 @@
-/* GoalPredict — public Over 1.5 analysis list */
+/* GoalPredict — Over 1.5 analysis list (members only)
+ *
+ * The page itself is served only to a verified session, and so is the data:
+ * /api/predictions answers anybody else with 401. If that happens while the
+ * page is open (session expired in another tab, cookie cleared) the list
+ * becomes the sign-in prompt instead of an error, and nothing is retried. */
 'use strict';
 (function () {
-  const { API, fmt, icons, escapeHtml, emptyState, skeletonRows } = App;
+  const { API, fmt, icons, escapeHtml, emptyState, lockedState, isUnauthorized, skeletonRows } = App;
   const $ = (s) => document.querySelector(s);
 
   function cardRow(p) {
@@ -43,7 +48,9 @@
         ${data.scoreBreakdown.map((s) => `<tr><td>${escapeHtml(s.component)}</td><td>${fmt.num(s.score)}</td><td>${fmt.num(s.weight, 3)}</td><td>${fmt.num(s.contribution, 3)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No components stored.</td></tr>'}
       </tbody></table></div>`;
     } catch (err) {
-      box.innerHTML = `<div class="alert error">${escapeHtml(err.message)}</div>`;
+      box.innerHTML = isUnauthorized(err)
+        ? lockedState('Login to open the transparent breakdown for this fixture.')
+        : `<div class="alert error">${escapeHtml(err.message)}</div>`;
     }
   }
 
@@ -64,7 +71,9 @@
         });
       });
     } catch (err) {
-      box.innerHTML = emptyState('alert', 'Predictions unavailable', err.message);
+      box.innerHTML = isUnauthorized(err)
+        ? lockedState('Login or create an account to access GoalPredict AI football predictions.')
+        : emptyState('alert', 'Predictions unavailable', err.message);
     }
   }
 

@@ -17,8 +17,9 @@
  *      cPanel screen that fixes it
  *   3. that the schema is applied (every table from schema.sql exists)
  *   4. that settings are seeded and at least one active administrator exists
- *   5. the running site's own answers: /api/health, /api/meta and the guest
- *      boundary on /api/dashboard/activity (which must be 401)
+ *   5. the running site's own answers: /api/health, /api/meta, and the guest
+ *      boundary — every prediction API and the member feed must answer 401,
+ *      and every member page must redirect to the sign-in door
  *
  * Exit code is 1 when anything is wrong, so it can gate a deployment.
  * No secret is ever printed: passwords and keys are shown masked, by length.
@@ -279,6 +280,39 @@ async function checkSite() {
     );
   } catch (err) {
     record('guest: /api/dashboard/activity is 401', false, err.message, 'nothing answered — the app may not be running.');
+  }
+
+  // The guest boundary on the PREDICTION surface. Football predictions, odds,
+  // tickets, fixtures and analytics are login-only; a 200 here means the
+  // deployed build is publishing the product to the whole internet.
+  for (const url of ['/api/predictions', '/api/ticket/today', '/api/tickets/history', '/api/analytics', '/api/fixtures', '/api/odds']) {
+    try {
+      const res = await get(url);
+      record(
+        `guest: ${url} is 401`,
+        res.status === 401,
+        `got ${res.status}`,
+        `do not deploy: ${url} must never answer a visitor. Check that the router mounts memberApiGuard from middleware/account.js.`
+      );
+    } catch (err) {
+      record(`guest: ${url} is 401`, false, err.message, 'nothing answered — the app may not be running.');
+    }
+  }
+
+  // ... and the pages that render them must redirect instead of serving data.
+  for (const url of ['/predictions', '/ticket', '/history', '/analytics']) {
+    try {
+      const res = await get(url);
+      const location = res.headers.get('location') || '';
+      record(
+        `guest: ${url} redirects to sign-in`,
+        res.status === 302 && location.startsWith('/login'),
+        `got ${res.status}${location ? ` -> ${location}` : ''}`,
+        `do not deploy: ${url} must redirect a visitor instead of serving the page. Check the page guards in server/app.js.`
+      );
+    } catch (err) {
+      record(`guest: ${url} redirects to sign-in`, false, err.message, 'nothing answered — the app may not be running.');
+    }
   }
 
   try {

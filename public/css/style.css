@@ -773,6 +773,87 @@ body.nav-open { overflow: hidden; }
 .pv-tile .d { color: var(--muted); font-size: 12.5px; }
 .pv-record-link, .pv-matches-link { display: inline-flex; margin-top: 20px; }
 
+/* ---------- members-only surfaces (landing page + sign-in door) ----------
+   These styles carry no data by design: the landing page renders locked
+   placeholders, and the sign-in door renders the server-built "login
+   required" panel. Both exist to explain what is behind the login without
+   showing any of it. */
+.pv-panel.pv-locked { border-color: rgba(34, 211, 238, 0.22); }
+.pv-pill.lock { color: #a5f3fc; border-color: rgba(34, 211, 238, 0.4); background: var(--cyan-soft); }
+.pv-lock { display: inline-flex; }
+.pv-lock svg { width: 12px; height: 12px; }
+.pv-locked-list { position: relative; margin: 0; padding: 16px 18px 4px; list-style: none; }
+.pv-locked-list li {
+  position: relative;
+  padding: 0 0 12px 24px;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.pv-locked-list li::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 8px rgba(34, 211, 238, 0.7);
+}
+.pv-tile .v.small { display: inline-flex; align-items: center; color: var(--cyan); }
+.pv-tile .v.small svg { width: 22px; height: 22px; }
+.pv-match-locked {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 168px;
+  text-align: center;
+  background:
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0 8px, transparent 8px 16px),
+    var(--panel-2);
+  border-style: dashed;
+}
+.pv-match-locked:hover { transform: none; box-shadow: none; border-color: rgba(34, 211, 238, 0.3); }
+.pv-match-lock { display: inline-flex; color: var(--cyan); opacity: 0.9; }
+.pv-match-lock svg { width: 26px; height: 26px; }
+.pv-match-locked-text { font-size: 12.5px; font-weight: 700; color: var(--muted); }
+
+/* the server-rendered login-required panel on /login?next=/predictions */
+.auth-required {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 22px 0 4px;
+  padding: 20px 22px;
+  border: 1px solid rgba(34, 211, 238, 0.34);
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--cyan-soft), var(--panel-2));
+  box-shadow: var(--glow);
+}
+.auth-required-icon { display: inline-flex; flex: 0 0 auto; color: var(--cyan); }
+.auth-required-icon svg { width: 30px; height: 30px; }
+.auth-required-eyebrow {
+  margin: 0 0 4px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+.auth-required-title { margin: 0; font-size: clamp(20px, 3.4vw, 26px); letter-spacing: -0.02em; }
+.auth-required-body { margin: 8px 0 0; color: var(--muted); font-size: 14px; max-width: 62ch; }
+.auth-required-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.auth-required-note { margin: 14px 0 0; color: var(--muted-2); font-size: 12px; }
+@media (max-width: 599.98px) {
+  .auth-required { flex-direction: column; gap: 12px; }
+}
+
+/* the 401 state a member page shows when the session has ended */
+.empty-state.locked .icon { color: var(--cyan); border-color: rgba(34, 211, 238, 0.4); background: var(--cyan-soft); }
+
 /* ------------------- public preview: match cards --------------------- */
 
 .pv-match-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }

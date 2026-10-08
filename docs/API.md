@@ -15,6 +15,30 @@ Base path: `/api`. Every response uses the same envelope:
 `404` not found, `409` conflict, `422` business rule, `429` rate limited, `503` upstream/data
 source unavailable, `500` unexpected.
 
+## Authentication
+
+**Football predictions are login-only.** Everything that carries prediction data — the
+analysis, the AI selections, confidence and risk scores, verified bookmaker odds, tickets,
+ticket history, fixtures and the performance analytics — requires a verified session. The
+check is server side, in the routers (`memberApiGuard` = `no-store` + `requireAuth` +
+`requireActiveAccount`), so it holds no matter how the request is made:
+
+| Caller | Result |
+| --- | --- |
+| Guest (no session) | `401` + `{ "ok": false, "error": { "code": "UNAUTHORIZED" } }`, **no `data`**, `Cache-Control: no-store` |
+| Forged / expired token | `401` (`TOKEN_INVALID` / `TOKEN_EXPIRED`) |
+| Disabled / locked account | `403` (`ACCOUNT_DISABLED` / `ACCOUNT_LOCKED`) |
+| Deleted account | `401` (`ACCOUNT_MISSING`) |
+| Active member or administrator | `200` with the data |
+
+The pages that render that data (`/predictions`, `/ticket`, `/history`, `/analytics`,
+`/dashboard`) answer a visitor with `302` → `/login?next=<page>`; the sign-in door then shows
+a server-rendered *login required* panel naming the page. Responses are never cacheable, so a
+proxy or CDN cannot replay them to a signed-out visitor.
+
+Nothing a browser sends can widen this: the acting account is always taken from the session
+token (and re-read from the database), never from a `userId` / `actorId` query parameter.
+
 Authentication for `/api/admin/*`: either `Authorization: Bearer <jwt>` (CLI) or the `fp_token`
 cookie **plus** an `X-CSRF-Token` header equal to the `fp_csrf` cookie (browser). Cookie
 mutations without a matching CSRF token are rejected with `CSRF_MISSING` / `CSRF_INVALID`.
@@ -28,18 +52,22 @@ those fields are dropped and reported back in `ignoredClientFields`.
 
 | Page | Route | Notes |
 | --- | --- | --- |
-| Landing page | `/` (`/index.html`) | Marketing + **public preview**: hero, today's published selection, the published record, today's analysed fixtures, trust strip, process, CTA. It reads only `/api/ticket/today`, `/api/analytics` and `/api/predictions` — endpoints an anonymous visitor can read anyway. It calls **no** dashboard or console endpoint, and renders no account-scoped data |
-| About | `/about` (`/about.html`) | Product story, the single market, the rules, the no-guarantee position |
-| Predictions | `/predictions` | Every analysed fixture with its evidence |
-| Today's ticket | `/ticket` | The published ticket for a date (`?date=YYYY-MM-DD`) |
-| Results | `/history` | Settled record with filters and pagination |
-| Analytics | `/analytics` | Win rate, streaks, flat-stake ROI |
-| Legal | `/legal` | Legal and responsible play, terms (`#terms`), privacy (`#privacy`) |
-| Member sign-in | `/login`, `/account` | Sign in, register, profile, change password |
-| Member dashboard | `/dashboard` | Authenticated only: profile, status, account activity |
+| Landing page | `/` (`/index.html`) | **Public marketing only**: hero, what a membership unlocks, how the AI works, the single market, the process, CTA. It renders no fixture, team, odds, pick, confidence figure, ticket or win rate, and makes exactly one request — the session check `/api/auth/me` that decides which navigation to show |
+| About | `/about` (`/about.html`) | Public: product story, the single market, the rules, the no-guarantee position |
+| Predictions | `/predictions` | **Members only** (guest → `/login?next=/predictions`): every analysed fixture with its evidence |
+| Today's ticket | `/ticket` | **Members only**: the published ticket for a date (`?date=YYYY-MM-DD`) |
+| Results | `/history` | **Members only**: settled record with filters and pagination |
+| Analytics | `/analytics` | **Members only**: win rate, streaks, flat-stake ROI |
+| Legal | `/legal` | Public: legal and responsible play, terms (`#terms`), privacy (`#privacy`) |
+| Member sign-in | `/login`, `/account` | Sign in, register, profile, change password. With `?next=/predictions` it also renders the *login required* panel |
+| Member dashboard | `/dashboard` | **Members only**: profile, status, account activity |
 | Console | `/admin`, `/admin/login` | Administrators only |
 
-## Public
+Member navigation (`Dashboard · Predictions · Today's Ticket · Ticket History · Analytics ·
+Logout`) is revealed by the session check; a visitor is shown `Home · About · Login · Create
+Account` only.
+
+## Public (no session)
 
 ### `GET /api/health`
 
@@ -65,6 +93,11 @@ Branding + the published product rules: `siteName`, `tagline`, `displayTimezone`
 `oddsWindow {min: 2, max: 4}`, `thresholds {minConfidence, maxRisk, minDataQuality,
 minSelections, maxSelections}`, `autoTicketGeneration: false`, `correlationProtection`,
 `oddsFreshnessMinutes`, `serverTime`.
+
+## Members only
+
+Everything from here down requires a verified, active session — see
+[Authentication](#authentication). A guest receives `401` with no payload from each of them.
 
 ### `GET /api/ticket/today` · `GET /api/ticket/:date` · `GET /api/tickets/:date`
 
@@ -216,7 +249,7 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 | `POST /api/auth/admin/logout` | — | clears the cookies |
 | `POST /api/auth/admin/change-password` | `{currentPassword, newPassword}` | authenticated; minimum length enforced |
 | `GET /api/auth/me` | — | `{type: "admin"|"user"|"anonymous", account}` |
-| `POST /api/auth/register` | `{email, username, password}` | `201 {id, username, email}`; optional reader account (never required to read the site); rate limited |
+| `POST /api/auth/register` | `{email, username, password}` | `201 {id, username, email}`; the account that unlocks the prediction surface; rate limited |
 | `POST /api/auth/login` | `{login, password}` | `200 {user, token, csrfToken}` + the same cookie pair as the admin login; lockout after repeated failures |
 | `POST /api/auth/logout` | — | clears the session cookies for any session type (admin or user) |
 | `POST /api/auth/change-password` | `{currentPassword, newPassword}` | authenticated user session; CSRF required for cookie sessions |
@@ -234,10 +267,19 @@ endpoint list — and redirects a live administrator session to `/admin.html`. G
 a visitor who types the obvious public address lands on something useful. The marketing pages link
 it as `Login` and link `/account.html#register` as `Get Started`.
 
+`GET /login?next=/predictions` (also `/ticket`, `/history`, `/analytics`, `/dashboard`) is where
+every guarded page sends a signed-out visitor. It answers with the same page plus a
+**server-rendered** *login required* panel — the page title, `Login or create an account to access
+GoalPredict AI football predictions.` and `Login` / `Create Account` buttons. The panel is built
+from a fixed table of page titles, so the `next` value can never inject markup, and an off-site or
+unknown target is ignored (no open redirect). A visitor who is already signed in is redirected
+straight back to the page they asked for. After signing in, `js/account.js` sends the member to
+that page too — validated against the same fixed list.
+
 ### Member dashboard (`/api/dashboard/*`)
 
 Session-scoped data that belongs to the signed-in account only. Nothing here is ever rendered on
-a public page: the homepage shows public previews, the account area shows the session's own data. `requireAuth` +
+a public page: the homepage is marketing, the account area shows the session's own data. `requireAuth` +
 `requireActiveAccount` run on **every** route: a guest receives `401 UNAUTHORIZED` with no payload,
 and an account that is deleted, deactivated or locked is refused with `401 ACCOUNT_MISSING`,
 `403 ACCOUNT_DISABLED` or `403 ACCOUNT_LOCKED` even while its token is still valid. Responses are
@@ -249,8 +291,9 @@ always `Cache-Control: no-store`.
 
 The actor type/id are read from the account row the middleware re-read from the database — **query
 parameters can never widen the scope**, and one account can never read another's events. The page
-that renders it (`/dashboard`, `/dashboard.html`) redirects guests to `/account.html`, redirects
-administrators to `/admin.html`, and is served `no-store` + `X-Robots-Tag: noindex`.
+that renders it (`/dashboard`, `/dashboard.html`) redirects guests to
+`/login?next=%2Fdashboard`, redirects administrators to `/admin.html`, and is served `no-store` +
+`X-Robots-Tag: noindex`.
 
 ---
 

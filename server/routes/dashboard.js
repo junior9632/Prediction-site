@@ -12,25 +12,21 @@
  *     directly as a visitor (or as a different member) can never return
  *     dashboard activity.
  *
+ * The composition is the shared `memberApiGuard` — the exact same one the
+ * prediction, ticket, odds, fixture and analytics routers mount, plus the
+ * no-store header that stops a shared cache replaying account data (or a
+ * 401/403 for a route whose answer depends on the session).
+ *
  * The admin console keeps using /api/admin/* — nothing here loosens it.
  */
 
 const express = require('express');
 const controller = require('../controllers/dashboardController');
-const { requireAuth } = require('../middleware/auth');
-const { requireActiveAccount } = require('../middleware/account');
+const { memberApiGuard } = require('../middleware/account');
 
 const router = express.Router();
 
-// Not even the refusals may be stored: a shared cache must never replay
-// account data (or a 401/403 for a route whose answer depends on the session).
-router.use((_req, res, next) => {
-  res.set('Cache-Control', 'no-store');
-  next();
-});
-
-router.use(requireAuth);
-router.use(requireActiveAccount);
+router.use(memberApiGuard);
 
 router.get('/activity', controller.activity);
 

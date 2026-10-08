@@ -249,9 +249,10 @@ POST /api/admin/generate-ticket   (administrator, CSRF, rate limited)
             8 generation_logs updated with every counter, the report JSON and the duration
 ```
 
-The dashboard polls `GET /api/admin/generation-progress?run_id=` (in-memory first, database
-fallback) and renders the step list live. `GET /api/ticket/:date` and the homepage read only what
-was persisted, so a visitor can never see a ticket that the pipeline did not produce.
+The console polls `GET /api/admin/generation-progress?run_id=` (in-memory first, database
+fallback) and renders the step list live. `GET /api/ticket/:date` reads only what was persisted,
+so nobody — member or administrator — can see a ticket that the pipeline did not produce, and it
+is served to verified sessions only (see *9.1 Members-only surface*).
 
 ---
 
@@ -305,29 +306,50 @@ Static files only, mobile-first, no build step and no framework:
   is no inline JavaScript anywhere.
 * The UI never computes odds, confidence, totals or results: it renders the server payload and
   links to the date-specific views. Diagnostics grids are populated from the server's counters
-  (10 keys publicly, 18 in the admin report).
+  (10 keys to a member, 18 in the admin report).
+* The navigation is session aware: a visitor sees `Home · About · Login · Create Account`, a
+  member sees `Dashboard · Predictions · Today's Ticket · Ticket History · Analytics · Logout`.
+  Member entries carry `data-auth-only` and ship with `class="hidden"`, so they are revealed only
+  after `/api/auth/me` confirms the session. This is cosmetics — the server guard is the boundary.
 * States that must be visible: `QUALIFIED`, `NO_QUALIFYING_TICKET` (with the reason and the
   diagnostic grid), `DATA_SOURCE_UNAVAILABLE` ("DATA SOURCE TEMPORARILY UNAVAILABLE"),
   `PENDING` (not generated yet), and per-leg `WON` / `LOST` / `VOID` / `POSTPONED` / `PENDING`.
 * The admin console is a single page with hash routing over ten views; generation is a
   confirm dialog → `202 Accepted` → 900 ms polling of the progress endpoint → refresh.
 
-### 9.1 Member area (`/dashboard`)
+### 9.1 Members-only surface
 
-The member workspace is a private page, not a public one, and it is guarded at the server
-boundary rather than by CSS:
+Football predictions are the product, so the whole prediction surface is private: the pages
+**and** the APIs behind them. One composed guard does the work —
+`memberApiGuard = [neverCache, requireAuth, requireActiveAccount]` in `middleware/account.js`,
+mounted by the `predictions`, `tickets`, `odds`, `fixtures`, `analytics` and `dashboard` routers —
+plus page guards in `app.js` registered **before** `express.static`, so the static handler can
+never hand a visitor the underlying `.html`.
 
-| Principal | `/dashboard`, `/dashboard.html` | `GET /api/dashboard/activity` |
-| --- | --- | --- |
-| Guest / expired token | `302` → `/account.html` | `401 UNAUTHORIZED`, no payload |
-| Deleted account | `302` → `/account.html` | `401 ACCOUNT_MISSING` |
-| Disabled / locked account | `302` → `/account.html` | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` |
-| Member | page served `no-store`, `noindex` | `200`, feed scoped to that account |
-| Administrator | `302` → `/admin.html` | `200`, admin-scoped feed |
+| Principal | `/predictions`, `/ticket`, `/history`, `/analytics` | `/dashboard` | prediction APIs | `GET /api/dashboard/activity` |
+| --- | --- | --- | --- | --- |
+| Guest / expired token | `302` → `/login?next=<page>` | `302` → `/login?next=%2Fdashboard` | `401 UNAUTHORIZED`, no payload | `401 UNAUTHORIZED`, no payload |
+| Deleted account | `302` → sign-in door | `302` → sign-in door | `401 ACCOUNT_MISSING` | `401 ACCOUNT_MISSING` |
+| Disabled / locked account | `302` → sign-in door | `302` → sign-in door | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` |
+| Member | served `no-store`, `noindex` | served `no-store`, `noindex` | `200` with data | `200`, feed scoped to that account |
+| Administrator | served `no-store`, `noindex` | `302` → `/admin.html` | `200` with data | `200`, admin-scoped feed |
+
+Every response on those routers carries `Cache-Control: no-store`, so a shared proxy or CDN can
+replay neither the data nor the refusal to a signed-out visitor. `/login?next=<page>` answers with
+a **server-rendered** *login required* panel (page title + `Login` / `Create Account`), built from
+a fixed table of titles so the `next` value can never inject markup or redirect off-site.
+
+Still public on purpose: `/api/health` (uptime probes) and `/api/meta` (branding and the published
+rules). Neither carries a fixture, team, price, pick, confidence value or history row.
+
+`tests/prediction-access.test.js` proves the whole table; `npm run verify:access` proves it again
+against a running deployment.
 
 `middleware/account.js` re-reads the account row on every request (like `requireActiveAdmin` does
 for the console) and publishes it as `req.member`. `services/activityService.js` builds the feed
-from `system_logs` using **only** that row's `type`/`id` — the request cannot influence the scope.
+from `system_logs` using **only** that row's `type`/`id` — the request cannot influence the scope,
+and the same is true of every prediction endpoint: the acting account always comes from the
+session token, never from a `userId`/`actorId` query parameter.
 The card is hidden in the markup until the server confirms the session, and a restore from the
 back/forward cache wipes the feed and re-validates before painting it again.
 

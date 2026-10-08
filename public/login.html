@@ -11,13 +11,16 @@
     </a>
     <nav class="main-nav" aria-label="Primary">
       <a href="/">Home</a>
-      <a href="/ticket.html">Today's Ticket</a>
-      <a href="/history.html">Ticket History</a>
-      <a href="/analytics.html">Analytics</a>
-      <a href="/predictions.html">Predictions</a>
+      <a href="/about.html">About</a>
+      <a class="hidden" href="/dashboard" data-auth-only>Dashboard</a>
+      <a class="hidden" href="/predictions.html" data-auth-only>Predictions</a>
+      <a class="hidden" href="/ticket.html" data-auth-only>Today's Ticket</a>
+      <a class="hidden" href="/history.html" data-auth-only>Ticket History</a>
+      <a class="hidden" href="/analytics.html" data-auth-only>Analytics</a>
     </nav>
     <div class="header-actions">
-      <a class="btn btn-ghost btn-sm" href="/account.html" data-auth-login>Login</a>
+      <a class="btn btn-ghost btn-sm" href="/login" data-auth-login>Login</a>
+      <a class="btn btn-primary btn-sm" href="/account.html#register" data-auth-register>Create Account</a>
       <span class="row hidden" data-auth-signed><a class="small muted" href="/account.html" data-auth-name></a><button class="btn btn-ghost btn-sm" type="button" data-auth-logout>Logout</button></span>
     </div>
   </div>

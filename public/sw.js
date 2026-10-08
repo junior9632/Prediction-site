@@ -7,12 +7,16 @@
  *  - /api/* is NEVER cached or intercepted. Tickets, odds and results always
  *    come from the server; offline means offline, never a stale ticket
  *    presented as today's.
+ *  - The MEMBER pages (/predictions, /ticket, /history, /analytics,
+ *    /dashboard) are never cached either: they are access controlled on the
+ *    server, and a cached copy replayed after a sign-out would show private
+ *    prediction data to a visitor. Navigations stay network-first.
  *  - Static assets (css/js/img/manifest) are cached with a versioned cache,
  *    refreshed in the background (stale-while-revalidate).
  *  - Page navigations are network-first with a branded offline fallback.
  */
 
-const VERSION = 'v2';
+const VERSION = 'v3';
 const STATIC_CACHE = `goalpredict-static-${VERSION}`;
 const OFFLINE_URL = '/offline.html';
 
@@ -44,6 +48,13 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+const MEMBER_PAGES = ['/predictions', '/ticket', '/history', '/analytics', '/dashboard'];
+
+/** True for every URL that only a signed-in account may read. */
+function isMemberPage(pathname) {
+  return MEMBER_PAGES.some((page) => pathname === page || pathname === `${page}.html` || pathname.startsWith(`${page}/`));
+}
+
 function isStaticAsset(url) {
   return (
     url.pathname.startsWith('/css/') ||
@@ -66,6 +77,11 @@ self.addEventListener('fetch', (event) => {
   // HARD RULE: the admin console script is access controlled on the server;
   // it must never be cached or replayed from the service worker cache.
   if (url.pathname === '/js/admin.js') return;
+
+  // HARD RULE: member-only pages are access controlled on the server. They are
+  // never written to a cache, so a signed-out visitor (or the next user of a
+  // shared device) can never be served a copy somebody else was allowed to see.
+  if (isMemberPage(url.pathname)) return;
 
   // Page navigations: network first, offline fallback.
   if (request.mode === 'navigate') {

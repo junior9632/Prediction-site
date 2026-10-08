@@ -236,7 +236,9 @@ test('guest: the member page redirects to sign-in and ships no feed', async () =
   for (const url of ['/dashboard', '/dashboard.html']) {
     const res = await req('GET', url, { redirect: 'manual' });
     assert.equal(res.status, 302, `${url} redirects a guest`);
-    assert.equal(res.headers.get('location'), '/account.html');
+    // every guarded page sends a visitor to the member sign-in door, naming
+    // the page that was refused
+    assert.equal(res.headers.get('location'), `/login?next=${encodeURIComponent(url)}`);
     assert.ok(!/Dashboard Activity/i.test(res.text), `${url} ships no member feed to a guest`);
   }
   // the admin console data stays unreachable as well

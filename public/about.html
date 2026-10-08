@@ -23,10 +23,12 @@
       </a>
       <nav class="main-nav lp-nav" aria-label="Primary">
         <a href="/">Home</a>
-        <a href="/predictions.html">Predictions</a>
-        <a href="/history.html">Results</a>
-        <a href="/analytics.html">Analytics</a>
         <a href="/about.html" class="active">About</a>
+      <a class="hidden" href="/dashboard" data-auth-only>Dashboard</a>
+      <a class="hidden" href="/predictions.html" data-auth-only>Predictions</a>
+      <a class="hidden" href="/ticket.html" data-auth-only>Today's Ticket</a>
+      <a class="hidden" href="/history.html" data-auth-only>Ticket History</a>
+      <a class="hidden" href="/analytics.html" data-auth-only>Analytics</a>
       </nav>
       <div class="header-actions">
         <a class="btn btn-ghost btn-sm lp-header-login" href="/login" data-auth-login>Login</a>
@@ -43,10 +45,12 @@
     <div class="lp-mobile-menu" id="mobileMenu" hidden>
       <nav class="container" aria-label="Mobile">
         <a href="/">Home</a>
-        <a href="/predictions.html">Predictions</a>
-        <a href="/history.html">Results</a>
-        <a href="/analytics.html">Analytics</a>
         <a href="/about.html" class="active">About</a>
+        <a class="hidden" href="/dashboard" data-auth-only>Dashboard</a>
+        <a class="hidden" href="/predictions.html" data-auth-only>Predictions</a>
+        <a class="hidden" href="/ticket.html" data-auth-only>Today's Ticket</a>
+        <a class="hidden" href="/history.html" data-auth-only>Ticket History</a>
+        <a class="hidden" href="/analytics.html" data-auth-only>Analytics</a>
         <div class="lp-mobile-actions">
           <a class="btn btn-ghost" href="/login" data-auth-login>Login</a>
           <a class="btn btn-primary" href="/account.html#register" data-auth-register>Get Started</a>
@@ -136,8 +140,10 @@
           <h2 class="lp-cta-title">See it for yourself</h2>
           <p class="lp-cta-body">The prediction page shows every analysed fixture with its evidence, and the results page shows the full record.</p>
           <div class="lp-cta-actions">
-            <a class="btn btn-primary btn-lg" href="/predictions.html">View Predictions</a>
-            <a class="btn btn-ghost btn-lg" href="/history.html">See the Results</a>
+            <a class="btn btn-primary btn-lg" href="/login?next=%2Fpredictions" data-auth-guest-only>Unlock AI Football Predictions</a>
+            <a class="btn btn-primary btn-lg hidden" href="/predictions.html" data-auth-only>View Predictions</a>
+            <a class="btn btn-ghost btn-lg" href="/login" data-auth-guest-only>Login to view today's predictions →</a>
+            <a class="btn btn-ghost btn-lg hidden" href="/history.html" data-auth-only>See the Results</a>
           </div>
         </div>
       </div>
@@ -156,9 +162,9 @@
       <div>
         <div class="footer-links lp-footer-links">
           <a href="/">Home</a>
-          <a href="/predictions.html">Predictions</a>
-          <a href="/history.html">Results</a>
-          <a href="/analytics.html">Analytics</a>
+          <a class="hidden" href="/predictions.html" data-auth-only>Predictions</a>
+          <a class="hidden" href="/history.html" data-auth-only>Ticket History</a>
+          <a class="hidden" href="/analytics.html" data-auth-only>Analytics</a>
           <a href="/about.html">About</a>
           <a href="/login">Login</a>
           <a href="/legal.html#terms">Terms</a>

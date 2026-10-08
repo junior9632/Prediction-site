@@ -267,7 +267,7 @@ code on every read.
 > where the source lives (`npm run build:zip`) and upload the result.
 
 | Anything else — start here | `npm run doctor`. It prints the cause and the exact cPanel screen that fixes it (masked values only), and exits non-zero so it can gate a deploy. `npm run doctor -- --json` for a machine readable report |
-| "Is the member area really private on the live site?" | `npm run verify:access -- --member=USER:PW --admin=USER:PW` against the deployed URL. It checks every guest/member/admin boundary with real HTTP requests and exits non-zero on any leak |
+| "Are the predictions really private on the live site?" | `npm run verify:access -- --member=USER:PW --admin=USER:PW` against the deployed URL. It checks every prediction endpoint and member page for the guest, the member and the administrator with real HTTP requests and exits non-zero on any leak |
 | Static assets 404 after upload | the app serves `public/` itself; make sure `public/` is inside the Application root and that no `.htaccess` in `public_html` rewrites the domain away from the Node app |
 
 ---
