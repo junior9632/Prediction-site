@@ -156,7 +156,7 @@ npm run db:seed
 
 This writes all 51 default settings (locked ones included) and creates the administrator from
 `ADMIN_USERNAME` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` with `must_change_password = 1`. Log in at
-`https://yourdomain.com/login.html`, change the password immediately, and remove
+`https://yourdomain.com/admin/login`, change the password immediately, and remove
 `ADMIN_PASSWORD` from the environment afterwards.
 
 ---
@@ -207,7 +207,7 @@ Notes:
    | `https://yourdomain.com/api/health` | `{"ok":true,"data":{"status":"ok","database":"ok","dataSource":{"configured":true,…}}}` |
    | `https://yourdomain.com/api/meta` | site name, `market.key = over_1_5`, `oddsWindow {min:2,max:4}`, `autoTicketGeneration:false` |
    | `https://yourdomain.com/` | homepage renders, dark navy theme, no console errors |
-   | `https://yourdomain.com/login.html` | admin sign-in works |
+   | `https://yourdomain.com/admin/login` | admin sign-in works |
 
 4. Warm the data: admin console → **API Status** → *Sync fixtures*, then *Sync odds*
    (or wait for cron). Check **Fixtures** and **Odds** show rows with a green "verified Xm ago"

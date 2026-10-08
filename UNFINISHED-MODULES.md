@@ -179,7 +179,7 @@ Re-ran every check from the original inventory against the delivered tree (see �
 | 4 | `scripts/verify-access.js` deployment verifier | ✅ done (module 2) |
 | 5 | Inert settings wired up | ✅ done (module 3) |
 | 6 | Deployment ZIP regenerated + drift-proofed | ✅ done (module 4) |
-| 7 | Homepage redesign (`index.html`, `js/app.js`, `css/style.css`) + `tests/homepage-render.test.js` | ✅ done (module 5) |
+| 7 | Homepage redesign (`index.html`, `js/app.js`, `css/style.css`) + `tests/homepage-render.test.js` | ✅ done (module 5, reworked in module 7) |
 | — | Re-audit after modules 1–5 | ✅ done (module 6) |
 
 ### Module 4 — Deployment artefact — ✅ COMPLETE
@@ -264,3 +264,34 @@ Run after modules 1–5 landed, against the delivered tree (`npm test` **130/130
 
 **New work introduced by the audit:** none. Both findings were documentation drift, not missing
 functionality, and both are fixed in the same commit as module 5.
+
+### Module 7 — Public homepage rebuilt as a pure landing page — ✅ COMPLETE
+
+The homepage shipped in module 5 still carried live ticket widgets (a "today's ticket" panel, the
+accumulator card, settled results). They were public data, but they made the homepage read like a
+dashboard. Module 7 removes every data widget and replaces the page with a static marketing
+landing page. The three experiences are now cleanly separated:
+
+| Experience | Route | Content |
+| --- | --- | --- |
+| Public marketing | `/` (+ `/about`) | Static only: hero, trust strip, one-market section, daily target, process, features, CTA. **No** API call, no data widget, no admin reference |
+| Member dashboard | `/dashboard` | Authenticated: profile, status, account activity, prediction history (unchanged) |
+| Operator console | `/admin` | Private: guarded by `/admin/login` (unchanged) |
+
+| Piece | File |
+| --- | --- |
+| Landing page (hero → trust → what → market → target → process → why → CTA → footer) | `public/index.html` |
+| About page | `public/about.html` **new** |
+| Marketing-only script: drawer, reveal-on-scroll, session-aware header — zero API calls | `public/js/app.js` |
+| Landing design layer (`lp-*`: header, hero + pitch artwork, trust cards, split panels, market, target, timeline, features, CTA, footer, 3 breakpoints) | `public/css/style.css` |
+| Session-aware header helpers (`data-auth-register`, mobile chips) | `public/js/api.js` |
+| `/about` route, `/login` now serves the member sign-in, `/about` in the sitemap | `server/app.js` |
+| `#terms` / `#privacy` anchors for the footer links | `public/legal.html` |
+| Acceptance suite (7 tests) incl. the "anonymous visitor sees no dashboard" contract | `tests/homepage-render.test.js` |
+| Nav / bottom-bar assertions updated to the new public navigation | `tests/http.test.js` |
+| Docs | `README.md`, `docs/API.md`, `docs/DEPLOYMENT-CPANEL.md` |
+
+The forbidden-widget check is explicit: the suite fails if the homepage ever renders a ticket,
+odds, accumulator, statistics or privileged hook again (`accSummary`, `pickList`, `liveOdds`,
+`recentResults`, `/api/ticket`, `/api/dashboard`, `/api/admin`, …), and `js/app.js` is asserted to
+contain no `API.*` call, no `fetch` and no `XMLHttpRequest` at all.

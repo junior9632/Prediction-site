@@ -226,11 +226,16 @@ function createApp() {
     })
   );
 
-  // friendly URLs (no .html needed)
-  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'account', 'login'];
+  // Friendly URLs (no .html needed). /login is the MEMBER sign-in — the same
+  // page as /account, register form included — so a visitor who types it lands
+  // on something useful. The console's own unlisted door is /admin/login (and
+  // the legacy /login.html that the deployment guide still prints).
+  const pages = ['ticket', 'history', 'analytics', 'predictions', 'legal', 'about', 'account'];
   for (const page of pages) {
     app.get(`/${page}`, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, `${page}.html`)));
   }
+
+  app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'account.html')));
 
   // The robots file must never advertise private areas (/admin, the sign-in
   // pages): a Disallow entry would point crawlers straight at them. The
@@ -245,9 +250,9 @@ function createApp() {
       );
   });
 
-  // Public, indexable pages only — admin/login are deliberately excluded.
+  // Public, indexable pages only — the sign-in pages are deliberately excluded.
   app.get('/sitemap.xml', (_req, res) => {
-    const publicPages = ['', 'ticket', 'history', 'analytics', 'predictions', 'legal'];
+    const publicPages = ['', 'ticket', 'history', 'analytics', 'predictions', 'about', 'legal'];
     const today = new Date().toISOString().slice(0, 10);
     const urls = publicPages
       .map(

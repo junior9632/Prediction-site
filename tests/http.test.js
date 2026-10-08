@@ -416,12 +416,14 @@ test('security: the admin area is hidden from the public UI', () => {
     assert.ok(!/admin login/i.test(html), `${entry} must not advertise an admin login`);
   }
 
-  // The public navigation offers Home, Today's Ticket, Ticket History,
-  // Analytics, Predictions and Login only.
+  // The public navigation is the marketing nav — Home, Predictions, Results,
+  // Analytics, About — plus Login / Get Started in the header. No account or
+  // operator surface is ever named here.
   const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
-  const nav = indexHtml.match(/<nav class="main-nav"[\s\S]*?<\/nav>/)[0];
+  const nav = indexHtml.match(/<nav class="main-nav lp-nav"[\s\S]*?<\/nav>/)[0];
   assert.ok(!/admin/i.test(nav), 'no admin entry in the primary navigation');
-  for (const label of ['Home', "Today's Ticket", 'Ticket History', 'Analytics', 'Predictions']) {
+  assert.ok(!/dashboard/i.test(nav), 'no dashboard entry in the primary navigation');
+  for (const label of ['Home', 'Predictions', 'Results', 'Analytics', 'About']) {
     assert.ok(nav.includes(`>${label}<`), `the nav keeps ${label}`);
   }
 
@@ -607,10 +609,19 @@ test('responsive: the admin console stays navigable on small screens', () => {
   assert.ok(adminJs.includes('bindSideNav'), 'admin.js must wire the drawer');
   assert.ok(adminJs.includes('closeSideNav()'), 'switching view must close the drawer');
 
-  // and the public pages keep their mobile bottom bar, hidden on desktop
-  const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
-  assert.ok(indexHtml.includes('class="bottom-nav"'), 'public pages need the mobile bottom nav');
+  // The interior public pages keep their mobile bottom bar, hidden on desktop.
+  for (const page of ['ticket.html', 'history.html', 'analytics.html', 'predictions.html', 'legal.html']) {
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, page), 'utf8');
+    assert.ok(html.includes('class="bottom-nav"'), `${page} needs the mobile bottom nav`);
+  }
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*?\.bottom-nav \{ display: none/, 'bottom nav is mobile only');
+
+  // The landing page replaces it with a hamburger drawer, because its header
+  // carries Login / Get Started that a bottom bar could not hold.
+  const indexHtml = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  assert.ok(!indexHtml.includes('class="bottom-nav"'), 'the landing page uses the drawer instead');
+  assert.ok(indexHtml.includes('id="navToggle"'), 'the landing page renders the hamburger');
+  assert.match(css, /@media \(max-width: 899\.98px\)[\s\S]*?\.lp-nav-toggle \{ display: inline-flex/, 'the drawer toggle shows on phones');
 });
 
 test('compliance & SEO: legal page, robots.txt and sitemap.xml are served', async () => {
@@ -625,7 +636,7 @@ test('compliance & SEO: legal page, robots.txt and sitemap.xml are served', asyn
   const robots = await get('/robots.txt');
   assert.equal(robots.status, 200);
   assert.doesNotMatch(robots.text, /admin/i, 'robots.txt must never advertise the admin area');
-  assert.doesNotMatch(robots.text, /Disallow: \/login/, 'the sign-in door is not advertised either');
+  assert.doesNotMatch(robots.text, /login\.html/, 'the console door is not advertised either');
   assert.match(robots.text, /Disallow: \/api\//);
   assert.match(robots.text, /Sitemap: .+\/sitemap\.xml/);
 

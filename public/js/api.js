@@ -313,28 +313,40 @@ const App = (() => {
     reset() {
       session.cache = null;
     },
-    /** Wire the shared header login controls on every page. */
+    /**
+     * Wire the shared header session controls on every page.
+     *
+     * A signed-out visitor sees "Login" (data-auth-login) and, where a page
+     * offers one, "Get Started" (data-auth-register). A signed-in visitor sees
+     * the account chip (data-auth-signed) with their dashboard link instead.
+     * Pages opt in per element; anything absent is simply skipped.
+     */
     bindHeader() {
-      const loginBtn = document.querySelector('[data-auth-login]');
-      const signed = document.querySelector('[data-auth-signed]');
-      const nameNode = document.querySelector('[data-auth-name]');
-      const logoutBtn = document.querySelector('[data-auth-logout]');
+      const loginBtns = document.querySelectorAll('[data-auth-login]');
+      const registerBtns = document.querySelectorAll('[data-auth-register]');
+      const signedBlocks = document.querySelectorAll('[data-auth-signed]');
+      const nameNodes = document.querySelectorAll('[data-auth-name], [data-auth-name-mobile]');
+      const logoutBtns = document.querySelectorAll('[data-auth-logout], [data-auth-logout-mobile]');
 
       const paint = () => {
         const me = session.cache;
         const isAuthed = Boolean(me);
-        if (loginBtn) loginBtn.classList.toggle('hidden', isAuthed);
-        if (signed) signed.classList.toggle('hidden', !isAuthed);
-        if (nameNode && me) {
-          nameNode.textContent = me.account ? me.account.username : 'Account';
-          nameNode.href = me.type === 'admin' ? '/account.html' : '/dashboard';
-          nameNode.setAttribute('aria-label', 'Open my account');
-        }
+        loginBtns.forEach((node) => node.classList.toggle('hidden', isAuthed));
+        registerBtns.forEach((node) => node.classList.toggle('hidden', isAuthed));
+        signedBlocks.forEach((node) => node.classList.toggle('hidden', !isAuthed));
+        nameNodes.forEach((node) => {
+          node.classList.toggle('hidden', !me);
+          if (!me) return;
+          if (node.hasAttribute('data-auth-name')) node.textContent = me.account ? me.account.username : 'Account';
+          node.href = me.type === 'admin' ? '/account.html' : '/dashboard';
+          node.setAttribute('aria-label', 'Open my account');
+        });
+        logoutBtns.forEach((node) => node.classList.toggle('hidden', !isAuthed));
       };
 
       session.me().then(paint).catch(paint);
 
-      if (logoutBtn) {
+      logoutBtns.forEach((logoutBtn) =>
         logoutBtn.addEventListener('click', async () => {
           try {
             await API.post('/auth/logout', {});
@@ -343,8 +355,8 @@ const App = (() => {
           }
           session.reset();
           window.location.href = '/';
-        });
-      }
+        })
+      );
       return session;
     },
   };

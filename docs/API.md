@@ -24,6 +24,21 @@ those fields are dropped and reported back in `ignoredClientFields`.
 
 ---
 
+## Pages
+
+| Page | Route | Notes |
+| --- | --- | --- |
+| Landing page | `/` (`/index.html`) | Static marketing page: hero, trust strip, process, CTA. Renders **no** ticket, odds or account data; the only request it can make is the shared session check that chooses Login vs the account chip |
+| About | `/about` (`/about.html`) | Product story, the single market, the rules, the no-guarantee position |
+| Predictions | `/predictions` | Every analysed fixture with its evidence |
+| Today's ticket | `/ticket` | The published ticket for a date (`?date=YYYY-MM-DD`) |
+| Results | `/history` | Settled record with filters and pagination |
+| Analytics | `/analytics` | Win rate, streaks, flat-stake ROI |
+| Legal | `/legal` | Legal and responsible play, terms (`#terms`), privacy (`#privacy`) |
+| Member sign-in | `/login`, `/account` | Sign in, register, profile, change password |
+| Member dashboard | `/dashboard` | Authenticated only: profile, status, account activity |
+| Console | `/admin`, `/admin/login` | Administrators only |
+
 ## Public
 
 ### `GET /api/health`
@@ -208,12 +223,16 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 
 Every `/api/auth/*` response is sent `Cache-Control: no-store`.
 
-### Admin sign-in door
+### Sign-in door
 
-`GET /admin/login` (and `/admin/login.html`) serves the shared sign-in form to anyone who is not
-already an administrator — no admin data, no console shell, no endpoint list — and redirects a
-live administrator session to `/admin.html`. Guests hitting `/admin` or `/admin.html` are
-redirected here. Any other `/admin/<anything>` answers `404`.
+`GET /admin/login` (and `/admin/login.html`, plus the legacy `/login.html`) serves the console
+sign-in form to anyone who is not already an administrator — no admin data, no console shell, no
+endpoint list — and redirects a live administrator session to `/admin.html`. Guests hitting
+`/admin` or `/admin.html` are redirected here. Any other `/admin/<anything>` answers `404`.
+
+`GET /login` is the **member** sign-in: it serves `account.html` (sign in, register, profile), so
+a visitor who types the obvious public address lands on something useful. The marketing pages link
+it as `Login` and link `/account.html#register` as `Get Started`.
 
 ### Member dashboard (`/api/dashboard/*`)
 
