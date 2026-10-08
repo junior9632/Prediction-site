@@ -41,51 +41,53 @@
 
   <main class="page">
     <div class="container">
-      <section class="hero">
-        <div>
-          <span class="hero-eyebrow">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>
-            One market. Mastered.
-          </span>
-          <h1>AI Football Predictions<br><span class="accent">Daily Over 1.5 Goals</span></h1>
-          <p class="hero-sub">Every pick is backed by real bookmaker prices, verified on our servers seconds before publication. Combined daily odds stay inside the 2.00&nbsp;–&nbsp;4.00 window — and a ticket is published only when the data genuinely supports it.</p>
-          <div class="hero-points">
-            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg> Real odds</span>
-            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg> Verified bookmakers</span>
-            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg> Trusted data</span>
-            <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg> Manual daily ticket</span>
-          </div>
+
+      <!-- =============================== HERO ============================== -->
+      <section class="hp-hero">
+        <span class="hp-eyebrow">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+          One market · Over 1.5 Goals
+        </span>
+        <h1 class="hp-h1">AI Sports Intelligence<br><span class="accent">for Over 1.5 Goals</span></h1>
+        <p class="hp-sub">
+          One honestly built ticket per day. Every price is a real bookmaker quote, verified on our
+          servers seconds before publication, and the combined odds must land inside
+          <b>2.00&nbsp;–&nbsp;4.00</b>. When the data does not support a ticket, the site says so —
+          nothing is invented and nothing is padded.
+        </p>
+
+        <div class="hp-cta">
+          <a class="btn btn-primary btn-lg" href="/ticket.html">See today's ticket →</a>
+          <a class="btn btn-ghost btn-lg" href="/account.html#register" data-auth-login>Create a free account</a>
         </div>
-        <div class="hero-art" aria-hidden="true">
-          <div class="orb">
-            <svg viewBox="0 0 24 24" fill="none" stroke="rgba(232,242,251,.85)" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7l3.5 2.6-1.3 4.1h-4.4L8.5 9.6 12 7z"/><path d="M12 3v4M4.5 9.5l4 .1M19.5 9.5l-4 .1M7 19l2.8-3.3M17 19l-2.8-3.3"/></svg>
+
+        <div class="hp-trust">
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg> Verified bookmaker odds</span>
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4"/></svg> Combined odds 2.00–4.00</span>
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg> Published by hand, never on a timer</span>
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg> 18+ · Play responsibly</span>
+        </div>
+
+        <!-- live, server-sourced preview of today's ticket -->
+        <div class="hp-live">
+          <div class="hp-live-head">
+            <span class="t">Today's ticket · read live from the server</span>
+            <span class="hp-pill" id="livePill"><span class="dot" aria-hidden="true"></span><span id="livePillText">Checking…</span></span>
+          </div>
+          <div class="hp-live-grid">
+            <div class="hp-live-cell"><div class="k">Market</div><div class="v cyan" id="liveMarket">Over 1.5 Goals</div></div>
+            <div class="hp-live-cell"><div class="k">Total odds</div><div class="v" id="liveOdds">—</div></div>
+            <div class="hp-live-cell"><div class="k">Picks</div><div class="v" id="livePicks">—</div></div>
+            <div class="hp-live-cell"><div class="k">Confidence</div><div class="v" id="liveConfidence">—</div></div>
+          </div>
+          <div class="hp-live-foot">
+            <span class="tiny muted" id="liveMessage">Loading today's verified status…</span>
+            <a class="small" href="/ticket.html">Full ticket &amp; evidence →</a>
           </div>
         </div>
       </section>
 
-      <section class="stat-strip" aria-label="Today at a glance">
-        <div class="stat-card">
-          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9a2 2 0 0 0 2-2V5h14v2a2 2 0 0 0 0 4v2a2 2 0 0 0 0 4v2H5v-2a2 2 0 0 0-2-2z" transform="translate(0 1)"/><path d="M13 6v2M13 11v2M13 16v2"/></svg></span>
-          <span><span class="stat-label">Today's Ticket</span><br><span class="stat-value" id="statMarket">—</span></span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-icon blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg></span>
-          <span><span class="stat-label">Total Odds</span><br><span class="stat-value cyan" id="statOdds">—</span></span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg></span>
-          <span><span class="stat-label">Number of Picks</span><br><span class="stat-value" id="statPicks">—</span></span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-icon amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4"/></svg></span>
-          <span><span class="stat-label">Confidence</span><br><span class="stat-value" id="statConfidence">—</span></span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-icon green" id="statStatusIcon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 5-5.5"/></svg></span>
-          <span><span class="stat-label">Status</span><br><span class="stat-value green" id="statStatus">—</span></span>
-        </div>
-      </section>
-
+      <!-- ========================= TODAY'S ACCUMULATOR ===================== -->
       <section class="section">
         <div class="card">
           <div class="card-head">
@@ -115,8 +117,11 @@
         </div>
       </section>
 
+      <!-- ============================ THE RULES ============================ -->
       <section class="section">
-        <div class="section-head"><h2 class="section-title">How the engine works</h2></div>
+        <div class="section-head"><h2 class="section-title">How the engine works</h2>
+          <a class="small" href="/predictions.html">Every analysed fixture →</a>
+        </div>
         <div class="stat-cards">
           <div class="mini-card">
             <div class="k">Verified odds only</div>
@@ -141,6 +146,7 @@
         </div>
       </section>
 
+      <!-- ========================= LATEST SETTLED ========================== -->
       <section class="section">
         <div class="section-head">
           <h2 class="section-title">Latest settled tickets</h2>

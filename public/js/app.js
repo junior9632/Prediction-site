@@ -1,4 +1,4 @@
-/* GoalPredict — homepage */
+/* GoalPredict — public homepage */
 'use strict';
 
 (function () {
@@ -6,29 +6,52 @@
 
   const $ = (sel) => document.querySelector(sel);
 
-  function paintStats(ticket) {
-    App.setText('#statMarket', 'Over 1.5 Goals');
-    App.setText('#statOdds', ticket.totalOdds ? fmt.odds(ticket.totalOdds) : '—');
-    App.setText('#statPicks', ticket.selectionCount || 0);
-    App.setText('#statConfidence', ticket.avgConfidence === null || ticket.avgConfidence === undefined ? '—' : fmt.pct(ticket.avgConfidence));
+  /* The homepage is a marketing surface that reads the same two public
+     endpoints every visitor can read. It never asks for account-scoped data
+     and it never names the private area. */
 
-    const statusNode = $('#statStatus');
-    const statusIcon = $('#statStatusIcon');
-    let label = 'Pending';
-    let tone = 'green';
-    if (ticket.status === 'QUALIFIED') {
-      label = ticket.result === 'WON' ? 'Won' : ticket.result === 'LOST' ? 'Lost' : ticket.result === 'PENDING' ? 'Qualified' : ticket.result;
-      tone = ticket.result === 'LOST' ? 'red' : 'green';
-    } else if (ticket.status === 'NO_QUALIFYING_TICKET') {
-      label = 'No ticket';
-      tone = 'amber';
-    } else if (ticket.status === 'DATA_SOURCE_UNAVAILABLE') {
-      label = 'Data offline';
-      tone = 'amber';
+  const PILL = {
+    ok: { cls: 'hp-pill ok', text: 'Verified & published' },
+    none: { cls: 'hp-pill warn', text: 'No ticket today' },
+    offline: { cls: 'hp-pill bad', text: 'Data offline' },
+    pending: { cls: 'hp-pill', text: 'Not published yet' },
+  };
+
+  function paintLive(ticket) {
+    App.setText('#liveMarket', 'Over 1.5 Goals');
+    App.setText('#liveOdds', ticket.totalOdds ? fmt.odds(ticket.totalOdds) : '—');
+    App.setText('#livePicks', ticket.selectionCount || 0);
+    App.setText(
+      '#liveConfidence',
+      ticket.avgConfidence === null || ticket.avgConfidence === undefined ? '—' : fmt.pct(ticket.avgConfidence)
+    );
+
+    const pill = $('#livePill');
+    const key =
+      ticket.status === 'QUALIFIED'
+        ? 'ok'
+        : ticket.status === 'DATA_SOURCE_UNAVAILABLE'
+          ? 'offline'
+          : ticket.status === 'NO_QUALIFYING_TICKET'
+            ? 'none'
+            : 'pending';
+    const spec = PILL[key];
+    if (pill) {
+      pill.className = spec.cls;
+      App.setText('#livePillText', spec.text);
     }
-    statusNode.textContent = label;
-    statusNode.className = `stat-value ${tone === 'green' ? 'green' : tone === 'red' ? 'red' : ''}`;
-    if (statusIcon) statusIcon.className = `stat-icon ${tone}`;
+
+    const generated = ticket.generatedAt ? `Generated ${fmt.dateTimeLabel(ticket.generatedAt)}` : null;
+    if (key === 'ok') {
+      App.setText('#liveMessage', generated ? `${generated} · every price re-verified before publication.` : 'Every price re-verified before publication.');
+    } else if (key === 'none') {
+      const nt = ticket.noTicket || {};
+      App.setText('#liveMessage', nt.message || 'No valid Over 1.5 combination landed inside the 2.00-4.00 window today.');
+    } else if (key === 'offline') {
+      App.setText('#liveMessage', 'The odds feed is temporarily unavailable — nothing is published instead of guessing.');
+    } else {
+      App.setText('#liveMessage', "Today's ticket has not been published yet.");
+    }
   }
 
   function paintSummary(ticket) {
@@ -68,7 +91,7 @@
   }
 
   function paintTicket(ticket) {
-    paintStats(ticket);
+    paintLive(ticket);
     paintSummary(ticket);
 
     const list = $('#pickList');
@@ -130,6 +153,14 @@
       if (list) {
         list.innerHTML = emptyState('alert', 'Could not load the ticket', err.message || 'The API is unreachable right now.');
       }
+      // a browser-side failure is not the same claim as "the feed is down",
+      // so it gets its own wording rather than a misleading status
+      const pill = $('#livePill');
+      if (pill) {
+        pill.className = 'hp-pill bad';
+        App.setText('#livePillText', 'Status unavailable');
+      }
+      App.setText('#liveMessage', 'The site could not be reached from this browser right now — reload to try again.');
     }
   }
 

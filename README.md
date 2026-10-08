@@ -35,7 +35,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 124 tests, no test dependencies |
+| Tests | `node:test` (built in) — 130 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -105,7 +105,7 @@ server.js                     startup entry point (cPanel "Application startup f
 package.json                  scripts + the 9 runtime dependencies
 .env.example                  every environment variable, documented
 public/                       the entire frontend (static, no build step)
-  index.html                  homepage: today's ticket, stats, recent results
+  index.html                  homepage: hero, live ticket preview, accumulator, results
   ticket.html                 full ticket page (also accepts ?date=YYYY-MM-DD)
   history.html                ticket history with result filters + pagination
   analytics.html              performance analytics (win rate, streaks, monthly)
@@ -284,7 +284,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 124 tests, ~6s, no database or network required
+npm test          # 130 tests, ~6s, no database or network required
 ```
 
 | File | Covers |
@@ -323,7 +323,7 @@ npm test          # 124 tests, ~6s, no database or network required
 
 `.github/workflows/checks.yml` runs on every push and pull request to `main`, on Node 18, 20 and
 22 (`>=18.17` is the documented floor for native `fetch`; 22 is what cPanel currently ships). Each
-job runs, in order: `npm ci`, `lint:syntax`, `test:sql`, `lint:secrets`, `npm test`.
+job runs, in order: `npm ci`, `lint:syntax`, `lint:js`, `test:sql`, `lint:secrets`, `npm test`.
 
 The workflow needs **no services and no secrets** — the suite is hermetic, so a green run is proof
 of the engine and HTTP contracts, not of a live MySQL or API-Football connection. Those still have

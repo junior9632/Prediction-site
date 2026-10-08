@@ -53,6 +53,10 @@ minSelections, maxSelections}`, `autoTicketGeneration: false`, `correlationProte
 
 ### `GET /api/ticket/today` · `GET /api/ticket/:date` · `GET /api/tickets/:date`
 
+The ticket router is mounted twice — `/api/ticket` **and** `/api/tickets` — so every route below
+also answers on the alias prefix (`GET /api/tickets/today`, `GET /api/ticket/history`, …). Both
+prefixes hit the same handler.
+
 The published outcome for one date (`:date` = `YYYY-MM-DD`, defaults to today, UTC).
 
 ```jsonc
@@ -121,7 +125,7 @@ Before any run: `status: "PENDING"`, `statusLabel: "NOT GENERATED YET"`.
 `GET /api/ticket/today` additionally returns `oddsWindow`, `autoTicketGeneration: false` and
 `serverTime`.
 
-### `GET /api/tickets/history?page=&limit=&from=&to=&status=&result=`
+### `GET /api/tickets/history?page=&limit=&from=&to=&status=&result=` (alias: `/api/ticket/history`)
 
 `{ page, limit, total, pages, items: [ticket] }` — tickets newest first, each with its selections.
 `status` ∈ `QUALIFIED | NO_QUALIFYING_TICKET | DATA_SOURCE_UNAVAILABLE | PENDING | ERROR`,
