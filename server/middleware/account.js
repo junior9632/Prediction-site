@@ -30,6 +30,45 @@ function assertAccountUsable(row, kind) {
   }
 }
 
+/**
+ * The exact message a pending applicant sees after registering and after a
+ * login attempt — required product copy, kept in one place.
+ */
+const PENDING_APPROVAL_MESSAGE =
+  'Your account has been submitted for approval. You will be able to access your dashboard once an administrator approves your account.';
+
+/**
+ * MEMBER-ONLY STATUS GUARD.
+ *
+ * `assertAccountUsable` proves the row exists and is not disabled/locked.
+ * On top of that, a public user account must additionally be APPROVED:
+ * `pending`, `rejected` and `suspended` accounts never reach a protected
+ * feature — not at login (no session is even issued) and not with an
+ * already-issued token, because this runs on every request.
+ *
+ * The status is read from the database row, never from the request.
+ */
+function assertUserApproved(user) {
+  if (!user) throw AppError.unauthorized('Member account no longer exists', 'ACCOUNT_MISSING');
+  if (user.status === 'pending') throw AppError.forbidden(PENDING_APPROVAL_MESSAGE, 'ACCOUNT_PENDING');
+  if (user.status === 'rejected') {
+    throw AppError.forbidden(
+      'This account application was not approved. Please contact support if you believe this is a mistake.',
+      'ACCOUNT_REJECTED'
+    );
+  }
+  if (user.status === 'suspended') {
+    throw AppError.forbidden(
+      'This account has been suspended. Please contact support for more information.',
+      'ACCOUNT_SUSPENDED'
+    );
+  }
+  if (Number(user.is_active) !== 1) throw AppError.forbidden('Account disabled', 'ACCOUNT_DISABLED');
+  if (user.locked_until && new Date(user.locked_until).getTime() > Date.now()) {
+    throw AppError.forbidden('Account temporarily locked', 'ACCOUNT_LOCKED');
+  }
+}
+
 async function requireActiveAccount(req, _res, next) {
   try {
     if (!req.auth) throw AppError.unauthorized();
@@ -48,13 +87,14 @@ async function requireActiveAccount(req, _res, next) {
       return next();
     }
     const user = await db.getUserById(req.auth.id);
-    assertAccountUsable(user, 'Member');
+    assertUserApproved(user);
     req.member = {
       type: 'user',
       id: Number(user.id),
       username: user.username,
       email: user.email,
       role: user.role,
+      status: user.status,
       memberSince: user.created_at,
       lastLoginAt: user.last_login_at,
     };
@@ -87,4 +127,4 @@ function noStore(_req, res, next) {
 
 const memberGuard = [noStore, requireAuth, requireActiveAccount];
 
-module.exports = { requireActiveAccount, assertAccountUsable, noStore, memberGuard };
+module.exports = { requireActiveAccount, assertAccountUsable, assertUserApproved, PENDING_APPROVAL_MESSAGE, noStore, memberGuard };

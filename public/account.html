@@ -60,13 +60,15 @@
         <div class="card-body">
           <div class="alert info hidden" id="registerAlert"><div id="registerAlertText"></div></div>
           <form id="registerForm" autocomplete="on">
+            <div class="field"><label for="regFullName">Full name</label><input class="input" id="regFullName" autocomplete="name" minlength="2" maxlength="120" required></div>
             <div class="field"><label for="regUsername">Username</label><input class="input" id="regUsername" autocomplete="username" minlength="3" maxlength="40" pattern="[a-zA-Z0-9_.\-]+" required></div>
             <div class="field"><label for="regEmail">E-mail</label><input class="input" id="regEmail" type="email" autocomplete="email" required></div>
             <div class="field"><label for="regPassword">Password (8+ characters)</label><input class="input" id="regPassword" type="password" autocomplete="new-password" minlength="8" required></div>
             <button class="btn btn-ghost btn-block" type="submit" id="registerBtn">Create account</button>
           </form>
           <p class="tiny muted" style="margin:12px 0 0;">
-            18+ only. We store your username, e-mail and a bcrypt password hash — nothing else.
+            18+ only. We store your name, username, e-mail and a bcrypt password hash — nothing else.
+            New accounts are reviewed by an administrator before they are activated.
             Members unlock football predictions, today's AI ticket, ticket history and analytics.
             See <a href="/legal.html">Legal &amp; Responsible Play</a>.
           </p>

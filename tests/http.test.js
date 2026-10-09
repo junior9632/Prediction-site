@@ -29,13 +29,13 @@ const { createApp, PUBLIC_DIR } = require('../server/app');
 
 const ADMIN = { id: 1, email: 'admin@test.local', username: 'admin', password_hash: 'x', role: 'superadmin', is_active: 1, locked_until: null, must_change_password: 0 };
 const MEMBER = {
-  id: 77, email: 'seeded@test.local', username: 'seededfan', password_hash: 'x', role: 'user',
-  is_active: 1, failed_logins: 0, locked_until: null, last_login_at: null,
+  id: 77, email: 'seeded@test.local', username: 'seededfan', full_name: 'Seeded Fan', password_hash: 'x', role: 'user',
+  is_active: 1, status: 'approved', failed_logins: 0, locked_until: null, last_login_at: null,
   created_at: '2026-09-01 10:00:00', updated_at: '2026-09-01 10:00:00',
 };
 const DISABLED_MEMBER = {
-  id: 78, email: 'deactivated@test.local', username: 'deactivatedfan', password_hash: 'x', role: 'user',
-  is_active: 0, failed_logins: 0, locked_until: null, last_login_at: null,
+  id: 78, email: 'deactivated@test.local', username: 'deactivatedfan', full_name: 'Deactivated Fan', password_hash: 'x', role: 'user',
+  is_active: 0, status: 'approved', failed_logins: 0, locked_until: null, last_login_at: null,
   created_at: '2026-09-01 10:00:00', updated_at: '2026-09-01 10:00:00',
 };
 
@@ -695,20 +695,38 @@ test('compliance & SEO: legal page, robots.txt and sitemap.xml are served', asyn
   }
 });
 
-test('member accounts: register -> login -> me -> change password -> logout', async () => {
-  // register (public, rate limited route)
+test('member accounts: register -> pending -> admin approval -> login -> me -> change password -> logout', async () => {
+  // register (public, rate limited route) — the account starts as PENDING
   const reg = await post('/api/auth/register', {
     email: 'fan@test.local',
     username: 'ticketfan',
+    fullName: 'Ticket Fan',
     password: 'super-secret-99',
   });
   assert.equal(reg.status, 201);
   assert.equal(reg.json.data.username, 'ticketfan');
+  assert.equal(reg.json.data.status, 'pending');
+  assert.equal(reg.json.data.pendingApproval, true);
+  assert.match(reg.json.data.message, /submitted for approval/);
+  const newUserId = reg.json.data.id;
+
+  // a pending account cannot sign in yet — it gets the approval message
+  const pendingLogin = await post('/api/auth/login', { login: 'ticketfan', password: 'super-secret-99' });
+  assert.equal(pendingLogin.status, 403);
+  assert.equal(pendingLogin.json.error.code, 'ACCOUNT_PENDING');
+  assert.match(pendingLogin.json.error.message, /submitted for approval/);
+  assert.ok(!pendingLogin.headers.get('set-cookie'), 'no session is issued while pending');
+
+  // an administrator approves the application from the console API
+  const approved = await post(`/api/admin/users/${newUserId}/approve`, {}, { token: bearer });
+  assert.equal(approved.status, 200);
+  assert.equal(approved.json.data.user.status, 'approved');
 
   // duplicate registration is refused without user enumeration detail
   const dup = await post('/api/auth/register', {
     email: 'fan@test.local',
     username: 'ticketfan2',
+    fullName: 'Ticket Fan Two',
     password: 'super-secret-99',
   });
   assert.equal(dup.status, 409);

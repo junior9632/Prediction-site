@@ -11,7 +11,7 @@
  *   member  : /predictions , /ticket , /today-ticket , /history , /analytics ,
  *             /dashboard and every /api/{predictions,ticket,tickets,analytics,
  *             fixtures,odds} route
- *   admin   : /admin (+ /api/admin)
+ *   admin   : /admin, /admin/users (+ /api/admin)
  *
  * A member route is refused before any controller, query or template runs:
  * an API path answers 401 Unauthorized with an empty body, a page path
@@ -138,6 +138,24 @@ function sendLoginRequired(res, section, { status = 401, next = '/predictions', 
 }
 
 /**
+ * The notice shown on the login-required door when a signed-in account is
+ * refused: pending applicants, rejected applications and suspended accounts
+ * each get their own honest message (see middleware/account.js).
+ */
+function accountNotice(code) {
+  if (code === 'ACCOUNT_PENDING') {
+    return 'Your account has been submitted for approval. You will be able to access your dashboard once an administrator approves your account.';
+  }
+  if (code === 'ACCOUNT_REJECTED') {
+    return 'This account application was not approved. Please contact support if you believe this is a mistake.';
+  }
+  if (code === 'ACCOUNT_SUSPENDED') {
+    return 'This account has been suspended. Please contact support for more information.';
+  }
+  return 'This account is currently disabled or temporarily locked. Contact support or sign in with a different account.';
+}
+
+/**
  * Server side guard for a member-only page: a verified session AND an account
  * that still exists and is active. The account is re-read from the database by
  * `requireActiveAccount`, so a deleted, deactivated or locked member is
@@ -158,10 +176,7 @@ function memberAreaGuard(section) {
         return sendLoginRequired(res, section, {
           status,
           next: req.originalUrl,
-          notice:
-            status === 403
-              ? 'This account is currently disabled or temporarily locked. Contact support or sign in with a different account.'
-              : '',
+          notice: status === 403 ? accountNotice(accountErr.code) : '',
         });
       });
     });
@@ -252,12 +267,21 @@ function createApp() {
   // browser. An unauthenticated visitor opening /dashboard or /dashboard.html
   // directly is bounced to the member sign-in page instead of receiving the
   // member area (and the page itself is never cached).
+  // The member dashboard is refused for accounts that are not approved
+  // (pending / rejected / suspended): the account is re-read from the
+  // database, so an administrator's decision takes effect immediately, even
+  // for a session token that is still cryptographically valid.
   const memberPageGuard = (req, res, next) =>
     requireAuth(req, res, (err) => {
       if (err && err.status === 401) return res.redirect(302, '/account.html');
       if (err) return next(err);
       if (req.auth && req.auth.type === 'admin') return res.redirect(302, '/admin.html');
-      return next();
+      return requireActiveAccount(req, res, (accountErr) => {
+        if (!accountErr) return next();
+        // Not an approved member (pending / rejected / suspended / disabled):
+        // back to the account door, which explains the status on sign-in.
+        return res.redirect(302, '/account.html');
+      });
     });
 
   const memberDashboardPage = (_req, res) =>
@@ -355,21 +379,36 @@ function createApp() {
   app.get('/admin', adminPageGuard, requireActiveAdmin, adminConsolePage);
   app.get('/admin.html', adminPageGuard, requireActiveAdmin, adminConsolePage);
 
-  // The console script lists the privileged API endpoints, so it is only
-  // served to verified administrators; for everyone else it simply does not
+  // The Users section of the console (registration approval + account
+  // management) is a dedicated admin page behind the exact same guard chain:
+  // guests are redirected to the console sign-in door, non-admins get a bare
+  // 403, and the admin account is re-read from the database.
+  const adminUsersPage = (_req, res) =>
+    res.sendFile(path.join(PUBLIC_DIR, 'admin', 'users.html'), {
+      headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' },
+    });
+
+  app.get('/admin/users', adminPageGuard, requireActiveAdmin, adminUsersPage);
+  app.get('/admin/users.html', adminPageGuard, requireActiveAdmin, adminUsersPage);
+
+  // The console scripts list the privileged API endpoints, so they are only
+  // served to verified administrators; for everyone else they simply do not
   // exist (404), exactly like an unknown asset.
-  app.get('/js/admin.js', (req, res, next) => {
+  const guardedAdminScript = (file) => (req, res, next) => {
     const { token } = readToken(req);
     if (token) {
       try {
         const claims = verifyToken(token);
-        if (claims.type === 'admin') return res.sendFile(path.join(PUBLIC_DIR, 'js', 'admin.js'));
+        if (claims.type === 'admin') return res.sendFile(path.join(PUBLIC_DIR, 'js', file));
       } catch (_err) {
         /* fall through to the generic 404 below */
       }
     }
     return next(AppError.notFound());
-  });
+  };
+
+  app.get('/js/admin.js', guardedAdminScript('admin.js'));
+  app.get('/js/admin-users.js', guardedAdminScript('admin-users.js'));
 
   /* --------------------------- frontend ---------------------------- */
   app.use(

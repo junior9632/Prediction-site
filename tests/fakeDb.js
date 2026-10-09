@@ -33,6 +33,7 @@ function install(overrides = {}) {
     systemLogs: overrides.systemLogs || [],
     apiSyncLogs: overrides.apiSyncLogs || [],
     users: overrides.users || [],
+    userAuditLogs: overrides.userAuditLogs || [],
     ids: 1000,
   };
 
@@ -51,6 +52,80 @@ function install(overrides = {}) {
     if (/^SELECT \* FROM users WHERE id = \?/.test(s)) return store.users.filter((u) => u.id === Number(params[0]));
     if (/^SELECT \* FROM users WHERE email = \? OR username = \?/.test(s)) {
       return store.users.filter((u) => u.email === params[0] || u.username === params[0]);
+    }
+    /* ---------------- user management (approval workflow) ---------------- */
+    if (/^SELECT id, username, full_name, email, role, status, is_active/.test(s)) {
+      let rows = store.users.slice();
+      let paramIdx = 0;
+      if (/AND status = \?/.test(s)) {
+        const status = params[paramIdx++];
+        rows = rows.filter((u) => u.status === status);
+      }
+      if (/AND \(username LIKE \?/.test(s)) {
+        const needle = String(params[paramIdx++]).replace(/%/g, '').toLowerCase();
+        paramIdx += 2; // full_name + email LIKE params carry the same needle
+        const exactId = String(params[paramIdx++]);
+        rows = rows.filter(
+          (u) =>
+            String(u.username).toLowerCase().includes(needle) ||
+            String(u.full_name || '').toLowerCase().includes(needle) ||
+            String(u.email).toLowerCase().includes(needle) ||
+            String(u.id) === exactId
+        );
+      }
+      rows.sort((a, b) =>
+        String(b.created_at) !== String(a.created_at)
+          ? String(b.created_at) > String(a.created_at)
+            ? 1
+            : -1
+          : Number(b.id) - Number(a.id)
+      );
+      const limitMatch = s.match(/LIMIT (\d+)/);
+      const offsetMatch = s.match(/OFFSET (\d+)/);
+      const limit = limitMatch ? Number(limitMatch[1]) : 25;
+      const offset = offsetMatch ? Number(offsetMatch[1]) : 0;
+      return rows.slice(offset, offset + limit);
+    }
+    if (/^SELECT COUNT\(\*\) AS total FROM users/.test(s)) {
+      let rows = store.users.slice();
+      let paramIdx = 0;
+      if (/AND status = \?/.test(s)) {
+        const status = params[paramIdx++];
+        rows = rows.filter((u) => u.status === status);
+      }
+      if (/AND \(username LIKE \?/.test(s)) {
+        const needle = String(params[paramIdx++]).replace(/%/g, '').toLowerCase();
+        paramIdx += 2;
+        const exactId = String(params[paramIdx++]);
+        rows = rows.filter(
+          (u) =>
+            String(u.username).toLowerCase().includes(needle) ||
+            String(u.full_name || '').toLowerCase().includes(needle) ||
+            String(u.email).toLowerCase().includes(needle) ||
+            String(u.id) === exactId
+        );
+      }
+      return [{ total: rows.length }];
+    }
+    if (/^SELECT COUNT\(\*\) AS total, SUM\(CASE WHEN status = 'pending'/.test(s)) {
+      const count = (st) => store.users.filter((u) => u.status === st).length;
+      return [
+        {
+          total: store.users.length,
+          pending: count('pending'),
+          approved: count('approved'),
+          rejected: count('rejected'),
+          suspended: count('suspended'),
+        },
+      ];
+    }
+    if (/^SELECT \* FROM user_audit_logs WHERE user_id = \?/.test(s)) {
+      return store.userAuditLogs
+        .filter((a) => Number(a.user_id) === Number(params[0]))
+        .sort((a, b) => Number(b.id) - Number(a.id));
+    }
+    if (/^SELECT id, email, username, role, is_active, last_login_at, last_login_ip, must_change_password, created_at/.test(s)) {
+      return store.admins;
     }
     if (/^SELECT \* FROM settings/.test(s)) return store.settings;
     if (/^SELECT \* FROM leagues/.test(s)) return store.leagues;
@@ -342,15 +417,51 @@ function install(overrides = {}) {
         id,
         email: params[0],
         username: params[1],
-        password_hash: params[2],
-        role: params[3] || 'user',
-        is_active: params[4] === undefined ? 1 : Number(params[4]),
+        full_name: params[2] || '',
+        password_hash: params[3],
+        role: params[4] || 'user',
+        is_active: params[5] === undefined ? 1 : Number(params[5]),
+        status: params[6] || 'pending',
+        approved_at: null,
+        approved_by_admin_id: null,
+        status_reason: null,
+        status_changed_at: null,
         failed_logins: 0,
         locked_until: null,
         last_login_at: null,
         last_login_ip: null,
         created_at: nowIso(),
         updated_at: nowIso(),
+      });
+      return { insertId: id, affectedRows: 1 };
+    }
+    if (/^UPDATE users SET status = \?, is_active = \?/.test(s)) {
+      // params: status, is_active, approved_at, approved_by_admin_id, status_reason, status_changed_at, id
+      const row = store.users.find((u) => u.id === Number(params[6]));
+      if (row) {
+        row.status = params[0];
+        row.is_active = Number(params[1]);
+        row.approved_at = params[2];
+        row.approved_by_admin_id = params[3] === null || params[3] === undefined ? null : Number(params[3]);
+        row.status_reason = params[4];
+        row.status_changed_at = params[5];
+        row.updated_at = nowIso();
+      }
+      return { affectedRows: row ? 1 : 0 };
+    }
+    if (/^INSERT INTO user_audit_logs/.test(s)) {
+      const id = nextId();
+      store.userAuditLogs.push({
+        id,
+        user_id: Number(params[0]),
+        admin_id: params[1] === null || params[1] === undefined ? null : Number(params[1]),
+        action: params[2],
+        previous_status: params[3],
+        new_status: params[4],
+        reason: params[5],
+        ip_address: params[6] ?? null,
+        user_agent: params[7] ?? null,
+        created_at: nowIso(),
       });
       return { insertId: id, affectedRows: 1 };
     }

@@ -7,6 +7,7 @@
 
 const express = require('express');
 const controller = require('../controllers/adminController');
+const userManagement = require('../controllers/userManagementController');
 const { adminGuard, superAdminGuard } = require('../middleware/adminAuth');
 const { adminLimiter, generateLimiter } = require('../middleware/rateLimit');
 
@@ -14,6 +15,15 @@ const router = express.Router();
 
 router.use(adminLimiter);
 router.use(adminGuard);
+
+/* user management — registration approval workflow (admin only) */
+router.get('/users/summary', userManagement.summary);
+router.get('/users', userManagement.list);
+router.get('/users/:id', userManagement.detail);
+router.post('/users/:id/approve', userManagement.approve);
+router.post('/users/:id/reject', userManagement.reject);
+router.post('/users/:id/suspend', userManagement.suspend);
+router.post('/users/:id/reactivate', userManagement.reactivate);
 
 router.get('/overview', controller.overview);
 

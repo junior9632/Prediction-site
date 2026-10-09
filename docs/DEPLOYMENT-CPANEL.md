@@ -255,7 +255,11 @@ git pull                        # or upload the changed files
 npm ci --omit=dev               # only when package.json changed
 npm run db:migrate              # applies pending migrations once each — run after every deploy
 #   (001-widen-odds-precision.sql widens price columns to DECIMAL(12,6); existing databases need it)
-npm test                        # optional but cheap: 95 tests, no DB needed
+#   (002-user-approval-system.sql adds users.status + full_name + the user_audit_logs table.
+#    Safe on live data: existing ACTIVE users become 'approved', existing INACTIVE users become
+#    'suspended', new registrations default to 'pending'. No rows are deleted. Read-only check:
+#    npm run db:migrate -- --status)
+npm test                        # optional but cheap: 177 tests, no DB needed
 node scripts/check-no-secrets.js
 ```
 

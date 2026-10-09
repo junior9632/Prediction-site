@@ -26,8 +26,8 @@ Football data is **login only**. Three tiers, enforced by middleware before any 
 | Tier | Routes |
 | --- | --- |
 | Public | `/`, `/about`, `/legal`, `/login`, `/account`, `GET /api/health`, `GET /api/meta` |
-| Member | `/predictions`, `/ticket`, `/today-ticket`, `/history`, `/analytics`, `/dashboard` and every `/api/predictions`, `/api/ticket`, `/api/tickets`, `/api/analytics`, `/api/fixtures`, `/api/odds`, `/api/dashboard` route |
-| Admin | `/admin` and every `/api/admin` route |
+| Member (**approved** only) | `/predictions`, `/ticket`, `/today-ticket`, `/history`, `/analytics`, `/dashboard` and every `/api/predictions`, `/api/ticket`, `/api/tickets`, `/api/analytics`, `/api/fixtures`, `/api/odds`, `/api/dashboard` route |
+| Admin | `/admin`, `/admin/users` and every `/api/admin` route |
 
 A member route is refused at the server boundary — never by CSS or by hiding a link:
 
@@ -36,8 +36,19 @@ A member route is refused at the server boundary — never by CSS or by hiding a
 | Guest | `401 UNAUTHORIZED`, `{"ok":false,…}`, no `data` key, `Cache-Control: no-store` | `401` + the "login required" page (`no-store`, `X-Robots-Tag: noindex`) |
 | Expired / forged token | `401 TOKEN_EXPIRED` / `401 TOKEN_INVALID` | `401` + the "login required" page |
 | Deleted account | `401 ACCOUNT_MISSING` | `401` + the "login required" page |
+| **Pending approval** | `403 ACCOUNT_PENDING` | `403` + the "login required" page with the approval notice |
+| **Rejected application** | `403 ACCOUNT_REJECTED` | `403` + the "login required" page with the reason |
+| **Suspended account** | `403 ACCOUNT_SUSPENDED` | `403` + the "login required" page with the reason |
 | Disabled / locked account | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` | `403` + the "login required" page with the reason |
-| Member / admin | `200`, scoped to the session | page served `no-store`, `noindex` |
+| Approved member / admin | `200`, scoped to the session | page served `no-store`, `noindex` |
+
+**Registration approval.** Every public registration is created with `status = 'pending'`
+(`users.status` ENUM `pending | approved | rejected | suspended`). A pending account cannot sign
+in — `POST /api/auth/login` answers `403 ACCOUNT_PENDING` with the approval message and issues no
+session — and even a token that was issued before the status changed is refused, because the
+status is re-read from the database on every request (`middleware/account.js`). Approval,
+rejection, suspension and reactivation are admin-only operations on `/api/admin/users/*` and are
+recorded in `user_audit_logs` plus `system_logs`.
 
 The authenticated principal is always resolved from the session token (`requireAuth`) and then
 **re-read from the database** (`requireActiveAccount`). No `userId`, `user_id`, account header or
@@ -63,8 +74,9 @@ those fields are dropped and reported back in `ignoredClientFields`.
 | Today's ticket | `/ticket`, `/today-ticket`, `/ticket.html` | **Member** | The published ticket for a date (`?date=YYYY-MM-DD`) |
 | Results | `/history`, `/history.html` | **Member** | Settled record with filters and pagination |
 | Analytics | `/analytics`, `/analytics.html` | **Member** | Win rate, streaks, flat-stake ROI |
-| Member dashboard | `/dashboard`, `/dashboard.html` | **Member** | Profile, status, Dashboard Activity |
+| Member dashboard | `/dashboard`, `/dashboard.html` | **Member** (approved only) | Profile, status, Dashboard Activity |
 | Console | `/admin`, `/admin/login` | Admin | Unlisted and guarded |
+| Console → Users | `/admin/users`, `/admin/users.html` | Admin | Registration approvals and account management; served `no-store` + `noindex`, guarded exactly like the console |
 
 ## Public
 
@@ -255,8 +267,8 @@ return their void-adjusted real odds, lost tickets return 0, fully void tickets 
 | `POST /api/auth/admin/logout` | — | clears the cookies |
 | `POST /api/auth/admin/change-password` | `{currentPassword, newPassword}` | authenticated; minimum length enforced |
 | `GET /api/auth/me` | — | `{type: "admin"|"user"|"anonymous", account}` |
-| `POST /api/auth/register` | `{email, username, password}` | `201 {id, username, email}`; optional reader account (never required to read the site); rate limited |
-| `POST /api/auth/login` | `{login, password}` | `200 {user, token, csrfToken}` + the same cookie pair as the admin login; lockout after repeated failures |
+| `POST /api/auth/register` | `{email, username, fullName, password}` | `201 {id, username, email, status: "pending", pendingApproval: true, message}`; the account is created **pending** and issues **no session** — it needs an administrator approval before it can sign in. Optional reader account (never required to read the site); rate limited. A client-supplied `role`/`status` is dropped: public registration can never create an administrator |
+| `POST /api/auth/login` | `{login, password}` | `200 {user, token, csrfToken}` + the same cookie pair as the admin login; lockout after repeated failures. A pending / rejected / suspended account answers `403 ACCOUNT_PENDING` / `403 ACCOUNT_REJECTED` / `403 ACCOUNT_SUSPENDED` with **no** session cookie |
 | `POST /api/auth/logout` | — | clears the session cookies for any session type (admin or user) |
 | `POST /api/auth/change-password` | `{currentPassword, newPassword}` | authenticated user session; CSRF required for cookie sessions |
 
@@ -316,6 +328,34 @@ request. Rate limited separately from the public API.
 | `GET /sync-logs?limit=&job=` | background sync history |
 | `GET /system-logs?level=&channel=&event=&page=&limit=` | `{page, limit, total, items}` audit/error trail |
 | `GET /admins` | superadmin only: administrator accounts |
+
+### User management (`/api/admin/users*`) — registration approval
+
+All routes sit behind the same `adminGuard` chain (`requireAdmin` + `requireActiveAdmin` +
+`requireCsrf`): a guest answers `401`, a member `403`, and every mutation from a cookie session
+needs the double-submit `X-CSRF-Token`. No response ever contains a password hash, session token
+or other secret.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /users/summary` | `{total, pending, approved, rejected, suspended}` — the dashboard cards |
+| `GET /users?status=&search=&page=&limit=` | `{page, limit, total, pages, status, search, items[]}`. `status` filters by `pending`/`approved`/`rejected`/`suspended`; `search` matches username, full name, e-mail or exact user id. Items carry `{id, username, fullName, email, role, status, active, registeredAt, lastLoginAt, approvedAt, approvedByAdminId, approvedBy, statusReason, statusChangedAt, availableActions[]}` |
+| `GET /users/:id` | `{user, audit[]}` — the account plus its administrative action history |
+| `POST /users/:id/approve` | `pending`/`rejected` → `approved` (activates the account, records the approving admin + timestamp) |
+| `POST /users/:id/reject` | `{reason?}` — `pending` → `rejected` (deactivates the account) |
+| `POST /users/:id/suspend` | `{reason?}` — `pending`/`approved` → `suspended` (blocks access immediately, including existing sessions) |
+| `POST /users/:id/reactivate` | `suspended` → `approved` (re-opens access) |
+
+Each decision returns `{user, auditId, notification, note}`. `notification` reports honestly
+whether the configured channel (Telegram / webhook) was reached; `note` says so when nothing is
+configured — the decision is still fully applied and audited either way.
+
+Rules: only member accounts (`role` `user`/`premium`) can be managed, so an administrator account
+can never be locked out here; an illegal transition answers `409 INVALID_STATUS_TRANSITION` and
+changes nothing; an unknown id answers `404 USER_NOT_FOUND`. Every decision is written in one
+database transaction together with its `user_audit_logs` row (administrator, affected user,
+action, previous/new status, optional reason, IP, timestamp) and mirrored into `system_logs` as
+`USER_APPROVED` / `USER_REJECTED` / `USER_SUSPENDED` / `USER_REACTIVATED`.
 
 ### Generation counters
 
