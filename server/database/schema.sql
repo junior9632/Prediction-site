@@ -16,14 +16,22 @@ SET FOREIGN_KEY_CHECKS = 0;
 
 -- ---------------------------------------------------------------------
 -- users — optional public accounts (site is fully readable without login)
+--        NEW registrations start as status='pending' and need an admin
+--        approval before they may reach any protected feature.
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `users` (
   `id`               INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `email`            VARCHAR(190) NOT NULL,
   `username`         VARCHAR(60)  NOT NULL,
+  `full_name`        VARCHAR(120) NOT NULL DEFAULT '',
   `password_hash`    VARCHAR(255) NOT NULL,
   `role`             ENUM('user','premium') NOT NULL DEFAULT 'user',
   `is_active`        TINYINT(1)   NOT NULL DEFAULT 1,
+  `status`           ENUM('pending','approved','rejected','suspended') NOT NULL DEFAULT 'pending',
+  `approved_at`      DATETIME     NULL,
+  `approved_by_admin_id` INT UNSIGNED NULL,
+  `status_reason`    VARCHAR(255) NULL COMMENT 'optional admin reason for rejection / suspension',
+  `status_changed_at` DATETIME    NULL,
   `failed_logins`    SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   `locked_until`     DATETIME     NULL,
   `last_login_at`    DATETIME     NULL,
@@ -33,7 +41,30 @@ CREATE TABLE IF NOT EXISTS `users` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_users_email` (`email`),
   UNIQUE KEY `uq_users_username` (`username`),
-  KEY `idx_users_active` (`is_active`)
+  KEY `idx_users_active` (`is_active`),
+  KEY `idx_users_status` (`status`),
+  CONSTRAINT `fk_users_approved_by` FOREIGN KEY (`approved_by_admin_id`) REFERENCES `admins` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------
+-- user_audit_logs — administrative account decisions (approval workflow)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `user_audit_logs` (
+  `id`             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id`        INT UNSIGNED NOT NULL,
+  `admin_id`       INT UNSIGNED NULL COMMENT 'administrator who performed the action (NULL = system)',
+  `action`         ENUM('approved','rejected','suspended','reactivated') NOT NULL,
+  `previous_status` VARCHAR(20) NULL,
+  `new_status`     VARCHAR(20) NOT NULL,
+  `reason`         VARCHAR(255) NULL COMMENT 'optional administrator supplied reason',
+  `ip_address`     VARCHAR(45)  NULL,
+  `user_agent`     VARCHAR(255) NULL,
+  `created_at`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_user_audit_user` (`user_id`, `created_at`),
+  KEY `idx_user_audit_admin` (`admin_id`),
+  CONSTRAINT `fk_user_audit_user`  FOREIGN KEY (`user_id`)  REFERENCES `users`  (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_user_audit_admin` FOREIGN KEY (`admin_id`) REFERENCES `admins` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------

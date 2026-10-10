@@ -134,6 +134,17 @@ async function verifyGuest() {
   const adminApi = await request('/api/admin/overview');
   check('guest: the admin API is refused', adminApi.status === 401, `got ${adminApi.status}`);
 
+  // The user-management (registration approval) surface is closed to guests too.
+  for (const url of ['/api/admin/users/summary', '/api/admin/users', '/api/admin/users/1']) {
+    const users = await request(url);
+    check(`guest: GET ${url} is 401`, users.status === 401, `got ${users.status}`);
+    check(`guest: ${url} carries no payload`, !users.json || users.json.data === undefined, (users.text || '').slice(0, 120));
+  }
+  for (const url of ['/api/admin/users/1/approve', '/api/admin/users/1/reject', '/api/admin/users/1/suspend', '/api/admin/users/1/reactivate']) {
+    const action = await request(url, { method: 'POST', body: {} });
+    check(`guest: POST ${url} is 401`, action.status === 401, `got ${action.status}`);
+  }
+
   // The console's own sign-in door: a form, never admin data.
   const signIn = await request('/admin/login');
   check('guest: /admin/login serves the sign-in page', signIn.status === 200, `got ${signIn.status}`);
@@ -151,6 +162,19 @@ async function verifyGuest() {
   );
   const consoleScript = await request('/js/admin.js');
   check('guest: the console script does not exist for a guest', consoleScript.status === 404, `got ${consoleScript.status}`);
+
+  // The Users section is part of the hidden admin area: guests are redirected,
+  // the page and its script do not exist for anyone else.
+  for (const url of ['/admin/users', '/admin/users.html']) {
+    const usersPage = await request(url);
+    check(
+      `guest: ${url} redirects to the sign-in door`,
+      usersPage.status === 302 && (usersPage.headers.get('location') || '').endsWith('/admin/login'),
+      `got ${usersPage.status} -> ${usersPage.headers.get('location') || '(none)'}`
+    );
+  }
+  const usersScript = await request('/js/admin-users.js');
+  check('guest: the users console script does not exist for a guest', usersScript.status === 404, `got ${usersScript.status}`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -334,6 +358,16 @@ async function verifyMember(creds) {
   const adminApi = await request('/api/admin/overview', { token: session.token });
   check('member: the admin API stays forbidden', adminApi.status === 401 || adminApi.status === 403, `got ${adminApi.status}`);
 
+  // A member can never reach the user-management (approval) endpoints.
+  for (const url of ['/api/admin/users/summary', '/api/admin/users', '/api/admin/users/1']) {
+    const users = await request(url, { token: session.token });
+    check(`member: GET ${url} stays forbidden`, users.status === 401 || users.status === 403, `got ${users.status}`);
+  }
+  const approve = await request('/api/admin/users/1/approve', { method: 'POST', body: {}, token: session.token });
+  check('member: POST /api/admin/users/1/approve stays forbidden', approve.status === 401 || approve.status === 403, `got ${approve.status}`);
+  const usersPage = await request('/admin/users', { token: session.token });
+  check('member: the Users page stays forbidden', usersPage.status === 403, `got ${usersPage.status}`);
+
   return session.token;
 }
 
@@ -369,6 +403,33 @@ async function verifyAdmin(creds) {
     door.status === 302 && (door.headers.get('location') || '').endsWith('/admin.html'),
     `got ${door.status} -> ${door.headers.get('location') || '(none)'}`
   );
+
+  // The Users section (registration approval) opens for the administrator.
+  const summary = await request('/api/admin/users/summary', { token: session.token });
+  check('admin: GET /api/admin/users/summary is 200', summary.status === 200, `got ${summary.status}`);
+  const counts = (summary.json && summary.json.data) || {};
+  for (const key of ['total', 'pending', 'approved', 'rejected', 'suspended']) {
+    check(`admin: the user summary reports ${key}`, Number.isFinite(counts[key]), JSON.stringify(counts));
+  }
+  check('admin: the summary exposes no password hash', !(summary.text || '').includes('password_hash'));
+
+  const list = await request('/api/admin/users?limit=5', { token: session.token });
+  check('admin: GET /api/admin/users is 200', list.status === 200, `got ${list.status}`);
+  check(
+    'admin: the user list carries pagination',
+    list.json && list.json.data && Number.isFinite(list.json.data.total) && Array.isArray(list.json.data.items),
+    (list.text || '').slice(0, 120)
+  );
+
+  const usersPage = await request('/admin/users', { token: session.token });
+  check('admin: the Users page is served', usersPage.status === 200, `got ${usersPage.status}`);
+  check(
+    'admin: the Users page is never cached or indexed',
+    /no-store/i.test(usersPage.headers.get('cache-control') || '') && /noindex/i.test(usersPage.headers.get('x-robots-tag') || ''),
+    `${usersPage.headers.get('cache-control')} / ${usersPage.headers.get('x-robots-tag')}`
+  );
+  const usersScript = await request('/js/admin-users.js', { token: session.token });
+  check('admin: the users console script is served', usersScript.status === 200, `got ${usersScript.status}`);
 }
 
 /* ------------------------------------------------------------------ */

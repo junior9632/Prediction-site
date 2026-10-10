@@ -993,8 +993,16 @@ async function getUserById(id) {
 
 async function createUser(u) {
   const res = await db.execute(
-    `INSERT INTO users (email, username, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?)`,
-    [u.email, u.username, u.passwordHash, u.role || 'user', u.isActive === false ? 0 : 1]
+    `INSERT INTO users (email, username, full_name, password_hash, role, is_active, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      u.email,
+      u.username,
+      u.fullName || '',
+      u.passwordHash,
+      u.role || 'user',
+      u.isActive === false ? 0 : 1,
+      u.status || 'pending',
+    ]
   );
   return res.insertId;
 }
@@ -1015,6 +1023,125 @@ async function recordUserLoginFailure(id, ip, lockUntil) {
 
 async function updateUserPassword(id, passwordHash) {
   return db.execute(`UPDATE users SET password_hash = ? WHERE id = ?`, [passwordHash, id]);
+}
+
+/* =====================================================================
+ * USER MANAGEMENT (admin approval workflow)
+ * Every statement is parameterised; LIMIT/OFFSET go through limitClause
+ * after integer validation. Password hashes are NEVER selected here.
+ * ===================================================================*/
+
+const USER_LIST_COLUMNS = `id, username, full_name, email, role, status, is_active,
+  approved_at, approved_by_admin_id, status_reason, status_changed_at, last_login_at, created_at`;
+
+function userFilterWhere({ status = null, search = null } = {}) {
+  const params = [];
+  let where = ' WHERE 1=1';
+  if (status) {
+    where += ' AND status = ?';
+    params.push(status);
+  }
+  if (search) {
+    // search by username, full name, e-mail or exact user id
+    where += ' AND (username LIKE ? OR full_name LIKE ? OR email LIKE ? OR CAST(id AS CHAR) = ?)';
+    const like = `%${search}%`;
+    params.push(like, like, like, String(search));
+  }
+  return { where, params };
+}
+
+/** Paginated, filterable, searchable user list — never includes password_hash. */
+async function listUsers({ status = null, search = null, limit = 25, offset = 0 } = {}) {
+  const { where, params } = userFilterWhere({ status, search });
+  return db.query(
+    `SELECT ${USER_LIST_COLUMNS} FROM users${where}
+      ORDER BY created_at DESC, id DESC${db.limitClause(limit, offset)}`,
+    params
+  );
+}
+
+async function countUsers({ status = null, search = null } = {}) {
+  const { where, params } = userFilterWhere({ status, search });
+  const row = await db.queryOne(`SELECT COUNT(*) AS total FROM users${where}`, params);
+  return Number(row?.total || 0);
+}
+
+/** Summary counters for the user management dashboard cards. */
+async function getUserSummary() {
+  const row = await db.queryOne(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN status = 'pending'   THEN 1 ELSE 0 END) AS pending,
+            SUM(CASE WHEN status = 'approved'  THEN 1 ELSE 0 END) AS approved,
+            SUM(CASE WHEN status = 'rejected'  THEN 1 ELSE 0 END) AS rejected,
+            SUM(CASE WHEN status = 'suspended' THEN 1 ELSE 0 END) AS suspended
+       FROM users`
+  );
+  return {
+    total: Number(row?.total || 0),
+    pending: Number(row?.pending || 0),
+    approved: Number(row?.approved || 0),
+    rejected: Number(row?.rejected || 0),
+    suspended: Number(row?.suspended || 0),
+  };
+}
+
+/**
+ * Apply an administrative status decision. The caller (controller) decides
+ * every value — nothing here is taken from the request. `run` defaults to
+ * the shared pool and may be a transaction connection.
+ */
+async function setUserStatus(id, patch, run = db) {
+  return run.execute(
+    `UPDATE users
+        SET status = ?, is_active = ?, approved_at = ?, approved_by_admin_id = ?,
+            status_reason = ?, status_changed_at = ?
+      WHERE id = ?`,
+    [
+      patch.status,
+      patch.isActive ? 1 : 0,
+      dt(patch.approvedAt),
+      patch.approvedByAdminId ?? null,
+      patch.reason || null,
+      dt(new Date()),
+      id,
+    ]
+  );
+}
+
+async function insertUserAuditLog(entry, run = db) {
+  const res = await run.execute(
+    `INSERT INTO user_audit_logs (user_id, admin_id, action, previous_status, new_status, reason, ip_address, user_agent)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      entry.userId,
+      entry.adminId ?? null,
+      entry.action,
+      entry.previousStatus || null,
+      entry.newStatus,
+      entry.reason || null,
+      entry.ipAddress || null,
+      entry.userAgent ? String(entry.userAgent).slice(0, 255) : null,
+    ]
+  );
+  return res.insertId;
+}
+
+/**
+ * Apply a status decision AND its audit row in ONE transaction: either both
+ * writes land or neither does.
+ */
+async function applyUserStatusDecision(id, patch, auditEntry) {
+  return db.transaction(async (tx) => {
+    await setUserStatus(id, patch, tx);
+    return insertUserAuditLog(auditEntry, tx);
+  });
+}
+
+async function listUserAuditLogs(userId, limit = 50) {
+  return db.query(
+    `SELECT * FROM user_audit_logs WHERE user_id = ? ORDER BY id DESC${db.limitClause(limit)}`,
+    [userId]
+  );
 }
 
 /* =====================================================================
@@ -1132,6 +1259,8 @@ module.exports = {
   getAdminByLogin, getAdminById, listAdmins, createAdmin, updateAdminPassword,
   recordAdminLoginSuccess, recordAdminLoginFailure,
   getUserByLogin, getUserById, createUser, recordUserLoginSuccess, recordUserLoginFailure, updateUserPassword,
+  // user management (admin approval workflow)
+  listUsers, countUsers, getUserSummary, setUserStatus, insertUserAuditLog, applyUserStatusDecision, listUserAuditLogs,
   // analytics
   getTicketAnalytics, getSelectionAnalytics, getOver15OutcomeCounts,
   getMonthlyTicketStats, getSettledTicketSequence,

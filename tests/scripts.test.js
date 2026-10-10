@@ -40,7 +40,7 @@ test('scripts: the schema and every query in queries.js agree', () => {
   const result = run('validate-sql.js');
   assert.equal(result.code, 0, result.stdout);
   assert.match(result.stdout, /^OK/m);
-  assert.match(result.stdout, /17 tables/);
+  assert.match(result.stdout, /18 tables/);
   assert.ok(!/error/.test(result.stdout), result.stdout);
 });
 

@@ -226,14 +226,23 @@ Members are optional readers — the site never requires an account. `/account` 
 sign-in / registration / profile / password change, and `/dashboard` is the private workspace:
 profile, plan, today's ticket status and the **Dashboard Activity** feed.
 
+**Registration requires administrator approval.** A new account is created with
+`status = pending`: it cannot sign in and cannot reach the dashboard, predictions, tickets,
+history or analytics until an administrator approves it from **Admin → Users**. Rejected and
+suspended accounts are refused the same way, and a suspension blocks an existing session on
+the very next request (the account row is re-read from the database every time).
+
 The feed is not hidden with CSS. It is protected at the server boundary:
 
 | Principal | `/dashboard` | `GET /api/dashboard/activity` |
 | --- | --- | --- |
 | Guest / expired token | `302` → `/account.html` | `401 UNAUTHORIZED`, no payload |
 | Deleted account | `302` → `/account.html` | `401 ACCOUNT_MISSING` |
+| Pending approval | `302` → `/account.html` | `403 ACCOUNT_PENDING` |
+| Rejected application | `302` → `/account.html` | `403 ACCOUNT_REJECTED` |
+| Suspended account | `302` → `/account.html` | `403 ACCOUNT_SUSPENDED` |
 | Disabled or locked account | `302` → `/account.html` | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` |
-| Member | page served `no-store` + `noindex` | `200`, own events only |
+| Approved member | page served `no-store` + `noindex` | `200`, own events only |
 | Administrator | `302` → `/admin.html` | `200`, admin-scoped feed |
 
 The actor type and id come from the account row re-read from the database on every request, so a
@@ -261,9 +270,14 @@ straight to `/admin`, which bounces to its own unlisted sign-in door `/admin/log
 | Fixtures / Odds / Predictions | date-filtered inspection of everything stored |
 | Ticket History | every generated day with its result |
 | Analytics | win rate, streaks, monthly table, flat-stake accounting |
+| **Users** (`/admin/users`) | registration approvals: summary cards, searchable/filterable/paginated user table, approve / reject / suspend / reactivate, per-user audit history |
 | Settings | thresholds, odds window, correlation caps, sync options, branding |
 | API Status | key presence, circuit-breaker state, quota, manual sync buttons, sync log |
 | System Logs | level/channel filtered audit + error trail |
+
+Every administrative account decision (approve / reject / suspend / reactivate) is applied in a
+database transaction together with an audit row (`user_audit_logs`: administrator, affected
+user, action, previous/new status, optional reason, timestamp) and mirrored into `system_logs`.
 
 Locked settings (`market_key`, `market_label`, `auto_ticket_generation`,
 `results_settle_mode`) are refused by the API and re-pinned from code on every read, so the

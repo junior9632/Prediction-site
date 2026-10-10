@@ -212,11 +212,66 @@ async function alert(event, details = {}) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Account approval workflow (admin user management)                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A visitor just registered: tell the configured channel a new application
+ * is waiting for review. Honest by construction — when no channel is
+ * configured the call is a silent no-op and returns all-false outcomes.
+ */
+async function accountRegistered(user) {
+  const text = [
+    `\u{1F464} GoalPredict — new registration pending approval`,
+    `Username: ${user.username}`,
+    `Name: ${user.fullName || '—'}`,
+    `E-mail: ${user.email}`,
+    `Review it in Admin → Users.`,
+  ].join('\n');
+  if (!isConfigured()) return { telegram: false, webhook: false };
+  try {
+    return await dispatch('USER_REGISTERED', text, { userId: user.id, username: user.username, email: user.email });
+  } catch (err) {
+    log.warn('accountRegistered notification failed', { message: err.message });
+    return { telegram: false, webhook: false };
+  }
+}
+
+/**
+ * An administrator approved / rejected / suspended / reactivated an account.
+ * `event` is one of USER_APPROVED | USER_REJECTED | USER_SUSPENDED |
+ * USER_REACTIVATED. The reason is included when the admin supplied one.
+ */
+async function accountStatusChanged(event, { user, admin, reason = null }) {
+  const lines = [
+    `\u{1F6E1} GoalPredict — account ${String(event).replace('USER_', '').toLowerCase()}`,
+    `User: ${user.username} (${user.email})`,
+  ];
+  if (admin && admin.username) lines.push(`By: ${admin.username}`);
+  if (reason) lines.push(`Reason: ${reason}`);
+  if (!isConfigured()) return { telegram: false, webhook: false };
+  try {
+    return await dispatch(event, lines.join('\n'), {
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      adminId: admin ? admin.id : null,
+      reason,
+    });
+  } catch (err) {
+    log.warn('accountStatusChanged notification failed', { event, message: err.message });
+    return { telegram: false, webhook: false };
+  }
+}
+
 module.exports = {
   isConfigured,
   ticketPublished,
   noQualifyingTicket,
   alert,
+  accountRegistered,
+  accountStatusChanged,
   // exported for unit tests
   formatTicketPublished,
   formatNoTicket,

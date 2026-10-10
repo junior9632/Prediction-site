@@ -99,7 +99,10 @@
         await API.post('/auth/login', { login: $('#loginId').value.trim(), password: $('#loginPassword').value });
         window.location.href = nextTarget();
       } catch (err) {
-        flash('#loginAlert', '#loginAlertText', 'error', err.message || 'Sign in failed');
+        // A pending application gets an amber notice, not a red error: the
+        // credentials may be fine, the account simply awaits approval.
+        const kind = err.code === 'ACCOUNT_PENDING' ? 'warn' : 'error';
+        flash('#loginAlert', '#loginAlertText', kind, err.message || 'Sign in failed');
         busy('#loginBtn', false, 'Sign in');
       }
     });
@@ -112,10 +115,18 @@
       try {
         const username = $('#regUsername').value.trim();
         const password = $('#regPassword').value;
-        await API.post('/auth/register', { username, email: $('#regEmail').value.trim(), password });
-        // sign straight in with the new credentials
-        await API.post('/auth/login', { login: username, password });
-        window.location.href = nextTarget();
+        const result = await API.post('/auth/register', {
+          username,
+          fullName: $('#regFullName').value.trim(),
+          email: $('#regEmail').value.trim(),
+          password,
+        });
+        // The account is created as PENDING: no session is issued here. The
+        // server message is the professional approval notice the visitor
+        // must see; signing in happens once an administrator approves.
+        $('#registerForm').reset();
+        flash('#registerAlert', '#registerAlertText', 'info', (result && result.message) || 'Your account has been submitted for approval. You will be able to access your dashboard once an administrator approves your account.');
+        busy('#registerBtn', false, 'Create account');
       } catch (err) {
         flash('#registerAlert', '#registerAlertText', 'error', err.message || 'Registration failed');
         busy('#registerBtn', false, 'Create account');

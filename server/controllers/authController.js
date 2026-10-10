@@ -15,8 +15,9 @@ const db = require('../database/queries');
 const config = require('../config');
 const auth = require('../middleware/auth');
 const { newCsrfToken } = require('../middleware/adminAuth');
-const { assertAccountUsable } = require('../middleware/account');
+const { assertAccountUsable, assertUserApproved, PENDING_APPROVAL_MESSAGE } = require('../middleware/account');
 const logService = require('../services/logService');
+const notifyService = require('../services/notifyService');
 const { assertValid } = require('../utils/validate');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { AppError } = require('../utils/errors');
@@ -32,6 +33,7 @@ const loginSchema = {
 const registerSchema = {
   email: { type: 'email', required: true },
   username: { type: 'string', required: true, minLength: 3, maxLength: 40, pattern: /^[a-zA-Z0-9_.-]+$/ },
+  fullName: { type: 'string', required: true, minLength: 2, maxLength: 120 },
   password: { type: 'string', required: true, minLength: 8, maxLength: 200 },
 };
 
@@ -187,7 +189,10 @@ const me = asyncHandler(async (req, res) => {
     return res.json({ ok: true, data: { type: 'admin', account: publicAdmin(row) } });
   }
   const row = await db.getUserById(req.auth.id);
-  assertAccountUsable(row, 'Member');
+  // A pending / rejected / suspended account is refused here too, so no page
+  // can paint a "signed in" header for a session that may no longer read
+  // member data.
+  assertUserApproved(row);
   return res.json({
     ok: true,
     data: {
@@ -197,6 +202,7 @@ const me = asyncHandler(async (req, res) => {
         username: row.username,
         email: row.email,
         role: row.role,
+        status: row.status,
         memberSince: time.toIso(row.created_at),
         lastLoginAt: time.toIso(row.last_login_at),
       },
@@ -204,17 +210,48 @@ const me = asyncHandler(async (req, res) => {
   });
 });
 
-/** POST /api/auth/register — optional public account */
+/**
+ * POST /api/auth/register — optional public account.
+ *
+ * Every new account is created with status='pending': it needs an
+ * administrator approval before it can reach the dashboard or any protected
+ * feature. No session is issued here — the visitor reads the approval
+ * message and signs in once approved.
+ *
+ * SECURITY: only email/username/fullName/password are read from the body
+ * (assertValid drops unknown keys), so a client can never submit a role or
+ * an approval status, and public registration can never create an
+ * administrator (administrators live in the separate `admins` table).
+ */
 const register = asyncHandler(async (req, res) => {
-  const { email, username, password } = assertValid(registerSchema, req.body || {});
+  const { email, username, fullName, password } = assertValid(registerSchema, req.body || {});
   const existing = await db.getUserByLogin(email);
   if (existing) {
     await bcrypt.hash(crypto.randomBytes(8).toString('hex'), 4);
     throw AppError.conflict('That account already exists', 'ACCOUNT_EXISTS');
   }
-  const id = await db.createUser({ email, username, passwordHash: await hashPassword(password) });
+  const id = await db.createUser({
+    email,
+    username,
+    fullName,
+    passwordHash: await hashPassword(password),
+    status: 'pending',
+  });
   await logService.write({ level: 'info', channel: 'auth', event: 'USER_REGISTERED', actorType: 'user', actorId: id, ipAddress: req.ip });
-  res.status(201).json({ ok: true, data: { id: Number(id), username, email } });
+  // Tell the configured notification channel (Telegram/webhook) that a new
+  // application is waiting — fire and forget, never blocks the response.
+  await notifyService.accountRegistered({ id: Number(id), username, email, fullName });
+  res.status(201).json({
+    ok: true,
+    data: {
+      id: Number(id),
+      username,
+      email,
+      status: 'pending',
+      pendingApproval: true,
+      message: PENDING_APPROVAL_MESSAGE,
+    },
+  });
 });
 
 /** POST /api/auth/login — public account */
@@ -225,6 +262,32 @@ const userLogin = asyncHandler(async (req, res) => {
     await bcrypt.hash(password, 4);
     throw AppError.unauthorized(GENERIC, 'INVALID_CREDENTIALS');
   }
+
+  // Approval status is enforced on the server, in the same place the existing
+  // code already refuses disabled/locked accounts: a pending, rejected or
+  // suspended account gets NO session and a specific, honest message. The
+  // row (incl. status) was just read from the database, so an administrator's
+  // decision takes effect on the very next login attempt.
+  if (row.status === 'pending') {
+    await logService.write({
+      level: 'info', channel: 'auth', event: 'LOGIN_PENDING_APPROVAL',
+      message: `Pending member ${row.username} tried to sign in`,
+      actorType: 'user', actorId: Number(row.id), ipAddress: req.ip,
+    });
+    throw AppError.forbidden(PENDING_APPROVAL_MESSAGE, 'ACCOUNT_PENDING');
+  }
+  if (row.status === 'rejected') {
+    throw AppError.forbidden(
+      'This account application was not approved. Please contact support if you believe this is a mistake.',
+      'ACCOUNT_REJECTED'
+    );
+  }
+  if (row.status === 'suspended') {
+    throw AppError.forbidden(
+      'This account has been suspended. Please contact support for more information.',
+      'ACCOUNT_SUSPENDED'
+    );
+  }
   if (Number(row.is_active) !== 1) throw AppError.forbidden('Account disabled', 'ACCOUNT_DISABLED');
   if (isLocked(row)) throw AppError.forbidden('Account temporarily locked', 'ACCOUNT_LOCKED');
 
@@ -233,6 +296,7 @@ const userLogin = asyncHandler(async (req, res) => {
     await handleFailure(row, req, 'user');
     throw AppError.unauthorized(GENERIC, 'INVALID_CREDENTIALS');
   }
+
   await db.recordUserLoginSuccess(Number(row.id), req.ip);
   // Feeds the member's own dashboard activity (GET /api/dashboard/activity).
   await logService.write({

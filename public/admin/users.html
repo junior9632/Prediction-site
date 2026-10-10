@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Users — Admin Console — GoalPredict</title>
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#04080f">
+  <link rel="icon" type="image/svg+xml" href="/img/favicon.svg"><link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7l3.5 2.6-1.3 4.1h-4.4L8.5 9.6 12 7z"/><path d="M12 3v4M4.5 9.5l4 .1M19.5 9.5l-4 .1M7 19l2.8-3.3M17 19l-2.8-3.3"/></svg></span>
+        <span><span class="brand-name">Goal<em>Predict</em></span><span class="brand-tag">Admin Console</span></span>
+      </a>
+      <div class="header-actions">
+        <a class="btn btn-ghost btn-sm" href="/admin.html">← Console</a>
+        <a class="btn btn-ghost btn-sm" href="/">View site</a>
+        <span class="row"><span class="small muted" id="whoami">—</span><button class="btn btn-outline btn-sm" type="button" id="logoutBtn">Logout</button></span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="container" style="max-width:1180px;">
+      <div class="admin-topbar">
+        <span class="row" style="gap:10px;min-width:0;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:22px;height:22px;color:var(--cyan);flex:0 0 auto;"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17.5" cy="9" r="2.8"/><path d="M16 14.4c3.1.3 5.5 2.4 5.5 5.6"/></svg>
+          <h2 id="viewTitle" style="margin:0;">Users</h2>
+        </span>
+        <span class="tiny muted">Registration approval &amp; account management</span>
+      </div>
+
+      <div id="noticeBox"></div>
+
+      <!-- summary cards -->
+      <div class="stat-cards" id="summaryCards" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+        <div class="skeleton block"></div><div class="skeleton block"></div><div class="skeleton block"></div><div class="skeleton block"></div><div class="skeleton block"></div>
+      </div>
+
+      <!-- toolbar: search + status filter -->
+      <section class="section">
+        <div class="card">
+          <div class="card-body">
+            <div class="row wrap" style="gap:10px;">
+              <input class="input" id="searchInput" type="search" placeholder="Search by name, e-mail or user ID…" aria-label="Search users" style="flex:1 1 220px;min-width:180px;">
+              <select class="input" id="statusFilter" aria-label="Filter by status" style="width:auto;">
+                <option value="">All users</option>
+                <option value="pending">Pending</option>
+                <option value="approved">Approved</option>
+                <option value="rejected">Rejected</option>
+                <option value="suspended">Suspended</option>
+              </select>
+              <button class="btn btn-ghost" id="searchBtn" type="button">Search</button>
+              <button class="btn btn-outline" id="refreshBtn" type="button">Refresh</button>
+            </div>
+            <p class="tiny muted" style="margin:10px 0 0;">
+              New registrations stay <b>pending</b> until you approve them. Pending, rejected and suspended
+              accounts cannot open the dashboard, predictions, tickets or analytics — enforced on the server.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- users table -->
+      <section class="section">
+        <div class="card">
+          <div class="card-head"><h2 class="card-title" id="tableTitle">Registered users</h2><span class="tiny muted" id="tableMeta"></span></div>
+          <div id="tableBody"><div class="skeleton block" style="margin:10px 16px;"></div><div class="skeleton line" style="margin:10px 16px;"></div><div class="skeleton line" style="margin:10px 16px;"></div></div>
+          <div class="card-foot row wrap" id="paginationBar" style="display:none;justify-content:space-between;">
+            <span class="tiny muted" id="pageInfo"></span>
+            <span class="row" style="gap:8px;">
+              <button class="btn btn-ghost btn-sm" id="prevPage" type="button">← Prev</button>
+              <button class="btn btn-ghost btn-sm" id="nextPage" type="button">Next →</button>
+            </span>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- user detail modal -->
+  <div id="detailOverlay" style="display:none;position:fixed;inset:0;background:rgba(2,6,12,0.72);z-index:70;padding:16px;overflow-y:auto;" role="dialog" aria-modal="true" aria-label="User details">
+    <div class="card" style="max-width:720px;margin:24px auto;box-shadow:var(--shadow);">
+      <div class="card-head"><h2 class="card-title" id="detailTitle">User details</h2><span><button class="btn btn-ghost btn-sm" id="detailClose" type="button">Close</button></span></div>
+      <div id="detailBody" class="card-body"></div>
+      <div class="card-foot row wrap" id="detailActions" style="gap:8px;"></div>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/admin-users.js"></script>
+</body>
+</html>
