@@ -633,3 +633,12 @@ test('16: the approval migration is discovered, applied once and preserves exist
   assert.equal(second.applied.length, 0, 'a second run is a no-op — existing data is never touched twice');
   assert.equal(records.filter((r) => r.filename === '002-user-approval-system.sql').length, 1, 'recorded exactly once');
 });
+
+test('console scripts are served to admins with no-store so phones never replay stale JS', async () => {
+  const res = await get('/js/admin-users.js', { token: adminBearer });
+  assert.equal(res.status, 200, 'an administrator receives the guarded script');
+  assert.match(String(res.headers.get('cache-control')), /no-store/, 'the script is never cached');
+
+  const guest = await get('/js/admin-users.js', {});
+  assert.equal(guest.status, 404, 'for everyone else the script does not exist');
+});

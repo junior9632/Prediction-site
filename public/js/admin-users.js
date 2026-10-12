@@ -39,7 +39,13 @@
 
   /* ------------------------------ data ------------------------------ */
   async function loadSummary() {
-    const s = await API.get('/admin/users/summary');
+    let s;
+    try {
+      s = await API.get('/admin/users/summary');
+    } catch (err) {
+      summaryError(err.message || 'Could not read the user statistics');
+      throw err;
+    }
     $('#summaryCards').innerHTML = [
       card('Total users', s.total, 'all registered accounts'),
       card('Pending approval', s.pending, 'waiting for your review', 'cyan'),
@@ -47,6 +53,19 @@
       card('Rejected', s.rejected, 'applications refused', 'red'),
       card('Suspended', s.suspended, 'access revoked', 'red'),
     ].join('');
+  }
+
+  /**
+   * The counters could not be read. Replace the skeletons with a real error
+   * card instead of leaving five blank tiles behind — a blank card looks like
+   * "zero users", which is a lie. The message is the one the server returned.
+   */
+  function summaryError(message) {
+    $('#summaryCards').innerHTML =
+      `<div class="mini-card" style="grid-column:1/-1;">` +
+      `<div class="k">User statistics unavailable</div>` +
+      `<div class="v red">—</div>` +
+      `<div class="d">${escapeHtml(message)}</div></div>`;
   }
 
   async function loadUsers() {
@@ -81,6 +100,11 @@
     $('#pageInfo').textContent = `Page ${data.page} of ${data.pages} · ${data.total} user${data.total === 1 ? '' : 's'}`;
     $('#prevPage').disabled = data.page <= 1;
     $('#nextPage').disabled = data.page >= data.pages;
+
+    // The table was just rebuilt: every button inside it is brand new and has
+    // no listeners. This is what makes View/Approve/Reject/Suspend tappable on
+    // every device — without it the rendered buttons are dead markup.
+    bindActionButtons();
   }
 
   async function refreshAll() {
@@ -100,9 +124,15 @@
     reactivate: { verb: 'Reactivate', past: 'Reactivated', confirm: (u) => `Reactivate ${u.username}? They will immediately regain access to member features.` },
   };
 
-  async function runAction(action, userId) {
+  /** Only one administrative decision may be in flight at a time. */
+  let actionInFlight = false;
+
+  async function runAction(action, userId, btn) {
     const copy = ACTION_COPY[action];
     if (!copy) return;
+    // Double-submit guard: a second tap while the first decision is still being
+    // applied is ignored, so one approval can never be sent twice.
+    if (actionInFlight) return;
     // The list/detail payloads are re-fetched after the action, so the row is
     // only used for the confirmation copy.
     const row = (state.lastItems || []).find((u) => String(u.id) === String(userId)) || { id: userId, username: `#${userId}` };
@@ -115,13 +145,22 @@
       reason = input.trim() || null;
     }
 
+    actionInFlight = true;
+    if (btn) btn.disabled = true; // visible "working" state, restored on failure
     try {
+      // The status changes on the SERVER, in its transaction; the UI only
+      // updates after the server confirmed the decision.
       const res = await API.post(`/admin/users/${userId}/${action}`, reason ? { reason } : {});
       notice('ok', `${copy.past} ${row.username} — status is now “${res.user.status}”.`);
       closeDetail();
       await refreshAll();
     } catch (err) {
+      // Stay on the page, show the real (safe) server message, never claim
+      // success, and make the button usable again.
       notice('error', err.message || `Could not ${copy.verb.toLowerCase()} the account`);
+      if (btn) btn.disabled = false;
+    } finally {
+      actionInFlight = false;
     }
   }
 
@@ -179,7 +218,7 @@
       btn.onclick = () => {
         const act = btn.dataset.act;
         if (act === 'view') return openDetail(btn.dataset.id);
-        return runAction(act, btn.dataset.id);
+        return runAction(act, btn.dataset.id, btn);
       };
     });
   }
@@ -237,4 +276,8 @@
   }
 
   document.addEventListener('DOMContentLoaded', boot);
+
+  // Test hook: lets the node:test suite drive this page's real wiring (the
+  // repo ships no DOM library, so tests provide a minimal document double).
+  window.AdminUsersPage = { bindActionButtons, runAction, loadUsers, loadSummary, refreshAll, openDetail, closeDetail, state };
 })();

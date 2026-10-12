@@ -56,7 +56,7 @@ Useful commands:
 ```bash
 npm run dev                 # node --watch server.js
 npm run db:migrate -- --status   # applied vs pending migrations (read-only)
-npm test                    # 95 unit + service + HTTP acceptance tests (no DB needed)
+npm test                    # 185 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)

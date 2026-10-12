@@ -41,24 +41,83 @@ function getPool() {
   return pool;
 }
 
+/**
+ * MySQL / MariaDB errors that mean the LIVE SCHEMA IS OLDER THAN THE CODE: a
+ * column or a table the repository expects does not exist yet. That is the
+ * exact signature of a deployment where `npm run db:migrate` was not run after
+ * the code was uploaded (migration 002 adds `users.status`, `users.full_name`,
+ * the approval columns and the `user_audit_logs` table).
+ *
+ * It must never be reported as an anonymous 500 "Internal server error": the
+ * request really is broken, but the operator has to be told what to do. The
+ * message below is deliberately free of SQL, table names, column names and
+ * credentials — the exact missing object goes to the server log instead.
+ */
+const SCHEMA_ERROR_CODES = new Set(['ER_BAD_FIELD_ERROR', 'ER_NO_SUCH_TABLE', 'ER_BAD_TABLE_ERROR']);
+
+const SCHEMA_OUT_OF_DATE_MESSAGE =
+  'The database schema is out of date — an administrator must apply the pending database migrations on the server (npm run db:migrate).';
+
+const SCHEMA_OUT_OF_DATE_HINT =
+  'run `npm run db:migrate` on the host; read-only check first: `npm run db:migrate -- --status` or `npm run doctor`';
+
+/** Extract the missing column / table from a MySQL message, for the log only. */
+function describeSchemaError(err) {
+  const message = String((err && err.sqlMessage) || (err && err.message) || '');
+  const column = /Unknown column '([^']+)'/.exec(message);
+  if (column) return { kind: 'column', object: column[1] };
+  const table = /Table '([^']+)' doesn't exist/.exec(message);
+  if (table) return { kind: 'table', object: table[1] };
+  const dropped = /Unknown table '([^']+)'/.exec(message);
+  if (dropped) return { kind: 'table', object: dropped[1] };
+  return { kind: 'schema', object: null };
+}
+
+/**
+ * Turn a driver error into a safe AppError and log the real cause.
+ * Shared by the pool path (`query`) and the transaction path, so a schema that
+ * is out of date is reported identically whether it breaks a SELECT or an
+ * administrative status decision. Nothing sensitive is ever logged: statements
+ * are logged with their `?` placeholders only, because values are always bound.
+ */
+function toAppError(err, sql) {
+  if (isConnectionError(err)) {
+    return AppError.upstream('Database is unavailable', 'DB_UNAVAILABLE', {
+      code: err.code,
+      message: err.message,
+    });
+  }
+  if (SCHEMA_ERROR_CODES.has(err && err.code)) {
+    const missing = describeSchemaError(err);
+    logger.error('database schema is out of date', {
+      code: err.code,
+      errno: err.errno,
+      missing: missing.object ? `${missing.kind}: ${missing.object}` : missing.kind,
+      message: err.sqlMessage || err.message,
+      sql: sql.slice(0, 400),
+      hint: SCHEMA_OUT_OF_DATE_HINT,
+    });
+    return new AppError(SCHEMA_OUT_OF_DATE_MESSAGE, {
+      status: 500,
+      code: 'SCHEMA_OUT_OF_DATE',
+      details: config.isProduction ? undefined : { sqlError: err.sqlMessage || err.message, missing },
+    });
+  }
+  logger.error('SQL error', { code: err.code, errno: err.errno, sql: sql.slice(0, 400), message: err.message });
+  return new AppError('Database query failed', {
+    status: 500,
+    code: `SQL_${err.code || 'ERROR'}`,
+    details: config.isProduction ? undefined : { sqlError: err.sqlMessage || err.message },
+    expose: !config.isProduction,
+  });
+}
+
 async function query(sql, params = []) {
   try {
     const [rows] = await getPool().execute(sql, params);
     return rows;
   } catch (err) {
-    if (isConnectionError(err)) {
-      throw AppError.upstream('Database is unavailable', 'DB_UNAVAILABLE', {
-        code: err.code,
-        message: err.message,
-      });
-    }
-    logger.error('SQL error', { code: err.code, errno: err.errno, sql: sql.slice(0, 400), message: err.message });
-    throw new AppError('Database query failed', {
-      status: 500,
-      code: `SQL_${err.code || 'ERROR'}`,
-      details: config.isProduction ? undefined : { sqlError: err.sqlMessage || err.message },
-      expose: !config.isProduction,
-    });
+    throw toAppError(err, sql);
   }
 }
 
@@ -91,24 +150,38 @@ async function execute(sql, params = []) {
  * so every statement shares the same transaction.
  */
 async function transaction(work) {
-  const connection = await getPool().getConnection();
+  const connection = await getPool().getConnection().catch((err) => {
+    throw toAppError(err, 'getConnection');
+  });
+  /** Statements inside the transaction get exactly the same error mapping. */
+  const run = async (sql, params = []) => {
+    try {
+      return await connection.execute(sql, params);
+    } catch (err) {
+      throw toAppError(err, sql);
+    }
+  };
   try {
-    await connection.beginTransaction();
+    await connection.beginTransaction().catch((err) => {
+      throw toAppError(err, 'BEGIN');
+    });
     const result = await work({
       query: async (sql, params = []) => {
-        const [rows] = await connection.execute(sql, params);
+        const [rows] = await run(sql, params);
         return rows;
       },
       queryOne: async (sql, params = []) => {
-        const [rows] = await connection.execute(sql, params);
+        const [rows] = await run(sql, params);
         return rows && rows.length ? rows[0] : null;
       },
       execute: async (sql, params = []) => {
-        const [rows] = await connection.execute(sql, params);
+        const [rows] = await run(sql, params);
         return { insertId: rows.insertId || 0, affectedRows: rows.affectedRows || 0 };
       },
     });
-    await connection.commit();
+    await connection.commit().catch((err) => {
+      throw toAppError(err, 'COMMIT');
+    });
     return result;
   } catch (err) {
     try {
@@ -150,4 +223,18 @@ async function closePool() {
   }
 }
 
-module.exports = { getPool, query, queryOne, execute, transaction, ping, limitClause, closePool };
+module.exports = {
+  getPool,
+  query,
+  queryOne,
+  execute,
+  transaction,
+  ping,
+  limitClause,
+  closePool,
+  // exported for tests: the exact mapping of a driver error to a safe AppError
+  toAppError,
+  describeSchemaError,
+  SCHEMA_ERROR_CODES,
+  SCHEMA_OUT_OF_DATE_MESSAGE,
+};

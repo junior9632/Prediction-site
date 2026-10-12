@@ -1077,3 +1077,34 @@ body.nav-open { overflow: hidden; }
   /* the members-only placeholders stay a plain bar instead of shimmering */
   .lock-mask { animation: none !important; }
 }
+
+/* ---------------------------------------------------------------------
+   Admin → Users on small screens (e.g. iPhone).
+   The Actions column stays pinned to the right edge while the rest of the
+   table scrolls horizontally, and every action becomes a full-width,
+   >=44px touch target so adjacent actions can never be hit by accident.
+   No invisible overlays: the real buttons simply get room to be tapped.
+   --------------------------------------------------------------------- */
+@media (max-width: 699.98px) {
+  table.data th:last-child,
+  table.data td:last-child {
+    position: sticky;
+    right: 0;
+    background: var(--panel-2);
+    box-shadow: -10px 0 12px -10px rgba(0, 0, 0, 0.65);
+  }
+  table.data td:last-child .row {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+  table.data td:last-child .btn,
+  #detailActions .btn {
+    width: 100%;
+    min-height: 44px;
+  }
+  #detailActions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

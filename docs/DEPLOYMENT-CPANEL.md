@@ -247,25 +247,161 @@ Notes:
 
 ---
 
-## 9. Updates
+## 9. Updates (File Manager + phpMyAdmin — no Terminal needed)
 
-```bash
-cd /home/USER/goalpredict
-git pull                        # or upload the changed files
-npm ci --omit=dev               # only when package.json changed
-npm run db:migrate              # applies pending migrations once each — run after every deploy
-#   (001-widen-odds-precision.sql widens price columns to DECIMAL(12,6); existing databases need it)
-#   (002-user-approval-system.sql adds users.status + full_name + the user_audit_logs table.
-#    Safe on live data: existing ACTIVE users become 'approved', existing INACTIVE users become
-#    'suspended', new registrations default to 'pending'. No rows are deleted. Read-only check:
-#    npm run db:migrate -- --status)
-npm test                        # optional but cheap: 177 tests, no DB needed
-node scripts/check-no-secrets.js
+1. **File Manager** → open the **Application root** (e.g. `/home/USER/goalpredict`) →
+   **Upload** `GoalPredict-cPanel-deployment.zip` → right-click → **Extract** → overwrite.
+   The archive stores its files at the top level, so it unpacks straight into the app root.
+   `.env` is deliberately **not** in the archive — your live settings survive.
+2. **Setup Node.js App** → your app → **Run NPM Install** — only needed when `package.json`
+   changed. All ten dependencies are pure JavaScript, so nothing is compiled.
+3. **Apply any pending database migration in phpMyAdmin** (section 9b). Without a Terminal,
+   `npm run db:migrate` cannot run — the SQL files in `server/database/migrations/` are plain
+   text you paste into the phpMyAdmin **SQL** tab.
+4. **Setup Node.js App** → **Restart**.
+
+> **The Node application never migrates the database by itself.** `server.js` only pings MySQL
+> on boot. The Docker development stack is the one exception — its start command runs
+> `npm run db:setup` — so a database that works locally can still be behind on the host.
+> **Every deploy that ships a new migration needs step 3.**
+
+---
+
+## 9b. "Internal server error" on /admin/users — fix it from the browser and phpMyAdmin
+
+The admin **Users** page renders (its guard only reads the `admins` table) while every user
+request fails, because `users.status`, `users.full_name`, the approval columns and the
+`user_audit_logs` table do not exist yet. Nothing below needs a Terminal.
+
+### A. Read the cause in ten seconds (browser, works on the code that is live now)
+
+Sign in at `/admin/login`, then open:
+
+```
+https://yourdomain.com/api/admin/users/summary
 ```
 
-Then restart the application in **Setup Node.js App**. Settings live in the database, so
-threshold changes made in the admin console survive deploys; locked settings are re-pinned from
-code on every read.
+The JSON `code` is **never** hidden, only the `message` is:
+
+| `error.code` you see | Meaning |
+| --- | --- |
+| `SQL_ER_BAD_FIELD_ERROR` | a **column** is missing → migration `002` was never applied. Go to B |
+| `SQL_ER_NO_SUCH_TABLE` | a **table** is missing (`user_audit_logs`) → same fix |
+| `DB_UNAVAILABLE` | MySQL credentials/host — section 10 |
+| `{"ok":true,...}` with counters | the schema is fine; the fault is elsewhere |
+
+From the code in this release the same request answers `SCHEMA_OUT_OF_DATE` with a message that
+says what to run, and the server log names the exact missing column:
+
+```json
+{"level":"error","message":"database schema is out of date",
+ "meta":{"code":"ER_BAD_FIELD_ERROR","errno":1054,"missing":"column: status",
+         "message":"Unknown column 'status' in 'field list'"}}
+```
+
+### B. Confirm read-only in phpMyAdmin (SQL tab — nothing here writes)
+
+cPanel → **phpMyAdmin** → your database → **SQL** tab:
+
+```sql
+-- has any migration ever been recorded?
+SHOW TABLES LIKE 'schema_migrations';
+SELECT filename, applied_at FROM schema_migrations ORDER BY filename;
+--   table missing, or 002 not listed  => migration 002 NOT applied
+
+-- does the audit table exist?
+SHOW TABLES LIKE 'user_audit_logs';
+
+-- the six approval columns (expect 6 rows once 002 is applied)
+SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+   AND COLUMN_NAME IN ('full_name','status','approved_at',
+                       'approved_by_admin_id','status_reason','status_changed_at')
+ ORDER BY COLUMN_NAME;
+```
+
+### C. Back the database up (cPanel UI)
+
+* **cPanel → Backups → Download a MySQL Database Backup** — pick the GoalPredict database, or
+* **phpMyAdmin → the database → Export → Go** (Format: SQL, "Structure and data").
+
+Save the file to your own computer. Never leave a dump inside `public_html/`.
+
+### D. Apply migration 002 in phpMyAdmin
+
+Open `server/database/migrations/002-user-approval-system.sql` (File Manager → View, or the
+copy in the deployment ZIP), select **all** of it, paste it into the **SQL** tab of your
+database and press **Go**. It runs five statements:
+
+1. one `ALTER TABLE users` adding the six columns + index + the foreign key to `admins`
+   (a single `ALTER` is all-or-nothing, so it cannot leave a half-added column),
+2. two `UPDATE`s that grandfather existing accounts — active → `approved`,
+   inactive → `suspended` (**no row is ever deleted**),
+3. `CREATE TABLE IF NOT EXISTS user_audit_logs`.
+
+If step B showed that *some* columns already exist, paste only the missing ones instead —
+e.g. for `status` alone:
+
+```sql
+ALTER TABLE `users` ADD COLUMN `status` ENUM('pending','approved','rejected','suspended')
+  NOT NULL DEFAULT 'pending' AFTER `is_active`;
+```
+
+> Re-importing `schema.sql` does **not** fix this: `users` already exists and
+> `CREATE TABLE IF NOT EXISTS` leaves an existing table untouched. Only the migration alters it.
+
+### E. Record it so it is never applied twice
+
+```sql
+CREATE TABLE IF NOT EXISTS `schema_migrations` (
+  `filename`   VARCHAR(255) NOT NULL,
+  `checksum`   CHAR(64)     NOT NULL,
+  `applied_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`filename`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `schema_migrations` (`filename`, `checksum`) VALUES
+  ('002-user-approval-system.sql', '9af1c29812e9ff537021064753499bf4e41a6556475b486ea9abb8f706a1f4f1');
+```
+
+That checksum is the SHA-256 of the migration file as shipped in this release; step B now reads
+`002 … applied`, and any future runner sees it as done.
+
+### F. Restart and verify
+
+**Setup Node.js App → Restart**, then:
+
+* `https://yourdomain.com/api/admin/users/summary` → `{"ok":true,"data":{"total":…,"pending":…}}`
+* `/admin/users` → the five counters, the user table, and the audit history of any user opened
+  with **View**.
+
+```sql
+-- optional read-only confirmation
+SELECT status, COUNT(*) FROM users GROUP BY status;
+SELECT COUNT(*) FROM user_audit_logs;
+```
+
+### G. Check migration 001 at the same time (silent odds rounding)
+
+`001-widen-odds-precision.sql` widens three price columns to `DECIMAL(12,6)`. Without it, any
+bookmaker price with more than three decimals is **silently rounded on write** and the odds
+re-validation can reject a real price:
+
+```sql
+SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE()
+   AND ((TABLE_NAME IN ('odds','ticket_selections') AND COLUMN_NAME = 'odd_decimal')
+        OR (TABLE_NAME = 'predictions' AND COLUMN_NAME = 'selected_odds'));
+-- decimal(12,6) => already correct.  decimal(8,3) => paste 001 into the SQL tab, then record
+-- it in schema_migrations the same way as step E.
+```
+
+### H. Reading the application log without a Terminal
+
+**File Manager** → home folder → `logs/` (written only when `LOG_FILE` is set in the app
+environment), or the stderr file named in **Setup Node.js App**; also **Metrics → Errors** for
+the domain error log. Open the file in File Manager and search for `database schema is out of
+date` or `SQL error`.
 
 ---
 
@@ -274,6 +410,7 @@ code on every read.
 | Symptom | Cause and fix |
 | --- | --- |
 | cPanel shows "Application Error" on start | Look at the app's log. Usually a missing env var (`config.validate()` refuses to boot in production) or a Node version below 18.17 |
+| `/admin/users` answers **Internal server error** / "Could Not Load Users" while the page itself loads | the live database is older than the code — migration `002-user-approval-system.sql` is missing. Read `error.code` at `/api/admin/users/summary`, confirm read-only in phpMyAdmin, back the database up, then paste `002-user-approval-system.sql` into the SQL tab. No Terminal needed — section 9b |
 | `/api/health` returns `503` with `database: "unavailable"` | `DB_HOST/DB_USER/DB_PASSWORD/DB_NAME` are wrong, or the user was not added to the database with ALL PRIVILEGES |
 | `dataSource.configured: false` | `API_FOOTBALL_KEY` is missing or was pasted with surrounding quotes/spaces |
 | `dataSource.state: "OPEN"` | the circuit breaker opened after repeated upstream failures; it half-opens automatically after the cooldown. Check quota/plan and `logs/cron.log` |
@@ -294,7 +431,7 @@ code on every read.
 ## 11. Pre-launch checklist
 
 - [ ] Node.js 18.17+ selected, startup file `server.js`, mode `Production`
-- [ ] Schema imported (17 tables), `npm run db:seed` completed
+- [ ] Schema imported (18 tables), settings + first administrator seeded
 - [ ] `.env` filled in, `JWT_SECRET` unique and 64+ characters, `.env` **not** in git
 - [ ] `ADMIN_PASSWORD` changed after first login and removed from the environment
 - [ ] SSL active, `COOKIE_SECURE=1`, `TRUST_PROXY=1`, `CORS_ORIGINS` set to the real domain(s)
