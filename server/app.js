@@ -399,7 +399,13 @@ function createApp() {
     if (token) {
       try {
         const claims = verifyToken(token);
-        if (claims.type === 'admin') return res.sendFile(path.join(PUBLIC_DIR, 'js', file));
+        if (claims.type === 'admin') {
+          // Never cached: an operator's phone must not replay a stale copy of
+          // the console scripts after a deploy (mobile Safari is aggressive).
+          return res.sendFile(path.join(PUBLIC_DIR, 'js', file), {
+            headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate', Pragma: 'no-cache' },
+          });
+        }
       } catch (_err) {
         /* fall through to the generic 404 below */
       }

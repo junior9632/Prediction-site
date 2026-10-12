@@ -15,7 +15,10 @@
  *   2. a real MySQL connection (`SELECT 1`) with the SAME credentials the app
  *      uses, and translates the MySQL error code into the exact cause and the
  *      cPanel screen that fixes it
- *   3. that the schema is applied (every table from schema.sql exists)
+ *   3. that the schema is applied: every table AND every column from
+ *      schema.sql exists, plus the versioned-migration ledger
+ *      (applied vs pending) — a live database older than the code is exactly
+ *      what makes /admin/users answer "Internal server error"
  *   4. that settings are seeded and at least one active administrator exists
  *   5. the running site's own answers: /api/health, /api/meta and the guest
  *      boundary on /api/dashboard/activity (which must be 401)
@@ -29,6 +32,7 @@ const path = require('node:path');
 const mysql = require('mysql2/promise');
 
 const config = require('../server/config');
+const migrate = require('../server/database/migrate');
 
 const ROOT = path.join(__dirname, '..');
 const results = [];
@@ -148,11 +152,64 @@ function expectedTables() {
   return tables;
 }
 
-async function checkDatabase() {
+/**
+ * Table -> column list, parsed out of schema.sql (the single source of truth
+ * for a fresh install).
+ *
+ * Checking only the TABLES is not enough: `users` existed long before the
+ * approval workflow, so a database that never received migration
+ * 002-user-approval-system.sql still has a `users` table — it is only missing
+ * `status`, `full_name`, `approved_at`, `approved_by_admin_id`,
+ * `status_reason` and `status_changed_at`. The admin Users page then fails
+ * with "Unknown column 'status'" on every request while the table check says
+ * the schema is fine. This is what catches that.
+ */
+function expectedSchema() {
+  const sql = fs.readFileSync(path.join(ROOT, 'server', 'database', 'schema.sql'), 'utf8');
+  const schema = {};
+  for (const match of sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+`?(\w+)`?\s*\(([\s\S]*?)\n\)\s*ENGINE/gi)) {
+    const columns = [];
+    for (const line of match[2].split('\n')) {
+      const column = /^\s*`(\w+)`\s/.exec(line);
+      if (column) columns.push(column[1]);
+    }
+    schema[match[1]] = columns;
+  }
+  return schema;
+}
+
+/** Read-only view of the versioned migrations: applied vs pending. */
+async function checkMigrations(connection, presentTables) {
+  if (!presentTables.includes('schema_migrations')) {
+    record(
+      'versioned migrations',
+      false,
+      'the `schema_migrations` table does not exist — no migration has ever been recorded on this database',
+      'run `npm run db:migrate` on the host; it creates the table and applies every pending migration exactly once.'
+    );
+    return;
+  }
+  try {
+    const status = await migrate.migrationStatus(connection);
+    const pending = status.pending.map((file) => file.filename);
+    record(
+      `versioned migrations (${status.applied.length} applied, ${pending.length} pending)`,
+      pending.length === 0,
+      pending.length ? `pending: ${pending.join(', ')}` : 'every migration on disk is applied',
+      'run `npm run db:migrate` on the host. This is the fix for "Internal server error" on /admin/users after a deploy.'
+    );
+    for (const warning of status.warnings) record('migration warning', false, warning, 'inspect server/database/migrations before deploying again.');
+  } catch (err) {
+    const d = diagnose(err);
+    record('versioned migrations', false, `${d.code}: ${d.cause}`, d.fix);
+  }
+}
+
+async function checkDatabase(createConnection = mysql.createConnection) {
   group = 'database';
   let connection;
   try {
-    connection = await mysql.createConnection({
+    connection = await createConnection({
       host: config.db.host,
       port: config.db.port,
       user: config.db.user,
@@ -183,6 +240,32 @@ async function checkDatabase() {
       missing.length ? `missing: ${missing.join(', ')}` : `${present.length} tables present`,
       'run `npm run db:migrate` on the host (it applies schema.sql + any pending migrations).'
     );
+
+    // Columns, not just tables: this is what detects a live database that is
+    // older than the code (see expectedSchema). Read-only, one cheap
+    // SHOW COLUMNS per existing table.
+    const schema = expectedSchema();
+    const columnProblems = [];
+    for (const table of Object.keys(schema)) {
+      if (!present.includes(table)) continue; // already reported as missing
+      try {
+        const [cols] = await connection.query(`SHOW COLUMNS FROM \`${table}\``);
+        const have = new Set(cols.map((c) => c.Field));
+        const missingColumns = schema[table].filter((column) => !have.has(column));
+        if (missingColumns.length) columnProblems.push(`${table}: ${missingColumns.join(', ')}`);
+      } catch (err) {
+        columnProblems.push(`${table}: could not be inspected (${err.code || err.message})`);
+      }
+    }
+    record(
+      'every expected column exists',
+      columnProblems.length === 0,
+      columnProblems.length ? `missing columns → ${columnProblems.join(' | ')}` : 'schema.sql and the live database agree',
+      'the live database is OLDER than the code: back it up, then run `npm run db:migrate`. ' +
+        'For the admin Users page the migration is 002-user-approval-system.sql.'
+    );
+
+    await checkMigrations(connection, present);
   } catch (err) {
     const d = diagnose(err);
     record('schema applied', false, `${d.code}: ${d.cause}`, d.fix);
@@ -334,7 +417,23 @@ async function main() {
   if (failed) process.exitCode = 1;
 }
 
-main().catch((err) => {
-  process.stderr.write(`doctor failed: ${err.message}\n`);
-  process.exitCode = 1;
-});
+// Only run when executed directly (`npm run doctor`); tests require this module
+// for its schema parser.
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`doctor failed: ${err.message}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  expectedTables,
+  expectedSchema,
+  checkDatabase,
+  // test accessors: the report rows collected by `record`
+  getResults: () => results.slice(),
+  resetResults: () => {
+    results.length = 0;
+    failed = 0;
+  },
+};
