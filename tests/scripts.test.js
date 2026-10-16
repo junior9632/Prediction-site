@@ -129,6 +129,40 @@ test('scripts: the doctor diagnoses a broken database instead of hiding it', () 
   assert.ok(!output.includes('nope'), 'the database password never appears in the report');
 });
 
+test('scripts: npm run api:check answers "why is the data source unavailable" and fails loudly', () => {
+  const { scripts } = require('../package.json');
+  assert.equal(scripts['api:check'], 'node scripts/api-check.js', 'npm run api:check is wired up');
+
+  // No key, no reachable database: the check must NOT pass silently — it has to
+  // name the configured state and print the fix.
+  let exitCode = 0;
+  let output = '';
+  try {
+    output = execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'api-check.js')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NODE_ENV: 'test',
+        API_FOOTBALL_KEY: '',
+        DB_HOST: '127.0.0.1',
+        DB_PORT: '1',
+        DB_USER: 'nobody',
+        DB_PASSWORD: 'not-a-real-password',
+        DB_NAME: 'nothing',
+      },
+      timeout: 60000,
+    });
+  } catch (err) {
+    exitCode = err.status ?? 1;
+    output = `${err.stdout || ''}${err.stderr || ''}`;
+  }
+  assert.notEqual(exitCode, 0, `an unusable data source must fail the check: ${output}`);
+  assert.match(output, /Verdict\s+CONFIG_INCOMPLETE/);
+  assert.match(output, /What to do: .*API_FOOTBALL_KEY/);
+  assert.ok(!/not-a-real-password/.test(output), 'credentials never appear in the output');
+});
+
 test('package.json: the test script runs on Node 18 and 20, not just 22', () => {
   const { scripts, engines } = require('../package.json');
 

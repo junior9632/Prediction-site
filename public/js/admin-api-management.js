@@ -212,7 +212,16 @@
             limits.source === 'server configuration' ? 'server request budget (configuration)' : 'provider budget'
           )}
           ${ui.mini('Plan', status.plan && status.plan.name ? status.plan.name : 'not reported', 'subscription reported by the provider')}
-          ${ui.mini('Circuit breaker', status.client.breakerState, status.client.available ? 'requests allowed' : 'paused after consecutive failures', status.client.available ? 'green' : 'red')}
+          ${ui.mini(
+            status.client.breakerState === 'QUOTA_EXHAUSTED' ? 'Daily request budget' : 'Circuit breaker',
+            status.client.breakerState,
+            status.client.available
+              ? 'requests allowed'
+              : status.client.breakerState === 'QUOTA_EXHAUSTED'
+                ? `0 requests left today${status.client.resetsAt ? ` · resumes ${fmt.dateTimeLabel(status.client.resetsAt)}` : ''}`
+                : status.client.label || 'paused after consecutive failures',
+            status.client.available ? 'green' : 'red'
+          )}
         </div>
         <p class="tiny muted" style="margin:12px 0 0;">
           Quota figures come from a real provider <code>/status</code> response only. When the provider does not report

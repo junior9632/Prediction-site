@@ -103,8 +103,50 @@ Guards around ingestion:
   timeouts, bounded retries and a small TTL cache. When it opens, services raise
   `ApiFootballUnavailable` and callers convert that into `DATA_SOURCE_UNAVAILABLE` — never into
   estimated data.
-* Every job writes an `api_sync_logs` row with endpoint calls and rows written, so quota use is
-  visible in the admin console.
+* Every job writes an `api_sync_logs` row with endpoint calls, rows written **and the daily request
+  budget** the provider reported (`requests_used` / `requests_limit`), so quota use is visible in the
+  admin console and in `api_sync_logs`.
+
+### 3.1 Why the data source is unavailable (`UNAVAILABLE_REASONS`)
+
+One sentence for six different problems tells an operator nothing, so every upstream failure carries
+a stable reason code with a label **and the fix**:
+
+| Reason | Meaning | Fix shown to the operator |
+| --- | --- | --- |
+| `NO_API_KEY` | no credential resolved (no active `api_credentials` row, no `API_FOOTBALL_KEY`) | set the env var, or save + activate a key in Admin → API Management |
+| `CREDENTIAL_UNREADABLE` | the stored key cannot be decrypted | re-enter and save the key (the encryption key changed) |
+| `QUOTA_EXCEEDED` | the plan's **daily** request budget is spent | raise the plan, lower `sync_days_ahead`/`sync_history_days`, space the cron jobs; requests resume after 00:00 UTC |
+| `RATE_LIMITED` | the **per-minute** limit was hit (Free = 10/min) | lower `API_FOOTBALL_RATE_PER_MINUTE` (the client also adopts the limit the provider advertises) |
+| `AUTH_REJECTED` / `REQUEST_REJECTED` | HTTP 401/403/4xx with the provider's own message | check key ↔ host pairing, plan coverage of the endpoint |
+| `PROVIDER_UNAVAILABLE` / `NETWORK_ERROR` / `TIMEOUT` | 5xx, outbound network failure, timeout | nothing to change (retried) / check outbound HTTPS and `npm run api:check` |
+| `CIRCUIT_OPEN` | the breaker opened after repeated upstream failures | read the earlier failure, it half-opens by itself |
+| `QUOTA_RESERVED` | background sync paused to keep `api_quota_reserve` requests for a manual generation | nothing — it is the guard doing its job |
+
+`describeUnavailable(err)` / `unavailableMessage(err)` in `services/apiFootball.js` are the single
+source for those labels, hints and reset times; the sync log, `/api/health`, the admin console and
+`npm run api:check` all render them.
+
+### 3.2 Daily request budget (quota) protection
+
+API-Football sends the remaining daily budget on **every** answer
+(`x-ratelimit-requests-limit` / `x-ratelimit-requests-remaining`) and reports it in `/status`
+(documented as *not* counting against the quota). The client:
+
+1. learns that budget from the first response of a run (and from `/status`);
+2. stops calling the data endpoints once the provider says 0 requests are left — the provider's own
+   documentation warns that persisting past the limits can get the key/IP firewalled — while leaving
+   the free `/status` probe available for diagnosis;
+3. never retries a daily-quota answer (a per-minute 429 is retried **once**, honouring `Retry-After`);
+4. keeps the daily budget for the operator: `syncService` pauses background jobs with status
+   `SKIPPED` (reason `QUOTA_RESERVED`) as soon as the remaining budget drops to
+   `api_quota_reserve`, so the manual "GENERATE TODAY'S TICKET" action still has room to run;
+   because every cron entry point is a **new process**, the pause also reads the budget the last run
+   recorded in `api_sync_logs` (`requests_used` / `requests_limit`, same UTC day only) — otherwise a
+   spent plan would report `DATA SOURCE TEMPORARILY UNAVAILABLE` on every hourly run until midnight;
+5. spends far less budget to begin with: the history backfill re-requests only the days whose stored
+   copy is older than `history_refresh_minutes`, and head-to-head enrichment only runs for fixtures
+   whose local sample is still below `h2h_min_meetings`, at most `h2h_sync_max_calls` per run.
 
 ---
 
@@ -397,7 +439,8 @@ newly declared setting has no consumer outside `settingsService.js`.
 
 | Situation | Behaviour |
 | --- | --- |
-| API key missing | run ends `DATA_SOURCE_UNAVAILABLE`; UI shows "DATA SOURCE TEMPORARILY UNAVAILABLE"; no ticket row with picks |
+| API key missing | run ends `DATA_SOURCE_UNAVAILABLE`; UI shows "DATA SOURCE TEMPORARILY UNAVAILABLE"; no ticket row with picks. The stored report carries `reason: NO_API_KEY`, the label, the hint and (when known) the reset time |
+| Daily quota spent | same as above with `reason: QUOTA_EXCEEDED` and `resetAt`; `requests resume after 00:00 UTC` — the client does not send (or retry) requests against an exhausted plan |
 | API unreachable / breaker open | same as above, with `reason: CIRCUIT_OPEN` in the report |
 | Odds re-verification fails mid-run | same as above (`REVERIFY_UNAVAILABLE`) — the stale prices are not reused |
 | No fixtures for the day | `NO_QUALIFYING_TICKET`, zero selections, diagnostics explain the empty day |

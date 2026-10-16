@@ -28,6 +28,32 @@ const { apiFootball } = require('../services/apiFootball');
 /* dashboard                                                               */
 /* ---------------------------------------------------------------------- */
 
+/** `report_json` as an object, whatever the driver handed back. */
+function parseStoredReport(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+/** The failure explanation of a stored generation report (safe subset). */
+function generationReportFields(reportJson) {
+  const report = parseStoredReport(reportJson);
+  if (!report) return {};
+  const text = (v) => (v === null || v === undefined ? null : String(v).slice(0, 300));
+  return {
+    reason: text(report.reason),
+    reasonLabel: text(report.label),
+    reasonDetail: text(report.detail),
+    reasonHint: text(report.hint),
+    resetsAt: text(report.resetAt),
+  };
+}
+
 /** GET /api/admin/overview */
 const overview = asyncHandler(async (_req, res) => {
   const now = new Date();
@@ -59,6 +85,11 @@ const overview = asyncHandler(async (_req, res) => {
             durationMs: lastGeneration.duration_ms === null ? null : Number(lastGeneration.duration_ms),
             selectedPicks: Number(lastGeneration.selected_picks),
             totalOdds: lastGeneration.total_odds === null ? null : decimal.format(decimal.toScaled(lastGeneration.total_odds), 2),
+            // WHY it ended the way it did: the stored report carries the
+            // classification of the failure (quota / key / network / provider)
+            // so a DATA_SOURCE_UNAVAILABLE run is no longer a dead end.
+            errorDetail: lastGeneration.error_detail ? String(lastGeneration.error_detail).slice(0, 300) : null,
+            ...generationReportFields(lastGeneration.report_json),
           }
         : null,
       dataToday: {
@@ -93,6 +124,10 @@ const overview = asyncHandler(async (_req, res) => {
         status: s.status,
         trigger: s.trigger_source,
         message: s.message,
+        // the provider's own words — the operator needs them to fix the cause
+        errorDetail: s.error_detail ? String(s.error_detail).slice(0, 300) : null,
+        requestsUsed: s.requests_used === null || s.requests_used === undefined ? null : Number(s.requests_used),
+        requestsLimit: s.requests_limit === null || s.requests_limit === undefined ? null : Number(s.requests_limit),
         startedAt: time.toIso(s.started_at),
       })),
       serverTime: now.toISOString(),

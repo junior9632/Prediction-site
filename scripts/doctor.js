@@ -39,7 +39,12 @@ const ROOT = path.join(__dirname, '..');
 const results = [];
 let failed = 0;
 let group = 'environment';
-const GROUP_TITLES = { environment: 'ENVIRONMENT', database: 'DATABASE & SCHEMA', site: 'RUNNING SITE' };
+const GROUP_TITLES = {
+  environment: 'ENVIRONMENT',
+  database: 'DATABASE & SCHEMA',
+  dataSource: 'DATA SOURCE (API-FOOTBALL)',
+  site: 'RUNNING SITE',
+};
 
 function record(name, ok, detail = '', fix = '') {
   results.push({ group, name, ok: Boolean(ok), detail: String(detail), fix: String(fix) });
@@ -436,13 +441,109 @@ function printReport(asJson) {
   );
 }
 
+/**
+ * The server modules log their findings as structured JSON lines on stdout —
+ * the doctor's own report is JSON as well, so those lines are swallowed while
+ * the data-source check runs. Nothing is hidden: every verdict they contain is
+ * recorded below as a named row with the fix.
+ */
+async function quietStdout(fn) {
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (_chunk, encoding, callback) => {
+    if (typeof encoding === 'function') encoding();
+    else if (typeof callback === 'function') callback();
+    return true;
+  };
+  try {
+    return await fn();
+  } finally {
+    process.stdout.write = original;
+  }
+}
+
+/**
+ * THE DATA SOURCE ITSELF. "DATA SOURCE TEMPORARILY UNAVAILABLE" in the sync log
+ * or the dashboard has several completely different causes, and each one has a
+ * different fix — so the doctor resolves the credential exactly like the running
+ * application and asks the provider once. `/status` does not count against the
+ * daily quota, so this check is free.
+ *
+ * Skip it with `--skip-probe` (or DOCTOR_SKIP_PROBE=1) on an isolated host.
+ */
+async function checkDataSource() {
+  group = 'dataSource';
+  const argv = process.argv.slice(2);
+// `--json` must stay parseable: the report is the only thing on stdout.
+if (argv.includes('--json') && !process.env.LOG_LEVEL) process.env.LOG_LEVEL = 'silent';
+  const skipProbe = argv.includes('--skip-probe') || process.env.DOCTOR_SKIP_PROBE === '1';
+
+  let resolved;
+  try {
+    const credentialService = require('../server/services/apiCredentialService');
+    resolved = await quietStdout(() => credentialService.resolveActiveCredential({ force: true }));
+  } catch (err) {
+    record('API credential could be resolved', false, err.message, 'fix the database connection first — the active credential may live in `api_credentials`.');
+    return;
+  }
+
+  record(
+    'API credential could be resolved',
+    !resolved.error,
+    `source=${resolved.source} host=${resolved.host || 'n/a'}${resolved.maskedKey ? ` key=${resolved.maskedKey}` : ''}`,
+    resolved.error ? 'the stored credential cannot be decrypted — re-enter and save the API key in Admin → API Management.' : ''
+  );
+  if (resolved.error) return;
+
+  if (!resolved.key) {
+    record(
+      'API key is configured',
+      false,
+      'no usable key (neither an active api_credentials row nor API_FOOTBALL_KEY)',
+      'set API_FOOTBALL_KEY in the Node.js app environment and Restart, or save + ACTIVATE a key in Admin → API Management. Until then every generation ends DATA_SOURCE_UNAVAILABLE (never a fabricated ticket).'
+    );
+    return;
+  }
+  record('API key is configured', true, `source=${resolved.source}${resolved.maskedKey ? `, key ${resolved.maskedKey}` : ''}`);
+
+  if (skipProbe) {
+    record('Data source probe (/status)', true, 'skipped (--skip-probe)');
+    return;
+  }
+
+  const { ApiFootballClient } = require('../server/services/apiFootball');
+  const client = new ApiFootballClient({
+    key: resolved.key,
+    host: resolved.host,
+    baseUrl: resolved.baseUrl,
+    manageCredential: false,
+  });
+  const probe = await quietStdout(() => client.probeCredentials());
+  record(
+    'Data source answered (/status — not billed against the daily quota)',
+    probe.ok,
+    `${probe.state}: ${probe.message}`,
+    probe.hint || ''
+  );
+  if (probe.quota) {
+    record(
+      'Daily request budget reported by the provider',
+      true,
+      `${probe.quota.current} of ${probe.quota.limitDay === null || probe.quota.limitDay === undefined ? '?' : probe.quota.limitDay} request(s) used today`
+    );
+  }
+  if (probe.ok && probe.plan && probe.plan.name) record('Subscription plan', true, String(probe.plan.name));
+}
+
 async function main() {
   const argv = process.argv.slice(2);
+// `--json` must stay parseable: the report is the only thing on stdout.
+if (argv.includes('--json') && !process.env.LOG_LEVEL) process.env.LOG_LEVEL = 'silent';
   const asJson = argv.includes('--json');
   const skipSite = argv.includes('--skip-site') || process.env.DOCTOR_SKIP_SITE === '1';
 
   checkEnvironment();
   await checkDatabase();
+  await checkDataSource();
   if (!skipSite) await checkSite();
 
   printReport(asJson);
@@ -462,6 +563,7 @@ module.exports = {
   expectedTables,
   expectedSchema,
   checkDatabase,
+  checkDataSource,
   // test accessors: the report rows collected by `record`
   getResults: () => results.slice(),
   resetResults: () => {

@@ -414,6 +414,12 @@ async function getStatus() {
       cacheHits: breaker.cacheHits,
       breakerState: breaker.state,
       available: breaker.available,
+      // WHY requests are paused (quota / breaker / missing key) and until when
+      reason: breaker.reason || null,
+      label: breaker.label || null,
+      resetsAt: breaker.resetsAt || null,
+      retryInMs: breaker.retryInMs === undefined ? null : breaker.retryInMs,
+      quotaState: breaker.quotaState || null,
     },
     recentEvents: databaseManaged ? events.map(eventDto) : [],
     recentErrors: databaseManaged ? recentErrors.map(eventDto) : [],

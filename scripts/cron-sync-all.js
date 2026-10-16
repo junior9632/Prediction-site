@@ -14,11 +14,17 @@ process.env.CRON_CONTEXT = '1';
 
 const syncService = require('../server/services/syncService');
 const pool = require('../server/database/connection');
+const { describeRun } = require('./lib/sync-output');
 
 (async () => {
   const started = Date.now();
   const result = await syncService.syncAll({ trigger: 'cron' });
   process.stdout.write(`${JSON.stringify({ job: 'all', ms: Date.now() - started, ...result })}\n`);
+  // one plain-language line per job that did not run cleanly (reason + fix)
+  for (const job of ['fixtures', 'odds', 'results']) {
+    const why = describeRun(job, result[job]);
+    if (why) process.stdout.write(`${why}\n`);
+  }
   if (!result.dataSourceAvailable) process.exitCode = 2; // alert in cron mail
 })()
   .catch((err) => {

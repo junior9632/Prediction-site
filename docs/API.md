@@ -88,7 +88,12 @@ Only these two. Everything else under `/api` needs a session.
 { "ok": true, "data": {
   "status": "ok" | "degraded",
   "database": "ok" | "unavailable",
-  "dataSource": { "configured": true, "available": true, "state": "OK" | "DEGRADED" | "OPEN" | "UNCONFIGURED" },
+  // reason/label/hint/resetsAt explain WHY an unavailable source is unusable
+  // (NO_API_KEY, CREDENTIAL_UNREADABLE, CIRCUIT_OPEN, QUOTA_EXCEEDED,
+  //  RATE_LIMITED, AUTH_REJECTED, PROVIDER_UNAVAILABLE, NETWORK_ERROR, TIMEOUT)
+  "dataSource": { "configured": true, "available": true, "state": "OK" | "DEGRADED" | "QUOTA_EXHAUSTED" | "OPEN" | "UNCONFIGURED",
+                   "reason": null, "label": null, "hint": null, "resetsAt": null,
+                   "quota": { "current": 120, "limit_day": 100 } | null },
   "market": { "key": "over_1_5", "label": "Over 1.5 Goals", "goalLine": 1.5 },
   "autoTicketGeneration": false,
   "generationRunning": false,
@@ -182,6 +187,9 @@ When nothing qualified, `selections` is empty and `noTicket` explains why:
 
 When the data source is down: `status: "DATA_SOURCE_UNAVAILABLE"`,
 `headline: "DATA SOURCE TEMPORARILY UNAVAILABLE"`, `selections: []`, `totalOdds: null`.
+The stored generation report adds `reason` (see the failure table in
+`docs/ARCHITECTURE.md` §3.1, e.g. `QUOTA_EXCEEDED`), `label`, `detail`, `hint` and `resetAt`, so the
+console can name the cause and the fix instead of only the status.
 Before any run: `status: "PENDING"`, `statusLabel: "NOT GENERATED YET"`.
 
 `GET /api/ticket/today` additionally returns `oddsWindow`, `autoTicketGeneration: false` and
@@ -398,6 +406,14 @@ Grouped as `market` (locked), `odds_window`, `filters`, `model`, `scoring`, `cor
 ### Generation run states
 
 `RUNNING` → `QUALIFIED` | `NO_QUALIFYING_TICKET` | `DATA_SOURCE_UNAVAILABLE` | `ERROR`.
+A run that hits the daily request quota ends `DATA_SOURCE_UNAVAILABLE` with
+`reason: QUOTA_EXCEEDED` and `resetAt` (00:00 UTC) rather than an unlabelled outage.
+
+Background sync jobs (`fixtures`, `odds`, `results`) log `SUCCESS | FAILED | PARTIAL | SKIPPED`
+in `api_sync_logs`; `SKIPPED` means the job paused itself because the plan had only
+`api_quota_reserve` (or fewer) requests left for the day — nothing is broken, the requests are kept
+for a manual generation. The same table now records the daily budget the provider reported
+(`requests_used` / `requests_limit`).
 Trigger sources accepted: `admin_ui`, `admin_api`, `cli_manual`. Anything else (including
 `cron`/`scheduler`) is refused with `403 AUTOMATIC_GENERATION_DISABLED`, and any process with
 `CRON_CONTEXT=1` is refused with `403 CRON_GENERATION_FORBIDDEN`.

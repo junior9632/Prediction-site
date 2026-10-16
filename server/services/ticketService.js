@@ -29,9 +29,31 @@ const pipeline = require('../prediction/pipeline');
 const logService = require('./logService');
 const notifyService = require('./notifyService');
 const fixtureStatus = require('../utils/fixtureStatus');
-const { ApiFootballUnavailable, apiFootball: defaultApi } = require('./apiFootball');
+const { ApiFootballUnavailable, describeUnavailable, apiFootball: defaultApi } = require('./apiFootball');
 
 const log = logger.child('tickets');
+
+/**
+ * The report of a run that could not use the data source.
+ *
+ * `message` stays the documented headline ("DATA SOURCE TEMPORARILY
+ * UNAVAILABLE") that the member pages render; every extra field exists so an
+ * administrator can see WHICH failure it was and what to do — a spent daily
+ * quota, a rejected key and a provider outage used to be indistinguishable.
+ */
+function dataSourceReport(reason, err = null, extra = {}) {
+  const info = err ? describeUnavailable(err) : null;
+  return {
+    message: 'DATA SOURCE TEMPORARILY UNAVAILABLE',
+    reason: (info && info.reason) || reason || 'UNKNOWN',
+    label: info ? info.label : null,
+    detail: info ? info.detail : null,
+    hint: info ? info.hint : null,
+    httpStatus: info ? info.httpStatus : null,
+    resetAt: info ? info.resetAt : null,
+    ...extra,
+  };
+}
 
 const ALLOWED_SOURCES = new Set(['admin_ui', 'admin_api', 'cli_manual']);
 const RUN_STATES = { RUNNING: 'RUNNING', QUALIFIED: 'QUALIFIED', NO_QUALIFYING_TICKET: 'NO_QUALIFYING_TICKET', DATA_SOURCE_UNAVAILABLE: 'DATA_SOURCE_UNAVAILABLE', ERROR: 'ERROR' };
@@ -219,14 +241,20 @@ async function runGeneration(params = {}) {
       });
     }
     if (!api.isAvailable()) {
+      const breaker = typeof api.breakerState === 'function' ? api.breakerState() : { state: 'OPEN' };
       void notifyService.alert('DATA_SOURCE_UNAVAILABLE', {
         ticketDate,
         reason: 'CIRCUIT_OPEN',
         detail: 'API-Football is unreachable (circuit breaker open) — no ticket was generated',
       });
       return await finalize(RUN_STATES.DATA_SOURCE_UNAVAILABLE, {
-        error: 'API-Football is unreachable (circuit breaker open)',
-        report: { reason: 'CIRCUIT_OPEN', message: 'DATA SOURCE TEMPORARILY UNAVAILABLE', breaker: api.breakerState() },
+        error: `API-Football is unreachable (${breaker.state || 'circuit breaker open'})${breaker.hint ? ` — ${breaker.hint}` : ''}`,
+        report: dataSourceReport('CIRCUIT_OPEN', null, {
+          label: breaker.label || null,
+          hint: breaker.hint || null,
+          resetAt: breaker.resetsAt || null,
+          breaker,
+        }),
       });
     }
 
@@ -243,8 +271,8 @@ async function runGeneration(params = {}) {
       } catch (err) {
         if (err instanceof ApiFootballUnavailable) {
           return await finalize(RUN_STATES.DATA_SOURCE_UNAVAILABLE, {
-            error: 'Fixtures could not be loaded from API-Football',
-            report: { reason: 'FIXTURE_SYNC_UNAVAILABLE', message: 'DATA SOURCE TEMPORARILY UNAVAILABLE' },
+            error: `Fixtures could not be loaded from API-Football — ${err.message}`,
+            report: dataSourceReport('FIXTURE_SYNC_UNAVAILABLE', err),
           });
         }
         throw err;
@@ -275,8 +303,8 @@ async function runGeneration(params = {}) {
     } catch (err) {
       if (err instanceof ApiFootballUnavailable) {
         return await finalize(RUN_STATES.DATA_SOURCE_UNAVAILABLE, {
-          error: 'Odds could not be loaded from API-Football',
-          report: { reason: 'ODDS_SYNC_UNAVAILABLE', message: 'DATA SOURCE TEMPORARILY UNAVAILABLE' },
+          error: `Odds could not be loaded from API-Football — ${err.message}`,
+          report: dataSourceReport('ODDS_SYNC_UNAVAILABLE', err),
         });
       }
       throw err;
@@ -334,9 +362,9 @@ async function runGeneration(params = {}) {
           // The prices we hold can no longer be re-verified against the source.
           // Per the anti-fabrication rule: no new ticket.
           return await finalize(RUN_STATES.DATA_SOURCE_UNAVAILABLE, {
-            error: 'Odds re-verification failed: API-Football unavailable',
+            error: `Odds re-verification failed: ${err.message}`,
             counters: pass1.counters,
-            report: { reason: 'REVERIFY_UNAVAILABLE', message: 'DATA SOURCE TEMPORARILY UNAVAILABLE', reverify },
+            report: dataSourceReport('REVERIFY_UNAVAILABLE', err, { reverify }),
           });
         }
         throw err;
