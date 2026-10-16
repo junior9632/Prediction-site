@@ -18,8 +18,11 @@ Express app (server/app.js)
    ▼
 Controllers (server/controllers/*)      validate input, shape output, no business rules
    ▼
-Services (server/services/*)            apiFootball · fixtures · odds · stats · context
-   │                                    sync · results · settings · logs · analytics · tickets
+Services (server/services/*)            apiFootball (client + real /status credential probe)
+   │                                    apiProviders (allowlisted hosts) · apiCredentialService
+   │                                    (AES-256-GCM at rest via utils/credentialVault)
+   │                                    fixtures · odds · stats · context · sync · results
+   │                                    settings · logs · analytics · tickets
    │                                    notify (Telegram/webhook, fire-and-forget, zero deps)
    ▼
 Prediction engine (server/prediction/*) pure functions: over15 · confidence · risk · quality
@@ -27,7 +30,7 @@ Prediction engine (server/prediction/*) pure functions: over15 · confidence · 
    ▼
 Repository (server/database/queries.js) the only place SQL is written, bound placeholders only
    ▼
-MySQL / MariaDB                          18 tables (schema.sql)
+MySQL / MariaDB                          20 tables (schema.sql)
 ```
 
 Rules that keep the layers honest:
@@ -46,7 +49,7 @@ Rules that keep the layers honest:
 
 ---
 
-## 2. Data model (18 tables)
+## 2. Data model (20 tables)
 
 | Table | Purpose |
 | --- | --- |
@@ -66,6 +69,8 @@ Rules that keep the layers honest:
 | `api_sync_logs` | each background sync: job, trigger, endpoint calls, rows written, status, message |
 | `generation_logs` | each generation run: trigger source, admin, status, progress JSON, settings snapshot, all counters, report JSON, duration, error detail |
 | `system_logs` | audit + error trail (level, channel, event, actor, context) |
+| `api_credentials` | one row per provider (migration 003): the API key as an **AES-256-GCM ciphertext** (ciphertext + IV + tag + algorithm), the allowlisted host, `key_last4`/`key_length` for the masked display, a SHA-256 fingerprint for change detection, activation state, connection state and the quota the provider actually reported |
+| `api_connection_events` | the connection/error history behind the API Management screen: event, outcome classification, HTTP status, endpoint path, latency, safe message |
 
 Two design decisions worth calling out:
 

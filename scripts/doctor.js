@@ -33,6 +33,7 @@ const mysql = require('mysql2/promise');
 
 const config = require('../server/config');
 const migrate = require('../server/database/migrate');
+const credentialVault = require('../server/utils/credentialVault');
 
 const ROOT = path.join(__dirname, '..');
 const results = [];
@@ -297,6 +298,37 @@ async function checkDatabase(createConnection = mysql.createConnection) {
   } catch (err) {
     const d = diagnose(err);
     record('an active administrator exists', false, `${d.code}: ${d.cause}`, d.fix);
+  }
+
+  /**
+   * Admin-managed API credentials (migration 003). A database credential is
+   * useless — and every upstream call would be refused — when the master key
+   * that decrypts it is missing from the server environment. Read-only: this
+   * counts rows, it never decrypts anything and never prints a key.
+   */
+  try {
+    const [rows] = await connection.query('SELECT COUNT(*) AS total FROM api_credentials');
+    const saved = Number((rows[0] || {}).total || 0);
+    const configured = credentialVault.isConfigured();
+    record(
+      `API credential encryption (${saved} saved credential(s))`,
+      saved === 0 || configured,
+      saved === 0
+        ? configured
+          ? 'no database credential saved yet — the environment configuration is in use'
+          : `no database credential saved yet; ${credentialVault.ENV_VAR} is not set either`
+        : `stored credentials are encrypted with ${credentialVault.ALGORITHM}`,
+      `set ${credentialVault.ENV_VAR} in the cPanel Node.js application environment and restart the app. ` +
+        `Generate a value with: ${credentialVault.GENERATE_COMMAND}`
+    );
+  } catch (err) {
+    // An older live database (before migration 003) has no such table: that is
+    // already reported by the schema/migration checks above, so it is not
+    // reported twice here.
+    if (!['ER_NO_SUCH_TABLE', 'ER_BAD_TABLE_ERROR'].includes(err && err.code)) {
+      const d = diagnose(err);
+      record('API credential storage', false, `${d.code}: ${d.cause}`, d.fix);
+    }
   }
 
   await connection.end();

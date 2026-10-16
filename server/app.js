@@ -415,6 +415,7 @@ function createApp() {
 
   app.get('/js/admin.js', guardedAdminScript('admin.js'));
   app.get('/js/admin-users.js', guardedAdminScript('admin-users.js'));
+  app.get('/js/admin-api-management.js', guardedAdminScript('admin-api-management.js'));
 
   /* --------------------------- frontend ---------------------------- */
   app.use(

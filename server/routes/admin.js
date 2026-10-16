@@ -8,6 +8,7 @@
 const express = require('express');
 const controller = require('../controllers/adminController');
 const userManagement = require('../controllers/userManagementController');
+const apiManagement = require('../controllers/apiManagementController');
 const { adminGuard, superAdminGuard } = require('../middleware/adminAuth');
 const { adminLimiter, generateLimiter } = require('../middleware/rateLimit');
 
@@ -15,6 +16,19 @@ const router = express.Router();
 
 router.use(adminLimiter);
 router.use(adminGuard);
+
+/* API Management — provider credentials, connection testing, activation.
+   Every route needs an active administrator; the mutations additionally need
+   the CSRF token for cookie sessions (see middleware/adminAuth.js). None of
+   them can generate, publish or replace a prediction ticket. */
+router.get('/api-management', apiManagement.status);
+router.get('/api-management/status', apiManagement.status);
+router.get('/api-management/providers', apiManagement.listProviders);
+router.get('/api-management/diagnostics', apiManagement.diagnostics);
+router.put('/api-management/credentials', apiManagement.saveCredentials);
+router.post('/api-management/test', apiManagement.testConnection);
+router.post('/api-management/activate', apiManagement.activate);
+router.post('/api-management/disable', apiManagement.disable);
 
 /* user management — registration approval workflow (admin only) */
 router.get('/users/summary', userManagement.summary);

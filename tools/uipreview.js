@@ -22,6 +22,11 @@
  * Admin:  username `admin`   password `preview123`
  * Member: username `member`  password `preview123`  (open /predictions)
  *
+ * The admin console's API Management screen is previewed with one clearly
+ * fictional, encrypted sample credential plus a sample `/status` verdict, so the
+ * whole flow (save → test → activate) can be clicked through without any key of
+ * your own. Every value it shows is labelled as sample data.
+ *
  * Football predictions, today's ticket, ticket history and analytics are
  * MEMBER ONLY: as a guest every one of those URLs answers 401 with the
  * "login required" page, and the API behind them answers 401 with an empty
@@ -37,6 +42,10 @@ process.env.DB_NAME = process.env.DB_NAME || 'preview';
 process.env.DB_USER = process.env.DB_USER || 'preview';
 process.env.DB_PASSWORD = process.env.DB_PASSWORD || 'preview';
 process.env.API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY || 'preview-sample-key';
+// Preview-only vault key so the API Management screen can be reviewed with a
+// database-managed credential. It protects nothing real and is never deployed.
+process.env.API_CREDENTIALS_ENCRYPTION_KEY =
+  process.env.API_CREDENTIALS_ENCRYPTION_KEY || '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || 'warn';
 
 const fs = require('node:fs');
@@ -50,8 +59,10 @@ const { buildScenario, FakeApi } = require('../tests/synthetic');
 
 const decimal = require('../server/utils/decimal');
 const settingsService = require('../server/services/settingsService');
+const apiCredentialService = require('../server/services/apiCredentialService');
 const ticketService = require('../server/services/ticketService');
 const { apiFootball } = require('../server/services/apiFootball');
+const vault = require('../server/utils/credentialVault');
 const { createApp, PUBLIC_DIR } = require('../server/app');
 
 const PREVIEW_PASSWORD = 'preview123';
@@ -425,6 +436,49 @@ async function main() {
   settingsService.invalidateCache();
   seedHistory(ctx.store, scn);
 
+  // One encrypted sample credential: the value is the same fictional
+  // `preview-sample-key` the harness uses for the environment fallback, so the
+  // database path can be exercised without anybody typing a real key.
+  const previewKey = process.env.API_FOOTBALL_KEY;
+  const previewCipher = vault.encryptSecret(previewKey, { provider: 'api_football', field: 'api_key' });
+  ctx.store.apiCredentials.push({
+    id: 1,
+    provider: 'api_football',
+    host: 'v3.football.api-sports.io',
+    key_ciphertext: previewCipher.ciphertext,
+    key_iv: previewCipher.iv,
+    key_tag: previewCipher.tag,
+    key_algorithm: previewCipher.algorithm,
+    key_id: previewCipher.keyId,
+    key_last4: vault.lastFour(previewKey),
+    key_length: previewKey.length,
+    key_fingerprint: vault.fingerprint(previewKey),
+    // saved but NOT active: the preview starts on the environment credential,
+    // exactly like a real deployment that has not been switched over yet
+    is_active: 0,
+    connection_state: 'NOT_TESTED',
+    connection_message: 'Saved from the preview harness — not tested yet.',
+    rate_limit_per_minute: null,
+    quota_used_today: null,
+    quota_limit_day: null,
+    quota_checked_at: null,
+    plan_name: null,
+    last_test_at: null,
+    last_test_latency_ms: null,
+    last_success_at: null,
+    last_request_at: null,
+    last_error_at: null,
+    last_error_code: null,
+    last_error_message: null,
+    activated_at: null,
+    disabled_at: null,
+    created_by_admin_id: ADMIN.id,
+    updated_by_admin_id: ADMIN.id,
+    created_at: mysqlDateTime(new Date()),
+    updated_at: mysqlDateTime(new Date()),
+  });
+  apiCredentialService.__resetForTests();
+
   // the app's API client becomes the sample client (no network is ever used)
   const sampleApi = new FakeApi(scn);
   sampleApi.getFixturesByDate = async () => ({ response: apiFixtureItems(scn), results: scn.fixtures.length, paging: { current: 1, total: 1 } });
@@ -471,7 +525,25 @@ async function main() {
       paging: { current: 1, total: 1 },
     }),
     getInjuriesByFixture: () => sampleApi.getInjuriesByFixture(),
+    // Test Connection / Refresh in the console hit the sample verdict instead of
+    // leaving the sandbox; the wording says so.
+    probeCredentials: async () => ({
+      ok: true,
+      state: 'CONNECTED',
+      label: 'Connection successful',
+      endpoint: '/status',
+      httpStatus: 200,
+      latencyMs: 118,
+      message: 'Sample verdict — the credential was accepted (42/7500 requests used today). No request left the sandbox.',
+      quota: { current: 42, limitDay: 7500 },
+      plan: { name: 'Pro (preview sample)', active: true, end: '2099-01-01' },
+      errors: null,
+      preview: true,
+    }),
   });
+  // Test Connection builds its own client, so point that factory at the sample
+  // client too — otherwise the button would try to reach the internet.
+  apiCredentialService.setClientFactory(() => apiFootball);
 
   // generate the sample day through the real pipeline
   const started = await ticketService.startGeneration({ adminId: ADMIN.id, source: 'admin_ui', date: ticketDate, api: apiFootball });

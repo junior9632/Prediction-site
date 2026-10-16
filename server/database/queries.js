@@ -1145,6 +1145,199 @@ async function listUserAuditLogs(userId, limit = 50) {
 }
 
 /* =====================================================================
+ * API CREDENTIALS (admin API Management)
+ *
+ * The API key is stored as an AES-256-GCM ciphertext only (see
+ * utils/credentialVault.js). Nothing here ever writes, selects into a
+ * response or logs a plaintext credential: `key_ciphertext`, `key_iv` and
+ * `key_tag` are the only forms of the secret that exist in the database.
+ * ===================================================================*/
+
+async function getApiCredential(provider) {
+  return db.queryOne(`SELECT * FROM api_credentials WHERE provider = ?`, [provider]);
+}
+
+async function getActiveApiCredential() {
+  return db.queryOne(
+    `SELECT * FROM api_credentials WHERE is_active = 1 ORDER BY activated_at DESC, id DESC LIMIT 1`
+  );
+}
+
+async function listApiCredentials() {
+  return db.query(`SELECT * FROM api_credentials ORDER BY provider ASC`);
+}
+
+/**
+ * Insert or replace the credential of one provider.
+ * The plaintext key is NOT part of this payload — only its ciphertext and the
+ * masked fragments used by the dashboard.
+ */
+async function upsertApiCredential(c) {
+  return db.execute(
+    `INSERT INTO api_credentials
+        (provider, host, key_ciphertext, key_iv, key_tag, key_algorithm, key_id,
+         key_last4, key_length, key_fingerprint, connection_state, connection_message,
+         rate_limit_per_minute, created_by_admin_id, updated_by_admin_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+        host = VALUES(host),
+        key_ciphertext = VALUES(key_ciphertext),
+        key_iv = VALUES(key_iv),
+        key_tag = VALUES(key_tag),
+        key_algorithm = VALUES(key_algorithm),
+        key_id = VALUES(key_id),
+        key_last4 = VALUES(key_last4),
+        key_length = VALUES(key_length),
+        key_fingerprint = VALUES(key_fingerprint),
+        connection_state = VALUES(connection_state),
+        connection_message = VALUES(connection_message),
+        rate_limit_per_minute = VALUES(rate_limit_per_minute),
+        updated_by_admin_id = VALUES(updated_by_admin_id)`,
+    [
+      c.provider,
+      c.host,
+      c.keyCiphertext,
+      c.keyIv,
+      c.keyTag,
+      c.keyAlgorithm || 'aes-256-gcm',
+      c.keyId || null,
+      c.keyLast4 || null,
+      c.keyLength ?? null,
+      c.keyFingerprint || null,
+      c.connectionState || 'NOT_TESTED',
+      c.connectionMessage || null,
+      c.rateLimitPerMinute ?? null,
+      c.createdByAdminId ?? null,
+      c.updatedByAdminId ?? null,
+    ]
+  );
+}
+
+/** Diagnostic fields only — never the ciphertext. */
+async function updateApiCredentialState(provider, patch) {
+  const fields = [];
+  const params = [];
+  const push = (column, value) => {
+    fields.push(`${column} = ?`);
+    params.push(value);
+  };
+
+  if (patch.host !== undefined) push('host', patch.host);
+  if (patch.connectionState !== undefined) push('connection_state', patch.connectionState);
+  if (patch.connectionMessage !== undefined) push('connection_message', patch.connectionMessage);
+  if (patch.lastTestAt !== undefined) push('last_test_at', patch.lastTestAt ? dt(patch.lastTestAt) : null);
+  if (patch.lastTestLatencyMs !== undefined) push('last_test_latency_ms', patch.lastTestLatencyMs ?? null);
+  if (patch.lastSuccessAt !== undefined) push('last_success_at', patch.lastSuccessAt ? dt(patch.lastSuccessAt) : null);
+  if (patch.lastRequestAt !== undefined) push('last_request_at', patch.lastRequestAt ? dt(patch.lastRequestAt) : null);
+  if (patch.lastErrorAt !== undefined) push('last_error_at', patch.lastErrorAt ? dt(patch.lastErrorAt) : null);
+  if (patch.lastErrorCode !== undefined) push('last_error_code', patch.lastErrorCode ?? null);
+  if (patch.lastErrorMessage !== undefined) push('last_error_message', patch.lastErrorMessage ?? null);
+  if (patch.quotaUsedToday !== undefined) push('quota_used_today', patch.quotaUsedToday ?? null);
+  if (patch.quotaLimitDay !== undefined) push('quota_limit_day', patch.quotaLimitDay ?? null);
+  if (patch.quotaCheckedAt !== undefined) push('quota_checked_at', patch.quotaCheckedAt ? dt(patch.quotaCheckedAt) : null);
+  if (patch.rateLimitPerMinute !== undefined) push('rate_limit_per_minute', patch.rateLimitPerMinute ?? null);
+  if (patch.planName !== undefined) push('plan_name', patch.planName ?? null);
+  if (patch.updatedByAdminId !== undefined) push('updated_by_admin_id', patch.updatedByAdminId ?? null);
+
+  if (!fields.length) return { affectedRows: 0 };
+  params.push(provider);
+  return db.execute(`UPDATE api_credentials SET ${fields.join(', ')} WHERE provider = ?`, params);
+}
+
+/**
+ * Activate exactly one provider (and deactivate the others) in one
+ * transaction: the platform must never have two active credential rows, and a
+ * half-applied switch would leave the sync jobs without a usable credential.
+ */
+async function activateApiProvider(provider, adminId = null) {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      `UPDATE api_credentials
+          SET is_active = 0,
+              disabled_at = CASE WHEN is_active = 1 THEN NOW() ELSE disabled_at END,
+              updated_by_admin_id = COALESCE(?, updated_by_admin_id)
+        WHERE is_active = 1 AND provider <> ?`,
+      [adminId, provider]
+    );
+    const result = await tx.execute(
+      `UPDATE api_credentials
+          SET is_active = 1, activated_at = NOW(), disabled_at = NULL, updated_by_admin_id = ?
+        WHERE provider = ?`,
+      [adminId, provider]
+    );
+    return { activated: result.affectedRows > 0, provider };
+  });
+}
+
+/** Stop using the stored credential (it is kept, encrypted, for re-activation). */
+async function deactivateApiProvider(provider, adminId = null) {
+  return db.execute(
+    `UPDATE api_credentials
+        SET is_active = 0, disabled_at = NOW(), connection_state = 'DISABLED', updated_by_admin_id = ?
+      WHERE provider = ?`,
+    [adminId, provider]
+  );
+}
+
+async function insertApiConnectionEvent(event) {
+  const res = await db.execute(
+    `INSERT INTO api_connection_events
+        (provider, event, outcome, http_status, endpoint, latency_ms, message, context_json, admin_id, ip_address)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      event.provider,
+      event.event,
+      event.outcome,
+      event.httpStatus ?? null,
+      event.endpoint || null,
+      event.latencyMs ?? null,
+      event.message ? String(event.message).slice(0, 500) : null,
+      event.context ? JSON.stringify(event.context) : null,
+      event.adminId ?? null,
+      event.ipAddress || null,
+    ]
+  );
+  return res.insertId;
+}
+
+/** Recent connection events (newest first); `errorsOnly` keeps failures. */
+async function listApiConnectionEvents({ provider = null, limit = 20, errorsOnly = false } = {}) {
+  const params = [];
+  // `where` is built from static fragments only — every value is bound with ?.
+  let where = '';
+  if (provider) {
+    where += `${where ? ' AND ' : ' WHERE '}provider = ?`;
+    params.push(provider);
+  }
+  if (errorsOnly) where += `${where ? ' AND ' : ' WHERE '}outcome NOT IN ('SUCCESS', 'CONNECTED')`;
+  return db.query(
+    `SELECT * FROM api_connection_events${where} ORDER BY id DESC${db.limitClause(limit)}`,
+    params
+  );
+}
+
+/**
+ * Last SUCCESSFUL sync run per job, read from the existing api_sync_logs table.
+ * Nothing is invented: a row only exists after a job really finished.
+ */
+async function getLastSuccessfulSyncs(jobs = ['fixtures', 'odds', 'results']) {
+  const placeholders = jobs.map(() => '?').join(', ');
+  const rows = await db.query(
+    `SELECT job, MAX(finished_at) AS last_success_at, COUNT(*) AS runs
+       FROM api_sync_logs
+      WHERE status = 'SUCCESS' AND job IN (${placeholders})
+      GROUP BY job`,
+    jobs
+  );
+  const out = {};
+  for (const job of jobs) out[job] = { lastSuccessAt: null, runs: 0 };
+  for (const row of rows || []) {
+    out[row.job] = { lastSuccessAt: row.last_success_at || null, runs: Number(row.runs) || 0 };
+  }
+  return out;
+}
+
+/* =====================================================================
  * ANALYTICS
  * ===================================================================*/
 
@@ -1261,6 +1454,9 @@ module.exports = {
   getUserByLogin, getUserById, createUser, recordUserLoginSuccess, recordUserLoginFailure, updateUserPassword,
   // user management (admin approval workflow)
   listUsers, countUsers, getUserSummary, setUserStatus, insertUserAuditLog, applyUserStatusDecision, listUserAuditLogs,
+  // api credentials (admin API Management) — ciphertext only, never plaintext
+  getApiCredential, getActiveApiCredential, listApiCredentials, upsertApiCredential, updateApiCredentialState,
+  activateApiProvider, deactivateApiProvider, insertApiConnectionEvent, listApiConnectionEvents, getLastSuccessfulSyncs,
   // analytics
   getTicketAnalytics, getSelectionAnalytics, getOver15OutcomeCounts,
   getMonthlyTicketStats, getSettledTicketSequence,
