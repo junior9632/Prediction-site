@@ -511,7 +511,7 @@ async function persistValidatedOdds({ fixtureId, verified, rejected, oddsUpdated
  */
 async function fetchValidateAndStoreForFixture(fixture, options = {}) {
   const api = options.api || defaultApi;
-  const now = options.now ? time.toDate(options.now) : new Date();
+  const now = options.now ? (time.toDate(options.now) || new Date()) : new Date();
   const settings = options.settings || {};
 
   const payloadResult = await api.getOddsByFixture(fixture.id);
@@ -560,7 +560,7 @@ async function fetchValidateAndStoreForFixture(fixture, options = {}) {
 async function syncOddsForDate(date, options = {}) {
   const api = options.api || defaultApi;
   const settings = options.settings || {};
-  const now = options.now ? time.toDate(options.now) : new Date();
+  const now = options.now ? (time.toDate(options.now) || new Date()) : new Date();
   const maxPages = options.maxPages || 12;
 
   const fixtures = options.fixtures || (await db.getFixturesBetween(time.startOfUtcDay(date), time.addDays(time.startOfUtcDay(date), 1)));
@@ -577,7 +577,16 @@ async function syncOddsForDate(date, options = {}) {
     try {
       data = await api.getOddsByDate(time.toMysqlDate(date), page);
     } catch (err) {
-      if (err instanceof ApiFootballUnavailable) throw err;
+      // A page beyond the last one may be rejected by the provider instead of
+      // returning an empty page. Treat that as "no more pages" rather than
+      // failing the whole date, but only after the first page has succeeded.
+      if (page > 1 && err instanceof ApiFootballUnavailable) {
+        const st = Number((err.details || {}).status);
+        if (!Number.isFinite(st) || (st >= 400 && st < 500)) {
+          log.warn('odds sync stopped at an unavailable page', { date: time.toMysqlDate(date), page, message: err.message });
+          break;
+        }
+      }
       throw err;
     }
     endpointCalls += 1;
@@ -633,7 +642,7 @@ async function syncOddsForDate(date, options = {}) {
 async function refreshVerifiedPrices(fixtureIds, options = {}) {
   const api = options.api || defaultApi;
   const settings = options.settings || {};
-  const now = options.now ? time.toDate(options.now) : new Date();
+  const now = options.now ? (time.toDate(options.now) || new Date()) : new Date();
   const out = new Map();
   const failures = [];
 

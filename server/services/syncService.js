@@ -183,13 +183,21 @@ async function syncOdds(options = {}) {
       } catch (err) {
         // A single date being rejected (e.g. no odds window for it) must not
         // throw away the dates that do work. Credential problems, quota and
-        // outages still abort the whole job.
+        // outages still abort the whole job. Any non-auth 4xx rejection is
+        // treated as specific to that date, even when the provider (or an older
+        // client) omits the structured `reason` field.
         const d = (err && err.details) || {};
+        const status = Number(d.status);
+        const authRejected = status === 401 || status === 403;
         const dateOnlyRejection =
-          err instanceof ApiFootballUnavailable && d.reason === 'REQUEST_REJECTED' && Number(d.status) >= 400 && Number(d.status) < 500;
+          err instanceof ApiFootballUnavailable &&
+          !authRejected &&
+          Number.isFinite(status) &&
+          status >= 400 &&
+          status < 500;
         if (!dateOnlyRejection) throw err;
         log.warn('odds sync skipped a date rejected by the provider', { date: time.toMysqlDate(date), message: err.message });
-        skipped.push({ date: time.toMysqlDate(date), error: err.message });
+        skipped.push({ date: time.toMysqlDate(date), error: err.message, details: d });
         continue;
       }
       totalRows += res.rowsWritten;
@@ -197,7 +205,16 @@ async function syncOdds(options = {}) {
       perDate.push(res);
     }
     if (!perDate.length && skipped.length) {
-      throw new ApiFootballUnavailable(skipped[0].error, { reason: 'REQUEST_REJECTED', skipped });
+      const first = skipped[0] || {};
+      const firstDetails = first.details || {};
+      throw new ApiFootballUnavailable(first.error || 'API-Football request rejected', {
+        reason: 'REQUEST_REJECTED',
+        status: firstDetails.status || null,
+        endpoint: firstDetails.endpoint || null,
+        errors: firstDetails.errors || null,
+        hint: firstDetails.hint || null,
+        skipped,
+      });
     }
     await logService.finishSync(handle, {
       status: 'SUCCESS',
