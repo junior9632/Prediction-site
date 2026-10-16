@@ -347,15 +347,20 @@ const sync = asyncHandler(async (req, res) => {
 /** GET /api/admin/api-status */
 const apiStatus = asyncHandler(async (_req, res) => {
   const status = await syncService.getApiStatus();
+  // The client is the single source of truth for "which credential is live":
+  // it holds the database-managed key once an administrator activates one, and
+  // otherwise the environment key. Only a masked form is ever returned.
+  const activeKey = apiFootball.key || config.apiFootball.key || '';
   res.json({
     ok: true,
     data: {
       ...status,
       // the key itself is never returned
-      keyPreview: config.apiFootball.key ? `${'*'.repeat(8)}${config.apiFootball.key.slice(-4)}` : null,
-      keyConfigured: Boolean(config.apiFootball.key),
+      keyPreview: activeKey ? `${'*'.repeat(8)}${activeKey.slice(-4)}` : null,
+      keyConfigured: Boolean(activeKey),
+      credentialSource: apiFootball.credentialSource || (activeKey ? 'environment' : 'none'),
       baseUrl: apiFootball.baseUrl,
-      ratePerMinute: config.apiFootball.ratePerMinute,
+      ratePerMinute: apiFootball.ratePerMinute,
     },
   });
 });

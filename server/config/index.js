@@ -83,6 +83,26 @@ const config = {
     isRapidApi: apiFootballHost.includes('rapidapi.com'),
   },
 
+  /**
+   * Admin-managed API credentials (the API Management screen).
+   *
+   * The master key for AES-256-GCM at rest comes from the server environment
+   * ONLY (`API_CREDENTIALS_ENCRYPTION_KEY`) and is never stored in the
+   * database. When it is missing, saving a credential fails safely with an
+   * explanation instead of storing anything unencrypted — see
+   * utils/credentialVault.js.
+   */
+  apiCredentials: {
+    encryptionKey: str('API_CREDENTIALS_ENCRYPTION_KEY', ''),
+    encryptionKeyConfigured: Boolean(str('API_CREDENTIALS_ENCRYPTION_KEY', '')),
+    /** Bound for the single request a "Test Connection" performs. */
+    testTimeoutMs: int('API_CREDENTIALS_TEST_TIMEOUT_MS', int('API_FOOTBALL_TIMEOUT_MS', 15000)),
+    /** Hard floor between two credential tests from this process. */
+    testMinIntervalMs: int('API_CREDENTIALS_TEST_MIN_INTERVAL_MS', 3000),
+    /** A repeated identical test inside this window reuses the verdict. */
+    testReuseMs: int('API_CREDENTIALS_TEST_REUSE_MS', 60000),
+  },
+
   auth: {
     jwtSecret: str('JWT_SECRET', ''),
     jwtExpiresIn: str('JWT_EXPIRES_IN', '8h'),

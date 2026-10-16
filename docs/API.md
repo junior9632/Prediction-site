@@ -329,6 +329,24 @@ request. Rate limited separately from the public API.
 | `GET /system-logs?level=&channel=&event=&page=&limit=` | `{page, limit, total, items}` audit/error trail |
 | `GET /admins` | superadmin only: administrator accounts |
 
+### API Management (`/api/admin/api-management*`) — provider credentials
+
+The admin **API Management** screen (Admin Console → API Management). All routes sit behind the
+same `adminGuard` chain (`requireAdmin` + `requireActiveAdmin` + `requireCsrf`); the mutations
+answer `403 CSRF_MISSING` / `403 CSRF_INVALID` for a cookie session without the double-submit
+token. **No response ever contains a full API key** — only the masked form `********abcd` — and
+none of these routes can create, publish or replace a prediction ticket.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api-management` (alias `GET /api-management/status`) | `{provider, providers[], activeProviderId, credentialSource, credential {provider, host, maskedKey, keyLength, isActive, algorithm, savedAt, updatedAt, location}, environment {keyConfigured, host, maskedKey, isActive}, connection {state, label, message, testedAt, latencyMs, lastSuccessAt, lastErrorAt, lastErrorCode, lastErrorMessage, host}, lastRequestAt, lastSuccessfulSyncs {fixtures, odds, results {lastSuccessAt, runs}}, quota {current, limitDay, checkedAt, source}\|null, rateLimits, plan, encryption {configured, algorithm, keyEnvVar, message}, client, recentEvents[], recentErrors[], predictionRules, serverTime}`. `credentialSource` is `database`, `environment` or `none`. On a live database that has not received migration 003 the endpoint still answers `200` with `databaseManaged: false` and `degradedReason: SCHEMA_OUT_OF_DATE` instead of a `500`, and the environment credential keeps driving the syncs |
+| `GET /api-management/providers` | the allowlisted provider registry: `{providers[], defaultProviderId}`. Only `implemented: true` providers can be configured; the others are declared for extension and carry **no** host |
+| `GET /api-management/diagnostics?probe=1` | safe quota/connection diagnostics. `probe=1` performs one real `/status` call (skipped — `liveProbe.skipped: true` — when no usable credential exists, and repeated inside the reuse window with `liveProbe.reused: true` instead of a second upstream call; a changed credential is always probed for real) and returns `{quota, rateLimits, connection, liveProbe, recentErrors, encryption}` |
+| `PUT /api-management/credentials` | `{provider, key, host?}` → stores the key **AES-256-GCM encrypted** (`api_credentials`). Refuses `400 HOST_NOT_ALLOWED` (SSRF guard), `400 UNKNOWN_PROVIDER`, `400 PROVIDER_NOT_IMPLEMENTED`, `503 ENCRYPTION_KEY_MISSING` (nothing is written). Saving never activates the provider and never reports it as connected |
+| `POST /api-management/test` | `{provider, key?, host?}` → **one real request** to the provider's official `/status` endpoint. Returns `{ok, state, label, message, httpStatus, latencyMs, quota, plan, keyOrigin, reused, testedAt}` with `state` ∈ `CONNECTED`, `INVALID_KEY`, `QUOTA_EXCEEDED`, `RATE_LIMITED`, `NETWORK_ERROR`, `TIMEOUT`, `PROVIDER_UNAVAILABLE`, `CONFIG_INCOMPLETE`. `429 TEST_THROTTLED` when called again inside the floor window |
+| `POST /api-management/activate` | `{provider}` → the server starts using the stored (encrypted) credential; `400 NOTHING_TO_ACTIVATE` when nothing was saved, `500 CREDENTIAL_UNREADABLE` when the stored key cannot be decrypted |
+| `POST /api-management/disable` | `{provider}` → stops using the stored credential (it stays encrypted for re-activation) and falls back to the environment configuration |
+
 ### User management (`/api/admin/users*`) — registration approval
 
 All routes sit behind the same `adminGuard` chain (`requireAdmin` + `requireActiveAdmin` +

@@ -22,7 +22,10 @@ administrator** and settled from real full-time scores.
 >    only the display is rounded to 2 decimals.
 > 8. **The browser is never trusted.** Odds, confidence, totals and results sent by a client are
 >    ignored; every critical calculation happens on the server.
-> 9. **The API key never reaches the frontend.** It lives in the server environment only.
+> 9. **The API key never reaches the frontend.** It lives in the server environment
+>    (`API_FOOTBALL_KEY`) or, when an administrator saves one on the **API Management** screen,
+>    in the database as an **AES-256-GCM ciphertext** — never as plaintext, never in a response,
+>    never in a log line, never in the browser.
 
 ---
 
@@ -35,7 +38,7 @@ administrator** and settled from real full-time scores.
 | Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
 | Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
 | Hosting | cPanel "Setup Node.js App" + MySQL + cron |
-| Tests | `node:test` (built in) — 133 tests, no test dependencies |
+| Tests | `node:test` (built in) — 225 tests, no test dependencies |
 
 No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
 `package.json` contains only what the application actually imports.
@@ -46,7 +49,8 @@ No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python 
 
 ```bash
 npm install                 # 100% pure-JS dependencies, no native builds
-cp .env.example .env        # then edit DB_*, API_FOOTBALL_KEY, JWT_SECRET, ADMIN_*
+cp .env.example .env        # then edit DB_*, API_FOOTBALL_KEY, JWT_SECRET, ADMIN_*,
+                            # API_CREDENTIALS_ENCRYPTION_KEY (for the admin API Management screen)
 npm run db:setup            # creates the schema, seeds settings + the first administrator
 npm start                   # http://localhost:3000
 ```
@@ -56,7 +60,7 @@ Useful commands:
 ```bash
 npm run dev                 # node --watch server.js
 npm run db:migrate -- --status   # applied vs pending migrations (read-only)
-npm test                    # 185 unit + service + HTTP acceptance tests (no DB needed)
+npm test                    # 225 unit + service + HTTP acceptance tests (no DB needed)
 npm run test:sql            # static check: schema.sql vs every query in queries.js
 npm run ticket:generate -- --admin=admin --confirm
 npm run sync:all            # fixtures + odds + results (never creates a ticket)
@@ -162,10 +166,12 @@ server/
   routes/                     health, fixtures, odds, predictions, tickets,
                               analytics, auth, dashboard, admin
   controllers/                request validation + response shaping only
-  services/                   apiFootball, fixtureService, oddsService, statsService,
-                              contextService, syncService, resultService, settingsService,
-                              logService, analyticsService, ticketService, notifyService,
-                              activityService (member Activity feed)
+  services/                   apiFootball (client + real credential probe), apiProviders
+                              (allowlisted provider registry), apiCredentialService
+                              (admin-managed encrypted credentials), fixtureService,
+                              oddsService, statsService, contextService, syncService,
+                              resultService, settingsService, logService, analyticsService,
+                              ticketService, notifyService, activityService (member Activity feed)
   prediction/                 over15, confidence, risk, quality, correlation,
                               ticketBuilder, pipeline
   database/                   schema.sql (baseline), migrations/ (versioned, applied
@@ -173,8 +179,9 @@ server/
                               queries.js (all SQL)
   middleware/                 auth, adminAuth (+CSRF), account (active-account guard),
                               rateLimit, requestLogger, errorHandler
-  utils/                      decimal (exact odds maths), numbers, time, logger,
-                              errors, asyncHandler, validate, fixtureStatus
+  utils/                      decimal (exact odds maths), credentialVault (AES-256-GCM
+                              credential encryption), numbers, time, logger, errors,
+                              asyncHandler, validate, fixtureStatus
   jobs/scheduler.js           optional internal sync scheduler (never generates tickets)
 scripts/                      db-migrate, db-seed, cron-sync-*, cron-health-check,
                               generate-ticket-cli, validate-sql, check-no-secrets,
@@ -286,6 +293,35 @@ product rules cannot be weakened from the dashboard. The odds window itself is b
 
 ---
 
+## API Management (admin console)
+
+The admin console has an **API Management** screen (`/admin#api-management`) that makes the
+API-Football credential an admin task instead of a deployment edit:
+
+* enter / replace the API key, choose one of the **allowlisted** hosts (the official
+  `v3.football.api-sports.io` direct host or the RapidAPI host) and save it encrypted
+  (AES-256-GCM, key from `API_CREDENTIALS_ENCRYPTION_KEY`);
+* **Test connection** performs one real server-side request to the provider's `/status`
+  endpoint and reports exactly what came back — connected, invalid key, quota exceeded,
+  rate limited, network failure, timeout, provider unavailable or incomplete configuration.
+  A saved key is never reported as "connected" on its own;
+* **Activate / disable** switches the platform between the stored credential and the existing
+  environment configuration. While nothing is active the old `API_FOOTBALL_KEY` setup keeps
+  working untouched;
+* the screen shows the masked key (`********abcd`), connection state, last successful
+  connection, last API request, last successful fixtures/odds/results sync, the provider's
+  **real** quota when it reports one, rate limits and the recent API error history;
+* the whole screen can be reviewed without a real key: `npm run preview:ui` seeds a fictional,
+  encrypted sample credential and a sample `/status` verdict into the in-memory preview harness
+  (nothing leaves the sandbox and every value is labelled sample data).
+
+Saving, testing or switching a credential **never** generates, publishes or replaces a
+prediction ticket — the market stays Over 1.5 Goals, combined odds 2.00–4.00, minimum
+confidence 72, maximum risk 35, minimum data quality 60, at most 6 selections, odds freshness
+90 minutes, and generation stays manual.
+
+---
+
 ## Configuration
 
 Every variable is documented in [`.env.example`](.env.example). The important ones:
@@ -295,6 +331,8 @@ Every variable is documented in [`.env.example`](.env.example). The important on
 | `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` | MySQL connection (cPanel "MySQL Databases") |
 | `API_FOOTBALL_KEY` | API-Football Pro key — **server side only** |
 | `API_FOOTBALL_HOST` | `v3.football.api-sports.io` (or the RapidAPI host) |
+| `API_CREDENTIALS_ENCRYPTION_KEY` | 64 hex characters — AES-256-GCM master key for credentials saved from the admin **API Management** screen. Required before an administrator can save a key; without it, saving fails safely and stores nothing |
+| `API_CREDENTIALS_TEST_TIMEOUT_MS`, `API_CREDENTIALS_TEST_MIN_INTERVAL_MS`, `API_CREDENTIALS_TEST_REUSE_MS` | bounds for the *Test Connection* action (15s timeout, 3s floor between real tests, 60s verdict reuse) |
 | `JWT_SECRET` | 64+ random characters; signs admin sessions |
 | `APP_URL`, `CORS_ORIGINS` | public origin, used for CORS and secure cookies |
 | `TRUST_PROXY` | `1` on cPanel (the app sits behind a proxy) |
@@ -336,7 +374,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 133 tests, ~6s, no database or network required
+npm test          # 225 tests, ~16s, no database or network required
 ```
 
 | File | Covers |
@@ -418,7 +456,7 @@ Two operator commands answer "why is the deployed site broken?" without guessing
 
 | Command | What it proves |
 | --- | --- |
-| `npm run doctor` | Node version, `NODE_ENV`, every required environment variable (values masked), a real MySQL connection using the **same** credentials as the app — with the MySQL error code translated into the cause *and* the cPanel screen that fixes it — the schema (all 17 tables), the seed (settings + an active administrator), and the running site's own answers (`/api/health`, `/api/meta`, and the guest boundary on `/api/dashboard/activity`, which must be 401). `--json` for machines, `--skip-site` for the database half only. Exit code 1 on any problem, so it can gate a deploy. |
+| `npm run doctor` | Node version, `NODE_ENV`, every required environment variable (values masked), a real MySQL connection using the **same** credentials as the app — with the MySQL error code translated into the cause *and* the cPanel screen that fixes it — the schema (all 20 tables), the seed (settings + an active administrator), and the running site's own answers (`/api/health`, `/api/meta`, and the guest boundary on `/api/dashboard/activity`, which must be 401). `--json` for machines, `--skip-site` for the database half only. Exit code 1 on any problem, so it can gate a deploy. |
 | `npm run verify:access -- --member=user:pw --admin=admin:pw` | The guest/member/admin boundary against a **live** site: guest `401` with no payload and a redirect on `/dashboard`, the member feed scoped to that account, the console still admin-only, and `/admin/login` skipping itself for a live session. Credentials are used only for the sign-in request — nothing is written to disk. Exit code 1 on any failure. |
 
 ---

@@ -58,9 +58,15 @@ running the tests.
    **phpMyAdmin**
 
    Open the database → **Import** → choose `server/database/schema.sql` → Go.
-   17 tables are created (`users`, `admins`, `leagues`, `teams`, `fixtures`, `bookmakers`,
+   20 tables are created (`users`, `admins`, `leagues`, `teams`, `fixtures`, `bookmakers`,
    `odds`, `predictions`, `prediction_scores`, `tickets`, `ticket_selections`, `results`,
-   `team_form`, `settings`, `api_sync_logs`, `generation_logs`, `system_logs`).
+   `team_form`, `settings`, `api_sync_logs`, `generation_logs`, `system_logs`,
+   `api_credentials`, `api_connection_events`).
+
+   `api_credentials` holds the admin-managed API key (AES-256-GCM **ciphertext** only —
+   see section 9c) and `api_connection_events` the connection/error history shown on the
+   API Management screen. A live database that was created before this feature simply runs
+   migration `003-api-credential-management.sql` (section 9c) — nothing existing is touched.
 
 ---
 
@@ -107,6 +113,14 @@ API_FOOTBALL_HOST=v3.football.api-sports.io
 API_FOOTBALL_RATE_PER_MINUTE=60
 API_FOOTBALL_TIMEOUT_MS=15000
 API_FOOTBALL_MAX_RETRIES=2
+
+# One-time key for the admin API Management screen (section 9c). AES-256-GCM
+# encryption of API credentials at rest. 64 hex characters.
+# Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+API_CREDENTIALS_ENCRYPTION_KEY=<64 hex characters>
+API_CREDENTIALS_TEST_TIMEOUT_MS=15000
+API_CREDENTIALS_TEST_MIN_INTERVAL_MS=3000
+API_CREDENTIALS_TEST_REUSE_MS=60000
 
 JWT_SECRET=<64+ random chars>  # node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 JWT_EXPIRES_IN=8h
@@ -405,6 +419,81 @@ date` or `SQL error`.
 
 ---
 
+## 9c. API Management — admin-managed API key + `API_CREDENTIALS_ENCRYPTION_KEY` (no Terminal needed)
+
+The admin console's **API Management** page (sidebar → *System* / *API Management*, URL
+`/admin#api-management`) lets an administrator enter, test, save, activate and disable the
+API-Football key **without editing `.env` or any source file**.
+
+### One-time: set the encryption key
+
+Credentials are stored **encrypted at rest** with AES-256-GCM. The encryption key lives only in
+the server environment:
+
+1. Generate a value (locally, or in cPanel → **Terminal** if you have it):
+
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+   ```
+
+2. cPanel → **Setup Node.js App** → your application → **Environment Variables** → add
+   `API_CREDENTIALS_ENCRYPTION_KEY` = the 64 hex characters you generated (or add the same line
+   to `.env` with File Manager → **Edit**).
+3. **Restart** the application.
+
+Without it the platform **fails safely**: *Save configuration* answers
+`503 ENCRYPTION_KEY_MISSING` with the exact variable name, and **nothing is written** — a key is
+never stored unencrypted. `npm run doctor` reports the same state.
+
+> Keep this value: it is the only thing that can decrypt a saved credential. If you change or
+> lose it, re-enter the API key on the API Management screen (`500 CREDENTIAL_UNREADABLE` is
+> exactly that situation).
+
+### One-time: create the credential tables on an existing database
+
+A fresh install gets the tables from `schema.sql`. A **live database created before this feature**
+needs migration `003-api-credential-management.sql`. No Terminal required:
+
+1. **Back up first**: phpMyAdmin → your database → **Export** → Go (format SQL).
+2. phpMyAdmin → your database → **SQL** tab → paste the whole content of
+   `server/database/migrations/003-api-credential-management.sql` → **Go**. It only creates two
+   new tables (`api_credentials`, `api_connection_events`) — no existing table, row or column is
+   touched, so the current setup keeps working.
+3. Record it so the runner does not try to apply it twice. In the same **SQL** tab, run (replace
+   `<SHA256_OF_THE_FILE>` with the checksum printed by
+   `node -e "console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync('server/database/migrations/003-api-credential-management.sql','utf8')).digest('hex'))"`
+   — or simply skip this step when you always deploy with the versioned migration runner in Terminal):
+
+   ```sql
+   INSERT INTO `schema_migrations` (filename, checksum)
+   VALUES ('003-api-credential-management.sql', '<SHA256_OF_THE_FILE>')
+   ON DUPLICATE KEY UPDATE checksum = VALUES(checksum);
+   ```
+
+   (If `schema_migrations` does not exist yet, create it with the DDL in section 9b step C first.)
+4. Alternatively — with Terminal access — the versioned migration runner applies every pending
+   migration in one go (see section 2, `db:migrate`).
+
+### Using the screen
+
+1. Open `/admin#api-management`, pick **API-Football (Pro)** and one of the approved hosts
+   (`v3.football.api-sports.io` is the official direct host; the RapidAPI host is also approved).
+2. Paste the key → **Save configuration**. The response shows only the masked form
+   (`********abcd`); the key is encrypted immediately and never returned by any endpoint.
+3. **Test connection** — one real request to the provider's `/status` endpoint, reported honestly
+   as *Connection successful*, *Invalid API key or unauthorized*, *Daily quota exceeded*,
+   *Rate limit exceeded*, *Network failure*, *Request timed out*, *Provider unavailable* or
+   *Configuration incomplete*. Testing never creates, publishes or replaces a prediction ticket.
+4. **Activate provider** — from then on the server uses the saved credential. Until you activate
+   it, the existing `API_FOOTBALL_KEY` environment configuration stays in force.
+5. **Disconnect / disable provider** — the server falls back to the environment configuration;
+   the stored key stays encrypted for re-activation.
+6. **Refresh API status** — re-reads the status and (when a usable credential exists) performs one
+   cached `/status` probe for the daily quota. Quota is only ever shown when the provider really
+   reported it.
+
+---
+
 ## 10. Troubleshooting
 
 | Symptom | Cause and fix |
@@ -412,7 +501,10 @@ date` or `SQL error`.
 | cPanel shows "Application Error" on start | Look at the app's log. Usually a missing env var (`config.validate()` refuses to boot in production) or a Node version below 18.17 |
 | `/admin/users` answers **Internal server error** / "Could Not Load Users" while the page itself loads | the live database is older than the code — migration `002-user-approval-system.sql` is missing. Read `error.code` at `/api/admin/users/summary`, confirm read-only in phpMyAdmin, back the database up, then paste `002-user-approval-system.sql` into the SQL tab. No Terminal needed — section 9b |
 | `/api/health` returns `503` with `database: "unavailable"` | `DB_HOST/DB_USER/DB_PASSWORD/DB_NAME` are wrong, or the user was not added to the database with ALL PRIVILEGES |
-| `dataSource.configured: false` | `API_FOOTBALL_KEY` is missing or was pasted with surrounding quotes/spaces |
+| `dataSource.configured: false` | `API_FOOTBALL_KEY` is missing or was pasted with surrounding quotes/spaces — or you use the API Management screen and simply have not activated a saved credential yet |
+| API Management: *Save configuration* answers `503 ENCRYPTION_KEY_MISSING` | `API_CREDENTIALS_ENCRYPTION_KEY` is not set on the server (see section 9c). Nothing was written — the key is never stored unencrypted |
+| API Management: `500 CREDENTIAL_UNREADABLE` / *cannot be decrypted* | the encryption key changed (or `.env` was restored from another machine) after the credential was saved. Re-enter and save the API key on the API Management screen |
+| API Management shows a raw `SCHEMA_OUT_OF_DATE` | migration `003-api-credential-management.sql` was not applied to the live database — see section 9c. The site keeps working with the environment credential meanwhile |
 | `dataSource.state: "OPEN"` | the circuit breaker opened after repeated upstream failures; it half-opens automatically after the cooldown. Check quota/plan and `logs/cron.log` |
 | Generation ends `DATA_SOURCE_UNAVAILABLE` | by design when the API is unreachable — no ticket is fabricated. Re-run once the API Status panel shows `OK` |
 | Every day is `NO QUALIFYING TICKET` | inspect the diagnostics: usually odds are stale (`ODDS_FRESHNESS_MINUTES` too tight for your sync frequency), the league list is too small (`sync_leagues`), or form data has not accumulated yet — the engine needs at least `min_form_matches` real matches per team |
@@ -431,7 +523,9 @@ date` or `SQL error`.
 ## 11. Pre-launch checklist
 
 - [ ] Node.js 18.17+ selected, startup file `server.js`, mode `Production`
-- [ ] Schema imported (18 tables), settings + first administrator seeded
+- [ ] Schema imported (20 tables), settings + first administrator seeded
+- [ ] `API_CREDENTIALS_ENCRYPTION_KEY` set (64 hex chars) — required before an administrator can save an API key from the dashboard (section 9c)
+- [ ] Migration `003-api-credential-management.sql` recorded in `schema_migrations` (section 9c)
 - [ ] `.env` filled in, `JWT_SECRET` unique and 64+ characters, `.env` **not** in git
 - [ ] `ADMIN_PASSWORD` changed after first login and removed from the environment
 - [ ] SSL active, `COOKIE_SECURE=1`, `TRUST_PROXY=1`, `CORS_ORIGINS` set to the real domain(s)

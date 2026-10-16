@@ -410,6 +410,14 @@
     analytics: { title: 'Analytics', load: loadAnalytics },
     settings: { title: 'Settings', load: loadSettings },
     api: { title: 'API Status', load: loadApi },
+    // API Management (credential configuration + connection testing) lives in
+    // its own guarded module so the console shell stays readable; the helper
+    // functions below are handed over explicitly, no globals are invented.
+    'api-management': {
+      title: 'API Management',
+      load: () =>
+        window.AdminApiManagement.load({ API, fmt, icons, escapeHtml, card, mini, table, render, emptyState }),
+    },
     logs: { title: 'System Logs', load: loadLogs },
   };
 

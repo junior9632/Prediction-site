@@ -34,6 +34,9 @@ function install(overrides = {}) {
     apiSyncLogs: overrides.apiSyncLogs || [],
     users: overrides.users || [],
     userAuditLogs: overrides.userAuditLogs || [],
+    /* API Management (migration 003): credentials + connection diagnostics */
+    apiCredentials: overrides.apiCredentials || [],
+    apiConnectionEvents: overrides.apiConnectionEvents || [],
     ids: 1000,
   };
 
@@ -213,6 +216,36 @@ function install(overrides = {}) {
     }
     if (/^SELECT COUNT\(\*\) AS total FROM tickets/.test(s)) return [{ total: store.tickets.length }];
     if (/^SELECT MAX\(updated_at\) AS v/.test(s)) return [{ v: nowIso(), total: store.settings.length }];
+    /* ---------------- API credentials (admin API Management) ---------------- */
+    if (/^SELECT \* FROM api_credentials WHERE provider = \?/.test(s)) {
+      return store.apiCredentials.filter((c) => c.provider === params[0]);
+    }
+    if (/^SELECT \* FROM api_credentials WHERE is_active = 1/.test(s)) {
+      return store.apiCredentials
+        .filter((c) => Number(c.is_active) === 1)
+        .sort((a, b) => String(b.activated_at || '').localeCompare(String(a.activated_at || '')) || Number(b.id) - Number(a.id));
+    }
+    if (/^SELECT \* FROM api_credentials ORDER BY provider/.test(s)) {
+      return store.apiCredentials.slice().sort((a, b) => String(a.provider).localeCompare(String(b.provider)));
+    }
+    if (/^SELECT \* FROM api_connection_events/.test(s)) {
+      let rows = store.apiConnectionEvents.slice();
+      if (/WHERE provider = \?/.test(s)) rows = rows.filter((e) => e.provider === params[0]);
+      if (/outcome NOT IN/.test(s)) rows = rows.filter((e) => e.outcome !== 'SUCCESS' && e.outcome !== 'CONNECTED');
+      const limit = Number((s.match(/LIMIT (\d+)/) || [])[1] || 100);
+      return rows.sort((a, b) => Number(b.id) - Number(a.id)).slice(0, limit);
+    }
+    if (/^SELECT job, MAX\(finished_at\) AS last_success_at/.test(s)) {
+      const wanted = params.map(String);
+      const jobs = [...new Set(store.apiSyncLogs.filter((row) => row.status === 'SUCCESS').map((row) => row.job))];
+      return jobs
+        .filter((job) => wanted.includes(job))
+        .map((job) => {
+          const rows = store.apiSyncLogs.filter((row) => row.job === job && row.status === 'SUCCESS');
+          const times = rows.map((row) => row.finished_at).filter(Boolean).sort();
+          return { job, last_success_at: times[times.length - 1] || null, runs: rows.length };
+        });
+    }
     /* ---------------- analytics aggregates ---------------- */
     if (/^SELECT COUNT\(\*\) AS total_tickets/.test(s)) {
       const rows = store.tickets;
@@ -711,6 +744,88 @@ function install(overrides = {}) {
       return { insertId: nextId(), affectedRows: 1 };
     }
     if (/^DELETE FROM prediction_scores/.test(s)) return { affectedRows: 0 };
+    /* ---------------- API credentials (admin API Management) ---------------- */
+    if (/^INSERT INTO api_credentials/.test(s)) {
+      const row = {
+        id: nextId(),
+        provider: params[0], host: params[1],
+        key_ciphertext: params[2], key_iv: params[3], key_tag: params[4],
+        key_algorithm: params[5], key_id: params[6], key_last4: params[7],
+        key_length: params[8], key_fingerprint: params[9],
+        connection_state: params[10], connection_message: params[11],
+        rate_limit_per_minute: params[12], created_by_admin_id: params[13], updated_by_admin_id: params[14],
+        is_active: 0, quota_used_today: null, quota_limit_day: null,
+        created_at: nowIso(), updated_at: nowIso(),
+      };
+      const at = store.apiCredentials.findIndex((c) => c.provider === row.provider);
+      if (at === -1) store.apiCredentials.push(row);
+      else store.apiCredentials[at] = { ...store.apiCredentials[at], ...row, id: store.apiCredentials[at].id, is_active: store.apiCredentials[at].is_active };
+      return { insertId: row.id, affectedRows: 1 };
+    }
+    if (/^UPDATE api_credentials\s+SET is_active = 0, disabled_at/.test(s) && /WHERE provider = \?$/.test(s)) {
+      const row = store.apiCredentials.find((c) => c.provider === params[1]);
+      if (row) {
+        row.is_active = 0;
+        row.disabled_at = nowIso();
+        row.connection_state = 'DISABLED';
+        row.updated_by_admin_id = params[0];
+      }
+      return { affectedRows: row ? 1 : 0 };
+    }
+    if (/^UPDATE api_credentials\s+SET is_active = 1/.test(s)) {
+      const row = store.apiCredentials.find((c) => c.provider === params[1]);
+      if (row) {
+        row.is_active = 1;
+        row.activated_at = nowIso();
+        row.disabled_at = null;
+        row.updated_by_admin_id = params[0];
+      }
+      return { affectedRows: row ? 1 : 0 };
+    }
+    if (/^UPDATE api_credentials\s+SET is_active = 0,/.test(s) && /provider <> \?/.test(s)) {
+      let affected = 0;
+      for (const row of store.apiCredentials) {
+        if (Number(row.is_active) === 1 && row.provider !== params[1]) {
+          row.is_active = 0;
+          row.disabled_at = nowIso();
+          affected += 1;
+        }
+      }
+      return { affectedRows: affected };
+    }
+    if (/^UPDATE api_credentials SET .*WHERE provider = \?/.test(s)) {
+      // generic diagnostic patch (connection state, last test/success/request
+      // times, quota, plan). Fields are `col = ?` pairs in SQL order; a field
+      // with no bound parameter (e.g. `disabled_at = NOW()`) is left alone.
+      const row = store.apiCredentials.find((c) => c.provider === params[params.length - 1]);
+      if (row) {
+        const assignments = (s.match(/SET (.+) WHERE/) || [null, ''])[1]
+          .split(',')
+          .map((f) => f.trim());
+        let bound = 0;
+        for (const assignment of assignments) {
+          const [column, value] = assignment.split(' = ');
+          if (!column || !value) continue;
+          if (value.includes('?')) {
+            if (params[bound] !== undefined && params[bound] !== null) row[column.trim()] = params[bound];
+            bound += 1;
+          } else if (/^NOW\(\)$/i.test(value.trim())) {
+            row[column.trim()] = nowIso();
+          }
+        }
+      }
+      return { affectedRows: row ? 1 : 0 };
+    }
+    if (/^INSERT INTO api_connection_events/.test(s)) {
+      store.apiConnectionEvents.push({
+        id: nextId(),
+        provider: params[0], event: params[1], outcome: params[2],
+        http_status: params[3], endpoint: params[4], latency_ms: params[5],
+        message: params[6], context_json: params[7], admin_id: params[8],
+        ip_address: params[9], created_at: nowIso(),
+      });
+      return { insertId: store.apiConnectionEvents.length, affectedRows: 1 };
+    }
     return { affectedRows: 1 };
   }
 
