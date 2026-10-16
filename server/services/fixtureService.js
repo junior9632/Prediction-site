@@ -168,11 +168,75 @@ async function syncUpcoming(options = {}) {
   return syncRange(now, time.addDays(now, daysAhead), options);
 }
 
-/** Historical finished matches — the data the form/league models are built on. */
+/** Every UTC day from `from` to `to` inclusive. */
+function daysBetween(from, to) {
+  const days = [];
+  let cursor = time.startOfUtcDay(from);
+  const end = time.startOfUtcDay(to);
+  while (cursor.getTime() <= end.getTime()) {
+    days.push(cursor);
+    cursor = time.addDays(cursor, 1);
+  }
+  return days;
+}
+
+/**
+ * The days of the history window whose stored copy is already fresh enough.
+ *
+ * A finished match does not change, so re-requesting 25 days of history on
+ * every cron run spends the plan's daily request budget for nothing. Only the
+ * days that are missing or older than `refreshMinutes` are pulled again.
+ */
+async function freshHistoryDays(days, options = {}) {
+  const refreshMinutes = Number(options.refreshMinutes);
+  if (!Number.isFinite(refreshMinutes) || refreshMinutes <= 0 || !days.length) return new Set();
+  const now = options.nowReference ? time.toDate(options.nowReference) || new Date() : new Date();
+  const cutoff = new Date(now.getTime() - refreshMinutes * 60 * 1000);
+  const rows = await db.getFixtureFetchTimes(days[0], time.addDays(days[days.length - 1], 1));
+  const fresh = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const last = row.last_fetched_at ? new Date(row.last_fetched_at) : null;
+    if (!last || Number.isNaN(last.getTime())) continue;
+    if (last.getTime() >= cutoff.getTime()) fresh.add(String(row.day));
+  }
+  return fresh;
+}
+
+/**
+ * Historical finished matches — the data the form/league models are built on.
+ *
+ * `refreshMinutes` (settings `history_refresh_minutes`) makes this incremental:
+ * day windows fetched more recently than that are skipped, so the history
+ * backfill costs one request per day per window instead of one per day per run.
+ * 0 keeps the original behaviour (every day, every run).
+ */
 async function syncHistory(options = {}) {
   const now = options.now ? time.toDate(options.now) || new Date() : new Date();
   const days = Number.isInteger(options.days) ? options.days : 21;
-  return syncRange(time.addDays(now, -days), time.addDays(now, -1), options);
+  const dates = daysBetween(time.addDays(now, -days), time.addDays(now, -1));
+  if (!dates.length) return { results: [], rowsWritten: 0, endpointCalls: 0, skippedFresh: 0 };
+
+  const fresh = await freshHistoryDays(dates, {
+    refreshMinutes: options.refreshMinutes,
+    nowReference: options.nowReference,
+  });
+  const wanted = dates.filter((date) => !fresh.has(time.toMysqlDate(date)));
+  if (!wanted.length) {
+    log.info('history sync skipped: every day is still fresh', { days: dates.length, refreshMinutes: options.refreshMinutes });
+    return { results: [], rowsWritten: 0, endpointCalls: 0, skippedFresh: dates.length };
+  }
+
+  const results = [];
+  for (const date of wanted) {
+    // eslint-disable-next-line no-await-in-loop
+    results.push(await syncDate(date, { ...options, now }));
+  }
+  return {
+    results,
+    rowsWritten: results.reduce((a, r) => a + r.rowsWritten, 0),
+    endpointCalls: results.length,
+    skippedFresh: dates.length - wanted.length,
+  };
 }
 
 /** Refresh status/score for a specific set of fixtures (max ~15 ids per call). */

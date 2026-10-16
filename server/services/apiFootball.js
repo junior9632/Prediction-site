@@ -57,6 +57,135 @@ const CONNECTION_LABELS = Object.freeze({
 });
 
 /**
+ * WHY AN UPSTREAM CALL FAILED — one stable reason code per cause.
+ *
+ * Every failure of the data source used to be reported as the same sentence
+ * ("DATA SOURCE TEMPORARILY UNAVAILABLE"), which told an operator nothing: a
+ * spent daily quota, a wrong key, a provider outage and a DNS problem all
+ * looked identical. These codes make each cause distinguishable in the sync
+ * log, the admin dashboard, `/api/health` and `npm run api:check`.
+ */
+const UNAVAILABLE_REASONS = Object.freeze({
+  NO_API_KEY: 'NO_API_KEY',
+  CREDENTIAL_UNREADABLE: 'CREDENTIAL_UNREADABLE',
+  CIRCUIT_OPEN: 'CIRCUIT_OPEN',
+  QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
+  QUOTA_RESERVED: 'QUOTA_RESERVED',
+  RATE_LIMITED: 'RATE_LIMITED',
+  AUTH_REJECTED: 'AUTH_REJECTED',
+  REQUEST_REJECTED: 'REQUEST_REJECTED',
+  PROVIDER_UNAVAILABLE: 'PROVIDER_UNAVAILABLE',
+  NETWORK_ERROR: 'NETWORK_ERROR',
+  TIMEOUT: 'TIMEOUT',
+  EMPTY_RESPONSE: 'EMPTY_RESPONSE',
+});
+
+/**
+ * Operator-facing label + the exact fix for each reason. The label is short
+ * enough for a log line, the hint is what the dashboard shows the operator.
+ */
+const REASON_INFO = Object.freeze({
+  NO_API_KEY: {
+    label: 'no API key configured',
+    hint: 'Set API_FOOTBALL_KEY in the application environment (or save and ACTIVATE a key in Admin -> API Management) and restart the Node.js application.',
+  },
+  CREDENTIAL_UNREADABLE: {
+    label: 'the stored API credential cannot be used',
+    hint: 'The saved key cannot be decrypted (usually API_CREDENTIALS_ENCRYPTION_KEY changed). Re-enter and save the key in Admin -> API Management.',
+  },
+  CIRCUIT_OPEN: {
+    label: 'circuit breaker open after repeated upstream failures',
+    hint: 'The client stopped calling a failing provider; it half-opens by itself. Read the reason of the earlier failures (quota, network, provider outage).',
+  },
+  QUOTA_EXCEEDED: {
+    label: 'daily request quota exhausted',
+    hint: 'The plan\'s request budget for the day is spent. Raise the API-Football plan, lower sync_days_ahead / sync_history_days, or space the cron jobs out (see api_quota_reserve). Requests resume automatically after 00:00 UTC.',
+  },
+  QUOTA_RESERVED: {
+    label: 'request budget reserved for manual generation',
+    hint: 'Background sync paused because the remaining daily requests dropped to api_quota_reserve. That reserve exists so an administrator can still generate today\'s ticket.',
+  },
+  RATE_LIMITED: {
+    label: 'per-minute rate limit reached',
+    hint: 'Too many requests per minute for this plan (Free = 10/min). Lower API_FOOTBALL_RATE_PER_MINUTE and lower the cron frequency.',
+  },
+  AUTH_REJECTED: {
+    label: 'the provider rejected the credential',
+    hint: 'Check API_FOOTBALL_KEY and API_FOOTBALL_HOST: an api-sports.io key needs host v3.football.api-sports.io, a RapidAPI key needs the rapidapi.com host.',
+  },
+  REQUEST_REJECTED: {
+    label: 'the provider rejected the request',
+    hint: 'The plan may not include this endpoint/season, or the request parameters are outside the plan\'s range.',
+  },
+  PROVIDER_UNAVAILABLE: {
+    label: 'the provider is temporarily unavailable',
+    hint: 'API-Football answered with a server error. Nothing to change on your side — the client retries by itself.',
+  },
+  NETWORK_ERROR: {
+    label: 'the server could not reach the provider',
+    hint: 'Outbound HTTPS/DNS from the hosting account failed. Check the host\'s network, then run `npm run api:check`.',
+  },
+  TIMEOUT: {
+    label: 'the provider did not answer in time',
+    hint: 'Raise API_FOOTBALL_TIMEOUT_MS, or check the host\'s outbound network.',
+  },
+  EMPTY_RESPONSE: {
+    label: 'the provider returned an empty body',
+    hint: 'The request reached the provider but the answer was unreadable. Usually transient — retry with `npm run api:check`.',
+  },
+});
+
+/** Compare an HTTP status code to a numeric limit handed over as a string. */
+function toNumberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** The moment API-Football resets its daily counter: 00:00 UTC. */
+function nextDailyReset(from = new Date()) {
+  const d = from instanceof Date ? from : new Date(from);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0));
+}
+
+/** The label/hint pair for a reason code (never throws). */
+function reasonInfo(reason) {
+  return REASON_INFO[reason] || { label: 'the data source is unavailable', hint: null };
+}
+
+/**
+ * Turn any `ApiFootballUnavailable` into the structured report the dashboard,
+ * the sync log and the CLI diagnostics all render. Pure — no side effects.
+ *
+ * @returns {{reason: string|null, label: string, hint: string|null, detail: string|null,
+ *   httpStatus: number|null, resetAt: string|null, quota: object|null}}
+ */
+function describeUnavailable(err) {
+  const details = (err && err.details) || {};
+  const reason = details.reason || null;
+  const info = reasonInfo(reason);
+  return {
+    reason,
+    label: info.label,
+    hint: info.hint || null,
+    detail: err && err.message ? String(err.message) : null,
+    httpStatus: Number.isFinite(Number(details.status)) ? Number(details.status) : null,
+    resetAt: details.resetAt || null,
+    quota: details.quota || null,
+  };
+}
+
+/**
+ * One line for the sync log / activity panel: the documented phrase plus WHY
+ * it happened (and until when, when the provider told us).
+ */
+function unavailableMessage(err) {
+  const info = describeUnavailable(err);
+  const when = info.resetAt ? ` (retry after ${info.resetAt})` : '';
+  return `DATA SOURCE TEMPORARILY UNAVAILABLE · ${info.label}${when}`;
+}
+
+/**
  * Classify an API-Football soft error (`errors` object returned with HTTP 200)
  * or an HTTP failure body. The provider phrases these differently depending on
  * plan, so both the wording and the HTTP status are used — and an unrecognised
@@ -150,6 +279,24 @@ class ApiFootballClient {
     this._breaker = { failures: 0, openedAt: 0, cooldownMs: options.cooldownMs || 60 * 1000 };
     this._maxFailures = options.maxFailures || 4;
 
+    // Daily request budget learned from the provider itself: every API-Football
+    // response carries `x-ratelimit-requests-limit` / `-remaining`, and
+    // `/status` reports `requests.current` / `limit_day` (that call is free).
+    // Knowing it lets the platform stop BEFORE the provider starts answering
+    // 429s — the documented behaviour of hammering those limits is a temporary
+    // firewall block of the key/IP.
+    this._quota = {
+      limitDay: toNumberOrNull(options.dailyLimit) || null,
+      current: null,
+      remaining: null,
+      source: null,
+      checkedAt: null,
+      exhaustedUntil: 0,
+      exhaustedReason: null,
+      /** Per-minute budget the provider advertised (Free = 10/min). */
+      perMinuteLimit: null,
+    };
+
     // credential refresh bookkeeping (see setCredentialRefresh)
     this._credentialCheckedAt = 0;
     this._credentialRefresh = null;
@@ -190,9 +337,11 @@ class ApiFootballClient {
     if (credential.ratePerMinute) this.ratePerMinute = credential.ratePerMinute;
 
     if (loginChanged) {
-      // a different key/host must never be served a cached payload
+      // a different key/host must never be served a cached payload, and the
+      // daily budget we learned belongs to the previous credential/plan
       this._cache.clear();
       this._breaker = { ...this._breaker, failures: 0, openedAt: 0 };
+      this._quota = { ...this._quota, current: null, remaining: null, limitDay: null, source: null, exhaustedUntil: 0, exhaustedReason: null };
       log.info('API credential changed', {
         source: this.credentialSource,
         host: this.host,
@@ -240,6 +389,97 @@ class ApiFootballClient {
     return Boolean(this.key);
   }
 
+  /* ------------------------------------------------------------------ */
+  /* daily request budget (quota)                                        */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * What we know about the plan's daily request budget right now.
+   * `known:false` means the provider has not told us yet — nothing is invented.
+   */
+  quotaState() {
+    const exhaustedByProvider = this._quota.remaining !== null && this._quota.remaining <= 0;
+    const blocked = Date.now() < this._quota.exhaustedUntil;
+    return {
+      known: this._quota.limitDay !== null || this._quota.remaining !== null || Boolean(this._quota.exhaustedUntil),
+      limitDay: this._quota.limitDay,
+      current: this._quota.current,
+      remaining: this._quota.remaining,
+      source: this._quota.source,
+      checkedAt: this._quota.checkedAt,
+      exhausted: exhaustedByProvider || blocked,
+      exhaustedReason: this._quota.exhaustedReason,
+      resetsAt: (blocked ? new Date(this._quota.exhaustedUntil) : nextDailyReset()).toISOString(),
+    };
+  }
+
+  /** Read the daily/per-minute budget the provider advertises on every answer. */
+  _learnQuotaFromHeaders(res) {
+    const headers = res && res.headers;
+    if (!headers || typeof headers.get !== 'function') return this.quotaState();
+    const limit = toNumberOrNull(headers.get('x-ratelimit-requests-limit'));
+    const remaining = toNumberOrNull(headers.get('x-ratelimit-requests-remaining'));
+    const perMinute = toNumberOrNull(headers.get('x-ratelimit-limit'));
+    if (limit !== null) this._quota.limitDay = limit;
+    if (remaining !== null) this._quota.remaining = remaining;
+    if (limit !== null && remaining !== null) this._quota.current = Math.max(0, limit - remaining);
+    if (limit !== null || remaining !== null) {
+      this._quota.source = 'response headers';
+      this._quota.checkedAt = new Date().toISOString();
+    }
+    if (perMinute !== null && perMinute > 0) {
+      this._quota.perMinuteLimit = perMinute;
+      // Never exceed the budget the provider itself advertised (Free = 10/min).
+      this.ratePerMinute = Math.min(this.ratePerMinute, perMinute);
+    }
+    if (remaining !== null && remaining <= 0) this._markQuotaExhausted('the provider reported 0 requests left today');
+    return this.quotaState();
+  }
+
+  /** Remember a plan quota we were told about (e.g. by `/status`). */
+  _learnQuotaFromStatus(info) {
+    if (!info || !info.requests) return this.quotaState();
+    const current = toNumberOrNull(info.requests.current);
+    const limitDay = toNumberOrNull(info.requests.limit_day);
+    if (limitDay !== null) this._quota.limitDay = limitDay;
+    if (current !== null) this._quota.current = current;
+    if (limitDay !== null && current !== null) this._quota.remaining = Math.max(0, limitDay - current);
+    this._quota.source = 'provider /status';
+    this._quota.checkedAt = new Date().toISOString();
+    this.stats.quota = {
+      current: current === null ? null : current,
+      limit_day: limitDay,
+      remaining: this._quota.remaining,
+      checkedAt: this._quota.checkedAt,
+      source: this._quota.source,
+    };
+    if (this._quota.remaining !== null && this._quota.remaining <= 0) {
+      this._markQuotaExhausted('the provider reported 0 requests left today');
+    }
+    return this.quotaState();
+  }
+
+  /**
+   * Stop calling the provider until the daily counter resets. This is NOT a
+   * credential/outage failure: the key is fine, the plan is simply out of
+   * budget for today, so it must not open the circuit breaker.
+   */
+  _markQuotaExhausted(reason) {
+    const resetsAt = nextDailyReset();
+    if (Date.now() >= this._quota.exhaustedUntil) {
+      log.warn('daily API request budget exhausted — upstream calls paused until the reset', {
+        reason,
+        resetsAt: resetsAt.toISOString(),
+        limitDay: this._quota.limitDay,
+      });
+    }
+    this._quota.exhaustedUntil = resetsAt.getTime();
+    this._quota.exhaustedReason = reason || 'daily request quota exhausted';
+    this._quota.remaining = 0;
+    this._breaker.failures = 0; // an exhausted plan is not an upstream outage
+    return this.quotaState();
+  }
+
   /** Circuit breaker: are we allowed to call the API right now? */
   isAvailable() {
     if (!this.configured) return false;
@@ -253,15 +493,58 @@ class ApiFootballClient {
   }
 
   breakerState() {
-    if (!this.configured) return { state: 'UNCONFIGURED', available: false };
+    const quota = this.quotaState();
+    if (!this.configured) {
+      // Not having a key is a REASON, not just a state: the operator asked
+      // "why is the data source unavailable", and the answer (plus the fix)
+      // must travel with every surface that renders the state.
+      return {
+        state: 'UNCONFIGURED',
+        available: false,
+        callable: false,
+        reason: UNAVAILABLE_REASONS.NO_API_KEY,
+        label: reasonInfo(UNAVAILABLE_REASONS.NO_API_KEY).label,
+        hint: reasonInfo(UNAVAILABLE_REASONS.NO_API_KEY).hint,
+        resetsAt: null,
+        retryInMs: 0,
+        quota: this.stats.quota,
+        quotaState: quota,
+      };
+    }
+    if (quota.exhausted) {
+      return {
+        state: 'QUOTA_EXHAUSTED',
+        available: false,
+        callable: false,
+        reason: UNAVAILABLE_REASONS.QUOTA_EXCEEDED,
+        label: reasonInfo(UNAVAILABLE_REASONS.QUOTA_EXCEEDED).label,
+        hint: reasonInfo(UNAVAILABLE_REASONS.QUOTA_EXCEEDED).hint,
+        resetsAt: quota.resetsAt,
+        retryInMs: Math.max(0, new Date(quota.resetsAt).getTime() - Date.now()),
+        quota: this.stats.quota,
+        quotaState: quota,
+        consecutiveFailures: this._breaker.failures,
+        calls: this.stats.calls,
+        failures: this.stats.failures,
+        cacheHits: this.stats.cacheHits,
+        lastCallAt: this.stats.lastCallAt,
+        lastError: this.stats.lastError,
+      };
+    }
     return {
       state: this.isAvailable() ? (this._breaker.failures ? 'DEGRADED' : 'OK') : 'OPEN',
       available: this.isAvailable(),
+      callable: this.isAvailable(),
+      reason: this.isAvailable() ? null : UNAVAILABLE_REASONS.CIRCUIT_OPEN,
+      label: this.isAvailable() ? null : reasonInfo(UNAVAILABLE_REASONS.CIRCUIT_OPEN).label,
+      hint: this.isAvailable() ? null : reasonInfo(UNAVAILABLE_REASONS.CIRCUIT_OPEN).hint,
+      resetsAt: null,
       consecutiveFailures: this._breaker.failures,
       retryInMs: this.isAvailable()
         ? 0
         : Math.max(0, this._breaker.cooldownMs - (Date.now() - this._breaker.openedAt)),
       quota: this.stats.quota,
+      quotaState: quota,
       calls: this.stats.calls,
       failures: this.stats.failures,
       cacheHits: this.stats.cacheHits,
@@ -353,16 +636,32 @@ class ApiFootballClient {
 
     if (this.credentialError) {
       throw new ApiFootballUnavailable(this.credentialError.message, {
-        reason: this.credentialError.code || 'CREDENTIAL_UNREADABLE',
+        reason: this.credentialError.code || UNAVAILABLE_REASONS.CREDENTIAL_UNREADABLE,
         host: this.host,
       });
     }
     if (!this.configured) {
-      throw new ApiFootballUnavailable('API-Football key is not configured', { reason: 'NO_API_KEY' });
+      throw new ApiFootballUnavailable('API-Football key is not configured', {
+        reason: UNAVAILABLE_REASONS.NO_API_KEY,
+      });
     }
+
+    // The daily budget guard. `/status` is documented as NOT counting against
+    // the daily quota, so it stays callable — it is the only way an operator
+    // can see the real usage while everything else is paused.
+    const quota = this.quotaState();
+    if (quota.exhausted && endpoint !== '/status') {
+      throw new ApiFootballUnavailable('API-Football daily request quota exhausted', {
+        reason: UNAVAILABLE_REASONS.QUOTA_EXCEEDED,
+        endpoint,
+        resetAt: quota.resetsAt,
+        quota,
+      });
+    }
+
     if (!this.isAvailable()) {
       throw new ApiFootballUnavailable('DATA SOURCE TEMPORARILY UNAVAILABLE', {
-        reason: 'CIRCUIT_OPEN',
+        reason: UNAVAILABLE_REASONS.CIRCUIT_OPEN,
         ...this.breakerState(),
       });
     }
@@ -381,6 +680,7 @@ class ApiFootballClient {
     }
 
     let attempt = 0;
+    let rateLimitRetries = 0;
     let lastError = null;
 
     while (attempt <= retries) {
@@ -407,14 +707,48 @@ class ApiFootballClient {
           body = null;
         }
 
+        // Every API-Football answer carries the remaining daily budget.
+        this._learnQuotaFromHeaders(res);
+
+        // 429: either the per-minute rate limit or a spent daily quota. Retrying
+        // a rate limit more than once (and retrying at all once the day's
+        // budget is gone) is what gets an API key firewalled — so the daily
+        // case stops immediately and the per-minute case backs off once.
+        if (res.status === 429) {
+          const state = this.quotaState();
+          if (state.exhausted) {
+            this._recordFailure('daily request quota exhausted');
+            this._notifyRequest({ ok: false, endpoint, httpStatus: 429, errorCode: UNAVAILABLE_REASONS.QUOTA_EXCEEDED });
+            throw new ApiFootballUnavailable('API-Football daily request quota exhausted', {
+              reason: UNAVAILABLE_REASONS.QUOTA_EXCEEDED,
+              status: 429,
+              endpoint,
+              resetAt: state.resetsAt,
+              quota: state,
+            });
+          }
+          lastError = new ApiFootballUnavailable('API-Football rejected the request: rate limit reached', {
+            reason: UNAVAILABLE_REASONS.RATE_LIMITED,
+            status: 429,
+            endpoint,
+            params,
+            quota: state,
+          });
+          this._recordFailure(lastError.message);
+          this._notifyRequest({ ok: false, endpoint, httpStatus: 429, errorCode: UNAVAILABLE_REASONS.RATE_LIMITED });
+          if (rateLimitRetries >= 1) throw lastError;
+          rateLimitRetries += 1;
+          await this._backoff(attempt, this._retryAfterMs(res));
+          continue;
+        }
+
         // 499/408/425 are transient timeouts on the provider side, not a rejected request
-        if (res.status === 429 || res.status >= 500 || res.status === 499 || res.status === 408 || res.status === 425) {
-          lastError = new ApiFootballUnavailable(
-            res.status === 429
-              ? 'API-Football rejected the request: rate limit reached'
-              : 'API-Football is temporarily unavailable',
-            { status: res.status, endpoint }
-          );
+        if (res.status >= 500 || res.status === 499 || res.status === 408 || res.status === 425) {
+          lastError = new ApiFootballUnavailable('API-Football is temporarily unavailable', {
+            reason: UNAVAILABLE_REASONS.PROVIDER_UNAVAILABLE,
+            status: res.status,
+            endpoint,
+          });
           this._recordFailure(lastError.message);
           this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: 'UPSTREAM_STATUS' });
           await this._backoff(attempt);
@@ -428,7 +762,7 @@ class ApiFootballClient {
           const providerMessage = summarizeProviderError(apiErrors);
           const authRejected = res.status === 401 || res.status === 403;
           const hint = authRejected
-            ? 'check API_FOOTBALL_KEY / API_FOOTBALL_HOST (an api-sports.io key needs host v3.football.api-sports.io; a RapidAPI key needs the rapidapi.com host) and that the plan includes this endpoint'
+            ? reasonInfo(UNAVAILABLE_REASONS.AUTH_REJECTED).hint
             : null;
           throw new ApiFootballUnavailable(
             `API-Football request rejected (HTTP ${res.status} on ${endpoint}${providerMessage ? `: ${providerMessage}` : ''})`,
@@ -437,7 +771,7 @@ class ApiFootballClient {
               endpoint,
               params,
               errors: apiErrors,
-              reason: authRejected ? 'AUTH_REJECTED' : 'REQUEST_REJECTED',
+              reason: authRejected ? UNAVAILABLE_REASONS.AUTH_REJECTED : UNAVAILABLE_REASONS.REQUEST_REJECTED,
               hint,
             }
           );
@@ -445,19 +779,45 @@ class ApiFootballClient {
 
         if (!body) {
           this._recordFailure('empty body');
-          lastError = new ApiFootballUnavailable('API-Football returned an empty response');
+          lastError = new ApiFootballUnavailable('API-Football returned an empty response', {
+            reason: UNAVAILABLE_REASONS.EMPTY_RESPONSE,
+            status: res.status,
+            endpoint,
+          });
           this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: 'EMPTY_BODY' });
           await this._backoff(attempt);
           continue;
         }
 
-        // API-Football reports soft errors with HTTP 200 + `errors`
+        // API-Football reports soft errors with HTTP 200 + `errors`. A spent
+        // daily quota or a per-minute rate limit is a hard stop (the caller
+        // must report it, not treat the empty payload as "no data today");
+        // anything else stays a warning, exactly as before.
         if (body.errors && (Array.isArray(body.errors) ? body.errors.length : Object.keys(body.errors).length)) {
           const errText = Array.isArray(body.errors) ? body.errors.join('; ') : JSON.stringify(body.errors);
-          if (/requests? limit|quota|exceeded/i.test(errText)) {
+          const quotaError = Object.prototype.hasOwnProperty.call(body.errors, 'requests') || /requests? limits?|quota|limit for the day|reached the limit/i.test(errText);
+          const rateError = Object.prototype.hasOwnProperty.call(body.errors, 'rateLimit') || /rate limit|too many requests|per minute/i.test(errText);
+          if (quotaError) {
+            const state = this._markQuotaExhausted(`the provider answered: ${errText}`);
             this._recordFailure(errText);
-            this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: 'QUOTA_EXCEEDED' });
-            throw new ApiFootballUnavailable('API-Football daily quota reached', { errors: body.errors });
+            this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: UNAVAILABLE_REASONS.QUOTA_EXCEEDED });
+            throw new ApiFootballUnavailable('API-Football daily quota reached', {
+              reason: UNAVAILABLE_REASONS.QUOTA_EXCEEDED,
+              endpoint,
+              errors: body.errors,
+              resetAt: state.resetsAt,
+              quota: state,
+            });
+          }
+          if (rateError) {
+            this._recordFailure(errText);
+            this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: UNAVAILABLE_REASONS.RATE_LIMITED });
+            throw new ApiFootballUnavailable('API-Football rate limit reached', {
+              reason: UNAVAILABLE_REASONS.RATE_LIMITED,
+              endpoint,
+              errors: body.errors,
+              quota: this.quotaState(),
+            });
           }
           log.warn('API-Football soft error', { endpoint, errText });
           body.softErrors = body.errors;
@@ -468,10 +828,7 @@ class ApiFootballClient {
 
         this._recordSuccess();
         if (body.response && body.response[0] && body.response[0].requests) {
-          this.stats.quota = {
-            current: body.response[0].requests.current,
-            limit_day: body.response[0].requests.limit_day,
-          };
+          this._learnQuotaFromStatus(body.response[0]);
         }
         const normalised = {
           get: body.get || endpoint,
@@ -489,14 +846,14 @@ class ApiFootballClient {
         lastError = new ApiFootballUnavailable('API-Football network error', {
           endpoint,
           message: err && err.message ? err.message : String(err),
-          reason: timedOut ? 'TIMEOUT' : 'NETWORK_ERROR',
+          reason: timedOut ? UNAVAILABLE_REASONS.TIMEOUT : UNAVAILABLE_REASONS.NETWORK_ERROR,
         });
         this._recordFailure(lastError.details?.message || 'network error');
         this._notifyRequest({
           ok: false,
           endpoint,
           httpStatus: null,
-          errorCode: timedOut ? 'TIMEOUT' : 'NETWORK_ERROR',
+          errorCode: timedOut ? UNAVAILABLE_REASONS.TIMEOUT : UNAVAILABLE_REASONS.NETWORK_ERROR,
         });
         if (attempt > retries) throw lastError;
         await this._backoff(attempt);
@@ -506,6 +863,19 @@ class ApiFootballClient {
     }
 
     throw lastError || new ApiFootballUnavailable('API-Football request failed');
+  }
+
+  /** How long the provider asked us to wait (Retry-After), bounded. */
+  _retryAfterMs(res) {
+    const headers = res && res.headers;
+    if (!headers || typeof headers.get !== 'function') return null;
+    const raw = headers.get('retry-after');
+    if (raw === null || raw === undefined || raw === '') return null;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 15000);
+    const at = new Date(raw);
+    if (!Number.isNaN(at.getTime())) return Math.min(Math.max(0, at.getTime() - Date.now()), 15000);
+    return null;
   }
 
   /**
@@ -541,6 +911,8 @@ class ApiFootballClient {
       ok: false,
       state: CONNECTION_STATES.NOT_TESTED,
       label: CONNECTION_LABELS.NOT_TESTED,
+      reason: null,
+      hint: null,
       endpoint,
       httpStatus: null,
       latencyMs: 0,
@@ -616,17 +988,26 @@ class ApiFootballClient {
       const httpStatus = details.status || null;
 
       let state;
-      if (details.reason === 'TIMEOUT' || (err && err.name === 'AbortError')) state = CONNECTION_STATES.TIMEOUT;
+      const reason = details.reason || null;
+      if (reason === UNAVAILABLE_REASONS.TIMEOUT || (err && err.name === 'AbortError')) state = CONNECTION_STATES.TIMEOUT;
+      else if (reason === UNAVAILABLE_REASONS.QUOTA_EXCEEDED) state = CONNECTION_STATES.QUOTA_EXCEEDED;
+      else if (reason === UNAVAILABLE_REASONS.RATE_LIMITED) state = CONNECTION_STATES.RATE_LIMITED;
+      else if (reason === UNAVAILABLE_REASONS.AUTH_REJECTED) state = CONNECTION_STATES.INVALID_KEY;
+      else if (reason === UNAVAILABLE_REASONS.PROVIDER_UNAVAILABLE) state = CONNECTION_STATES.PROVIDER_UNAVAILABLE;
+      else if (reason === UNAVAILABLE_REASONS.NETWORK_ERROR || reason === UNAVAILABLE_REASONS.EMPTY_RESPONSE) state = CONNECTION_STATES.NETWORK_ERROR;
+      else if (reason === UNAVAILABLE_REASONS.CIRCUIT_OPEN) state = CONNECTION_STATES.PROVIDER_UNAVAILABLE;
+      else if (reason === UNAVAILABLE_REASONS.NO_API_KEY) state = CONNECTION_STATES.CONFIG_INCOMPLETE;
       else if (details.errors || details.status) {
         state = classifyProviderError({ httpStatus, errors: details.errors || null, message: err.message });
-      } else if (details.reason === 'CIRCUIT_OPEN') state = CONNECTION_STATES.PROVIDER_UNAVAILABLE;
-      else if (details.reason === 'NO_API_KEY') state = CONNECTION_STATES.CONFIG_INCOMPLETE;
-      else state = CONNECTION_STATES.NETWORK_ERROR;
+      } else state = CONNECTION_STATES.NETWORK_ERROR;
 
+      const described = describeUnavailable(err);
       return {
         ...base,
         state,
         label: CONNECTION_LABELS[state] || state,
+        reason: described.reason,
+        hint: described.hint,
         httpStatus,
         latencyMs,
         message: err.message || 'The credential test failed',
@@ -635,8 +1016,8 @@ class ApiFootballClient {
     }
   }
 
-  async _backoff(attempt) {
-    const ms = Math.min(15000, 500 * 2 ** Math.max(0, attempt - 1));
+  async _backoff(attempt, waitMs = null) {
+    const ms = Number.isFinite(waitMs) && waitMs > 0 ? waitMs : Math.min(15000, 500 * 2 ** Math.max(0, attempt - 1));
     await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
@@ -644,13 +1025,11 @@ class ApiFootballClient {
   /* endpoints                                                           */
   /* ------------------------------------------------------------------ */
 
-  /** GET /status — plan, subscription and daily request usage. */
+  /** GET /status — plan, subscription and daily request usage (never billed). */
   async getStatus() {
     const data = await this.request('/status', {}, { ttl: this._cacheTtl.status });
     const info = (data.response && data.response[0]) || null;
-    if (info && info.requests) {
-      this.stats.quota = { current: info.requests.current, limit_day: info.requests.limit_day };
-    }
+    if (info && info.requests) this._learnQuotaFromStatus(info);
     return info;
   }
 
@@ -725,6 +1104,12 @@ module.exports = {
   DEFAULT_TTL,
   CONNECTION_STATES,
   CONNECTION_LABELS,
+  UNAVAILABLE_REASONS,
+  REASON_INFO,
+  reasonInfo,
+  describeUnavailable,
+  unavailableMessage,
+  nextDailyReset,
   classifyProviderError,
   summarizeProviderError,
   CREDENTIAL_REFRESH_MS,

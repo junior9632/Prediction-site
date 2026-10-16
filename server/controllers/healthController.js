@@ -33,6 +33,12 @@ const health = asyncHandler(async (_req, res) => {
         configured: apiFootball.configured,
         available: breaker.available,
         state: breaker.state,
+        // WHY it is unavailable + what to do — never an invented quota
+        reason: breaker.reason || null,
+        label: breaker.label || null,
+        hint: breaker.hint || null,
+        resetsAt: breaker.resetsAt || null,
+        quota: breaker.quota || null,
       },
       market: { key: config.market.key, label: config.market.label, goalLine: config.market.goalLine },
       autoTicketGeneration: false,

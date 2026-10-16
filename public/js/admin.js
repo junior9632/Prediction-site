@@ -25,6 +25,48 @@
     return `<div class="table-wrap"><table class="data"><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${rowsHtml || `<tr><td colspan="${headers.length}" class="muted">${escapeHtml(emptyRow || 'No rows')}</td></tr>`}</tbody></table></div>`;
   }
 
+  /**
+   * The small print under the "Data source" tile. Only values the server
+   * really knows are shown — the quota line disappears when the provider has
+   * not reported one (never an invented number).
+   */
+  function dataSourceDetail(ds) {
+    const q = ds.quota || null;
+    const qs = ds.quotaState || null;
+    if (!ds.configured) return 'key missing';
+    if (qs && qs.known && qs.remaining !== null && qs.remaining !== undefined) {
+      return qs.limitDay ? `${qs.remaining}/${qs.limitDay} requests left today` : `${qs.remaining} requests left today`;
+    }
+    if (q && q.current !== null && q.current !== undefined) {
+      return `quota ${q.current}${q.limit_day ? `/${q.limit_day}` : ''}`;
+    }
+    return 'quota n/a';
+  }
+
+  /**
+   * When the data source is not OK, say WHY and what to do — the state alone
+   * ("OPEN") never told an operator whether the key, the quota or the network
+   * was the problem.
+   */
+  function dataSourceAlert(ds) {
+    if (!ds || ds.available || (!ds.label && !ds.hint)) return '';
+    const when = ds.resetsAt ? ` Resumes automatically after ${fmt.dateTimeLabel(ds.resetsAt)}.` : '';
+    return `<div class="alert warn" style="margin-top:12px;">${icons.alert}<div><b>${escapeHtml(ds.state || 'unavailable')}</b> — ${escapeHtml(ds.label || 'the data source is unavailable')}.${escapeHtml(when)}${ds.hint ? `<div class="tiny muted">${escapeHtml(ds.hint)}</div>` : ''}</div></div>`;
+  }
+
+  /**
+   * Why the last generation did not produce a ticket. The stored report now
+   * carries the classified reason, so the console can name the cause and the
+   * fix instead of showing the status alone.
+   */
+  function generationFailureNote(g) {
+    if (!g || g.status === 'QUALIFIED' || g.status === 'NO_QUALIFYING_TICKET') return '';
+    const label = g.reasonLabel || g.reason;
+    if (!label && !g.reasonHint && !g.errorDetail) return '';
+    const when = g.resetsAt ? ` Resumes after ${fmt.dateTimeLabel(g.resetsAt)}.` : '';
+    return `<div class="alert warn" style="margin-top:10px;">${icons.alert}<div><b>${escapeHtml(g.reason || 'FAILED')}</b>${label ? ` — ${escapeHtml(label)}` : ''}.${escapeHtml(when)}${g.reasonHint ? `<div class="tiny muted">${escapeHtml(g.reasonHint)}</div>` : ''}${g.errorDetail ? `<div class="tiny muted">${escapeHtml(g.errorDetail)}</div>` : ''}</div></div>`;
+  }
+
   function diagGrid(c) {
     if (!c) return '';
     const cells = [
@@ -75,7 +117,9 @@
           if (box2 && progress.status === 'QUALIFIED') {
             box2.insertAdjacentHTML('beforeend', `<div class="alert ok" style="margin-top:10px;">${icons.checkCircle}<div><b>TICKET QUALIFIED</b> — ${escapeHtml((progress.report && progress.report.totalOdds) || '')} from ${escapeHtml((progress.report && progress.report.selectedPicks) || 0)} picks.</div></div>`);
           } else if (box2 && progress.status !== 'ERROR') {
-            box2.insertAdjacentHTML('beforeend', `<div class="alert warn" style="margin-top:10px;">${icons.info}<div><b>${escapeHtml(progress.status)}</b> — ${escapeHtml((progress.report && progress.report.message) || progress.error || '')}</div></div>`);
+            const r = progress.report || {};
+            const why = r.reason ? `<div class="tiny muted">${escapeHtml(r.reason)}${r.label ? ` — ${escapeHtml(r.label)}` : ''}${r.resetAt ? ` (resumes after ${escapeHtml(fmt.dateTimeLabel(r.resetAt))})` : ''}</div>${r.hint ? `<div class="tiny muted">${escapeHtml(r.hint)}</div>` : ''}` : '';
+            box2.insertAdjacentHTML('beforeend', `<div class="alert warn" style="margin-top:10px;">${icons.info}<div><b>${escapeHtml(progress.status)}</b> — ${escapeHtml(r.message || progress.error || '')}${why}</div></div>`);
           } else if (box2) {
             box2.insertAdjacentHTML('beforeend', `<div class="alert error" style="margin-top:10px;">${icons.alert}<div>${escapeHtml(progress.error || 'Generation failed')}</div></div>`);
           }
@@ -124,13 +168,15 @@
     const o = await API.get('/admin/overview');
     $('#serverTime').textContent = `server ${fmt.dateTimeLabel(o.serverTime)}`;
     const t = o.today || {};
+    const ds = o.dataSource || {};
     render(`
       <div class="stat-cards">
         ${mini('Total tickets', o.analytics.tickets.total, `${o.analytics.tickets.qualified} qualified`)}
         ${mini('Win rate', o.analytics.tickets.winRate === null ? '—' : o.analytics.tickets.winRate + '%', `${o.analytics.tickets.won}W / ${o.analytics.tickets.lost}L`, o.analytics.tickets.winRate >= 50 ? 'green' : 'red')}
         ${mini('Avg ticket odds', o.analytics.tickets.avgOdds === null ? '—' : fmt.odds(o.analytics.tickets.avgOdds), `window ${o.settings.oddsWindow.min.toFixed(2)}–${o.settings.oddsWindow.max.toFixed(2)}`, 'cyan')}
-        ${mini('Data source', o.dataSource.state, o.dataSource.configured ? `quota ${o.dataSource.quota ? `${o.dataSource.quota.current}/${o.dataSource.quota.limit_day}` : 'n/a'}` : 'key missing', o.dataSource.available ? 'green' : 'red')}
+        ${mini('Data source', ds.state || '—', dataSourceDetail(ds), ds.available ? 'green' : 'red')}
       </div>
+      ${dataSourceAlert(ds)}
       <section class="section">${card("Manual generation", generationPanel(o), `<span class="tiny muted">${escapeHtml(fmt.dayLabel(t.date || new Date()))}</span>`)}</section>
       <section class="section">
         <div class="stat-cards">
@@ -143,14 +189,18 @@
       <section class="section">${card(
         'Recent activity',
         `<div>${(o.recentSyncs || [])
-          .map((s) => `<div class="history-row"><div class="grow"><div class="d">${escapeHtml(s.job)} sync</div><div class="t">${escapeHtml(fmt.dateTimeLabel(s.startedAt))} · ${escapeHtml(s.message || s.status)}</div></div><span class="badge ${s.status === 'SUCCESS' ? 'badge-green' : s.status === 'FAILED' ? 'badge-red' : 'badge-amber'}">${escapeHtml(s.status)}</span></div>`)
+          .map((s) => {
+            const budget = s.requestsUsed === null || s.requestsUsed === undefined ? '' : ` · api ${s.requestsUsed}${s.requestsLimit ? `/${s.requestsLimit}` : ''}`;
+            const detail = s.status === 'FAILED' && s.errorDetail && s.errorDetail !== s.message ? `<div class="tiny muted">${escapeHtml(s.errorDetail)}</div>` : '';
+            return `<div class="history-row"><div class="grow"><div class="d">${escapeHtml(s.job)} sync</div><div class="t">${escapeHtml(fmt.dateTimeLabel(s.startedAt))} · ${escapeHtml(s.message || s.status)}${escapeHtml(budget)}</div>${detail}</div><span class="badge ${s.status === 'SUCCESS' ? 'badge-green' : s.status === 'FAILED' ? 'badge-red' : 'badge-amber'}">${escapeHtml(s.status)}</span></div>`;
+          })
           .join('') || emptyState('activity', 'No sync activity yet', 'Run a sync from the API Status screen.')}</div>`
       )}</section>
       ${o.lastGeneration ? `<section class="section">${card('Last generation', `<div class="card-body"><div class="row wrap">
           <span class="badge ${o.lastGeneration.status === 'QUALIFIED' ? 'badge-green' : o.lastGeneration.status === 'NO_QUALIFYING_TICKET' ? 'badge-slate' : 'badge-amber'}">${escapeHtml(o.lastGeneration.status)}</span>
           <span class="small muted">${escapeHtml(fmt.dateTimeLabel(o.lastGeneration.startedAt))} · ${escapeHtml(o.lastGeneration.triggerSource)} · ${o.lastGeneration.durationMs || 0} ms</span>
           <span class="small">picks <b>${o.lastGeneration.selectedPicks}</b> · odds <b>${o.lastGeneration.totalOdds || '—'}</b></span>
-        </div></div>`)}</section>` : ''}`);
+        </div>${generationFailureNote(o.lastGeneration)}</div>`)}</section>` : ''}`);
     await bindGenerate();
     if (o.generationRunning) {
       const gens = await API.get('/admin/generations?limit=1');
@@ -180,7 +230,7 @@
        ${t.status !== 'QUALIFIED' ? `<div class="card-body"><div class="alert warn">${icons.info}<div><b>${escapeHtml(t.status)}</b> — ${escapeHtml((t.noTicket && t.noTicket.message) || '')}</div></div><div class="diag-grid section">${diagGrid(c)}</div></div>` : ''}`,
       `<a class="btn btn-ghost btn-sm" href="/ticket.html">Open public page</a>`
     )}
-    <section class="section">${card('Latest generation report', `<div class="card-body">${report ? diagGrid(c) + `<p class="small muted" style="margin-top:10px;">${escapeHtml((report.report && report.report.message) || '')}</p>` : emptyState('history', 'No generation yet', 'Use the Dashboard to generate the first ticket.')}</div>`)}</section>`);
+    <section class="section">${card('Latest generation report', `<div class="card-body">${report ? diagGrid(c) + `<p class="small muted" style="margin-top:10px;">${escapeHtml((report.report && report.report.message) || '')}</p>` + generationFailureNote({ status: report.status, reason: (report.report || {}).reason, reasonLabel: (report.report || {}).label, reasonHint: (report.report || {}).hint, resetsAt: (report.report || {}).resetAt, errorDetail: report.error }) : emptyState('history', 'No generation yet', 'Use the Dashboard to generate the first ticket.')}</div>`)}</section>`);
   }
 
   async function loadFixtures(date) {

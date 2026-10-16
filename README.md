@@ -342,6 +342,12 @@ Every variable is documented in [`.env.example`](.env.example). The important on
 | `NOTIFY_WEBHOOK_URL` | optional: POST the same events as JSON to any webhook |
 | `ODDS_FRESHNESS_MINUTES`, `MIN_TOTAL_ODDS`, `MAX_TOTAL_ODDS`, `MIN_CONFIDENCE`, `MAX_RISK`, `MIN_DATA_QUALITY`, `MAX_SELECTIONS` | fallback defaults; the `settings` table overrides them at runtime |
 
+Quota-aware settings live in the `settings` table (Admin → Settings): `api_quota_reserve` (requests
+kept for a manual generation, default 25), `history_refresh_minutes` (how long a stored history day
+counts as fresh and is not requested again, default 360), `h2h_sync_max_calls` (head-to-head
+requests per run, default 20), `sync_history_days` / `sync_days_ahead` (how much history and how
+many upcoming days each fixtures sync costs). See `docs/ARCHITECTURE.md` §3.2.
+
 Documentation:
 
 * [`docs/DEPLOYMENT-CPANEL.md`](docs/DEPLOYMENT-CPANEL.md) — cPanel walkthrough: Node.js app,
@@ -408,6 +414,7 @@ npm test          # 225 tests, ~16s, no database or network required
 | 13 | A later price move never rewrites a stored ticket | `acceptance 13: a later bookmaker price move never rewrites a stored ticket` |
 | 14 | The admin console stays usable on a phone | `responsive: the admin console stays navigable on small screens` |
 | 15 | The exact spec products behave (1.95 / 2.10 / 3.375) | `review 4`, `review 5`, `review 6`, `review 6b` in `tests/engine.test.js` |
+| 16 | A data-source outage names its cause, keeps the honest headline, and never spends the requests a manual generation needs | `tests/data-source-reasons.test.js` (quota / rate limit / auth / outage / network reasons, the free `/status` probe, `api_quota_reserve` → `SKIPPED`, incremental history, bounded head-to-head, `/api/health`) |
 
 ### Continuous integration
 
@@ -457,6 +464,7 @@ Two operator commands answer "why is the deployed site broken?" without guessing
 | Command | What it proves |
 | --- | --- |
 | `npm run doctor` | Node version, `NODE_ENV`, every required environment variable (values masked), a real MySQL connection using the **same** credentials as the app — with the MySQL error code translated into the cause *and* the cPanel screen that fixes it — the schema (all 20 tables), the seed (settings + an active administrator), and the running site's own answers (`/api/health`, `/api/meta`, and the guest boundary on `/api/dashboard/activity`, which must be 401). `--json` for machines, `--skip-site` for the database half only. Exit code 1 on any problem, so it can gate a deploy. |
+| `npm run api:check` | **Only the data source**, in one command: which credential is in force (masked), one real request to API-Football's free `/status` endpoint, and the verdict — `CONNECTED`, `INVALID_KEY`, `QUOTA_EXCEEDED`, `RATE_LIMITED`, `NETWORK_ERROR`, `TIMEOUT`, `PROVIDER_UNAVAILABLE` or `CONFIG_INCOMPLETE` — with the daily budget the provider reports and the exact fix. Exit code 1 when the source cannot be used, so it can be monitored. `--json` for machines. |
 | `npm run verify:access -- --member=user:pw --admin=admin:pw` | The guest/member/admin boundary against a **live** site: guest `401` with no payload and a redirect on `/dashboard`, the member feed scoped to that account, the console still admin-only, and `/admin/login` skipping itself for a live session. Credentials are used only for the sign-in request — nothing is written to disk. Exit code 1 on any failure. |
 
 ---
@@ -471,7 +479,17 @@ Two operator commands answer "why is the deployed site broken?" without guessing
 | `*/15 * * * *` | `scripts/cron-health-check.js` | alerts (non-zero exit) when DB or data source is down |
 
 Every cron script sets `CRON_CONTEXT=1`, and `ticketService.assertManualTrigger()` refuses to run
-in that context — a cron job physically cannot create or publish a ticket. `scripts/cron-sync-all.js`
+in that context — a cron job physically cannot create or publish a ticket.
+
+**The plans these jobs run on are finite.** The client learns the daily request budget the provider
+advertises on every answer (`x-ratelimit-requests-remaining`), records it in `api_sync_logs`
+(`requests_used` / `requests_limit`) and stops calling the data endpoints once the day is spent —
+while leaving the free `/status` probe available for diagnosis. Background sync also pauses with
+status `SKIPPED` (reason `QUOTA_RESERVED`) as soon as fewer than `api_quota_reserve` requests are
+left, so the manual *Generate Today's Ticket* action still has room to run. Two settings keep the
+cost of a normal day low: `history_refresh_minutes` (a history day whose stored fixtures are still
+fresh is not requested again) and `h2h_sync_max_calls` (head-to-head enrichment only runs where the
+local sample is too small to score with). `scripts/cron-sync-all.js`
 exists for hosts that allow only one entry. **Never** put `scripts/generate-ticket-cli.js` in cron.
 
 ---

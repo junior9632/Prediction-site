@@ -247,6 +247,27 @@ async function getFixturesAwaitingResult(from, to, limit = 200) {
   );
 }
 
+/**
+ * When each calendar day of a range was last fetched from the provider.
+ *
+ * Used by the incremental history sync: finished matches do not change, so a
+ * day whose stored copy is still fresh is not requested again — one request per
+ * day instead of one per day per cron run.
+ *
+ * @returns {Promise<Array<{day: string, last_fetched_at: Date|string|null, rows_count: number}>>}
+ */
+async function getFixtureFetchTimes(from, to) {
+  return db.query(
+    `SELECT DATE_FORMAT(f.kickoff_at, '%Y-%m-%d') AS day,
+            MAX(f.fetched_at) AS last_fetched_at,
+            COUNT(*) AS rows_count
+       FROM fixtures f
+      WHERE f.kickoff_at >= ? AND f.kickoff_at < ?
+      GROUP BY DATE_FORMAT(f.kickoff_at, '%Y-%m-%d')`,
+    [dt(from), dt(to)]
+  );
+}
+
 async function countFixturesBetween(from, to) {
   const row = await db.queryOne(
     `SELECT COUNT(*) AS total,
@@ -1425,7 +1446,7 @@ module.exports = {
   // fixtures
   upsertFixture, getFixtureById, getFixturesByIds, getFixturesBetween,
   getPlayableFixturesBetween, getRecentFinishedByTeam, getH2HFixtures,
-  getLeagueFinishedMatches, getFixturesAwaitingResult, countFixturesBetween,
+  getLeagueFinishedMatches, getFixturesAwaitingResult, countFixturesBetween, getFixtureFetchTimes,
   // bookmakers
   upsertBookmaker, getBookmakers,
   // odds

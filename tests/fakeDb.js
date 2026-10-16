@@ -184,6 +184,21 @@ function install(overrides = {}) {
     if (/^SELECT fixture_id, MAX\(fetched_at\)/.test(s)) return [];
     if (/^SELECT \* FROM fixtures WHERE id = \?/.test(s)) return store.fixtures.filter((f) => f.id === Number(params[0]));
     if (/^SELECT f\.id, f\.kickoff_at, f\.home_team_id/.test(s)) return []; // form/h2h lookups -> empty (DATA UNAVAILABLE paths)
+    // incremental history: when was each calendar day last fetched?
+    if (/^SELECT DATE_FORMAT\(f\.kickoff_at, '%Y-%m-%d'\) AS day/.test(s)) {
+      const [from, to] = params;
+      const byDay = new Map();
+      for (const f of store.fixtures) {
+        if (!(String(f.kickoff_at) >= String(from) && String(f.kickoff_at) < String(to))) continue;
+        const day = String(f.kickoff_at).slice(0, 10);
+        const at = f.fetched_at ? new Date(f.fetched_at) : null;
+        const entry = byDay.get(day) || { day, last_fetched_at: null, rows_count: 0 };
+        entry.rows_count += 1;
+        if (at && !Number.isNaN(at.getTime()) && (!entry.last_fetched_at || at > entry.last_fetched_at)) entry.last_fetched_at = at;
+        byDay.set(day, entry);
+      }
+      return [...byDay.values()];
+    }
     if (/^SELECT goals_home, goals_away/.test(s)) return [];
     if (/^SELECT \* FROM results WHERE fixture_id IN/.test(s)) {
       return store.results.filter((r) => params.map(Number).includes(Number(r.fixture_id)));

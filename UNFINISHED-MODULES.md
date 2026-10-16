@@ -389,3 +389,35 @@ Four layers, none of them cosmetic:
 Live verification against the preview harness: `verify-access` **315/315** (guest 401 on 9 APIs and
 9 pages with zero data leakage; member 200 on the same surfaces; admin console unchanged;
 `npm test` **154/154**).
+
+### Module 10 — Data-source failures name their cause (and stop burning the daily quota) — ✅ COMPLETE
+
+Reported symptom: the admin activity panel showed `fixtures` and `odds` syncs **FAILED** with the
+same sentence (`DATA SOURCE TEMPORARILY UNAVAILABLE`) while `results` reported **SUCCESS** with
+zeros, and the last generation ended `DATA_SOURCE_UNAVAILABLE` with 0 picks — no way to tell a spent
+daily quota from a rejected key, a provider outage or a blocked network, and no way to see how much
+of the plan had been used.
+
+| Root cause | Fix |
+| --- | --- |
+| Every upstream failure collapsed into one sentence | `UNAVAILABLE_REASONS` + `REASON_INFO` in `apiFootball.js`: `NO_API_KEY`, `CREDENTIAL_UNREADABLE`, `CIRCUIT_OPEN`, `QUOTA_EXCEEDED`, `QUOTA_RESERVED`, `RATE_LIMITED`, `AUTH_REJECTED`, `REQUEST_REJECTED`, `PROVIDER_UNAVAILABLE`, `NETWORK_ERROR`, `TIMEOUT` — each with an operator-facing label and the exact fix; `describeUnavailable()` / `unavailableMessage()` keep the documented headline and append the reason + reset time |
+| The daily request budget was invisible | the client learns `x-ratelimit-requests-limit` / `-remaining` from every answer (and `/status`), exposes `quotaState()`, and every job persists it in `api_sync_logs` (`requests_used` / `requests_limit` — columns that existed but were never written) |
+| A spent plan was retried like a transient outage | `QUOTA_EXCEEDED` is never retried, the client stops calling the data endpoints until 00:00 UTC (the free `/status` probe stays available) and `breakerState()` reports `QUOTA_EXHAUSTED` instead of `OPEN`; a spent day is not an upstream outage |
+| Every cron run re-spent the budget: the backfill pulled all 25 history days every hour and head-to-head enrichment up to 40 fixtures | history re-requests only days older than `history_refresh_minutes` (360) and reports `skippedFresh`; H2H only runs while the local sample is below `h2h_min_meetings` (3), at most `h2h_sync_max_calls` (20) per run |
+| Background sync could eat the requests a manual generation needs | `api_quota_reserve` (25): fixtures/odds/results log `SKIPPED` / `QUOTA_RESERVED` with 0 provider calls; because each cron entry point is a new process, the pause also reads the budget the previous run recorded in `api_sync_logs` (current UTC day only) |
+| The console showed the state, never the cause | `adminController.overview` exposes `dataSource.{reason,label,hint,resetsAt}` + `recentSyncs[].{errorDetail,requestsUsed,requestsLimit}`; `public/js/admin.js` renders them (dashboard alert, activity rows, last-generation failure note); `/api/health` carries the same reason; `cron-sync-*.js` print one plain-language line (exit code 2 when the source is unusable); `cron-health-check.js` reports the reason and only alerts when the cause changes |
+| Diagnosing it needed SSH and guesswork | `npm run api:check` (`scripts/api-check.js`) — one free `/status` request, masked credential, verdict, daily budget and fix, exit 1 when unusable; `npm run doctor` gained the `DATA SOURCE (API-FOOTBALL)` group (`--skip-probe` to skip the probe), and `--json` stays parseable |
+
+| Piece | File |
+| --- | --- |
+| Reason vocabulary, quota tracker, probe + request guards | `server/services/apiFootball.js` |
+| Quota pause/reserve, reason in every log and payload, incremental backfill, bounded H2H | `server/services/syncService.js`, `server/services/fixtureService.js` |
+| Reason in the stored generation report | `server/services/ticketService.js` |
+| Budget columns + incremental-history query | `server/database/queries.js` |
+| Settings | `history_refresh_minutes`, `api_quota_reserve`, `h2h_sync_max_calls` (`server/services/settingsService.js`) |
+| Console + health + CLI | `public/js/admin.js`, `public/js/admin-api-management.js`, `server/controllers/{adminController,healthController}.js`, `server/services/apiCredentialService.js`, `scripts/{api-check.js,doctor.js,cron-health-check.js,cron-sync-*}.js`, `scripts/lib/sync-output.js` |
+| Tests (18) | `tests/data-source-reasons.test.js`; panel assertions in `tests/dashboard-activity.test.js`; CLI assertions in `tests/scripts.test.js` |
+| Docs | `README.md` (diagnosis table, quota settings, acceptance row 16), `docs/ARCHITECTURE.md` §3.1/§3.2/§10, `docs/API.md`, `docs/DEPLOYMENT-CPANEL.md` §7/§10, `.env.example` |
+
+The anti-fabrication contract is unchanged: when the source cannot be used the run still ends
+`DATA SOURCE_UNAVAILABLE` with **no** ticket and **no** invented picks — it now says why.

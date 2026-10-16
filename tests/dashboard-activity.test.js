@@ -382,6 +382,23 @@ test('admin: the console keeps its permissions and the feed stays admin scoped',
   assert.equal(overview.json.ok, true);
   assert.ok(overview.json.data.recentSyncs, 'the console activity panel keeps its data');
 
+  // The panel that used to say only "DATA SOURCE TEMPORARILY UNAVAILABLE" must
+  // carry the classified reason (and the daily budget) for the operator.
+  const ds = overview.json.data.dataSource || {};
+  assert.ok(['OK', 'DEGRADED', 'OPEN', 'QUOTA_EXHAUSTED', 'UNCONFIGURED'].includes(ds.state), `data source state: ${ds.state}`);
+  for (const key of ['reason', 'label', 'hint', 'resetsAt']) {
+    assert.ok(key in ds, `the dashboard exposes dataSource.${key}`);
+  }
+  const failed = (overview.json.data.recentSyncs || []).find((s) => s.status === 'FAILED');
+  if (failed) {
+    assert.ok('errorDetail' in failed, "a failed job carries the provider's own words");
+    assert.ok('requestsUsed' in failed && 'requestsLimit' in failed, 'and the daily budget it recorded');
+  }
+  const last = overview.json.data.lastGeneration;
+  if (last && last.status === 'DATA_SOURCE_UNAVAILABLE') {
+    assert.ok(last.reason, 'a failed generation names its reason');
+  }
+
   const res = await get('/api/dashboard/activity', { token: adminBearer });
   assert.equal(res.status, 200);
   assert.equal(res.json.data.account.type, 'admin');

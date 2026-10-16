@@ -223,14 +223,26 @@ Notes:
    | `https://yourdomain.com/` | homepage renders, dark navy theme, no console errors |
    | `https://yourdomain.com/admin/login` | admin sign-in works |
 
-4. Warm the data: admin console → **API Status** → *Sync fixtures*, then *Sync odds*
+4. Prove the data source in one command before generating anything (it spends **one** request, on
+   the free `/status` endpoint, and prints the verdict with the fix):
+
+   ```bash
+   npm run api:check
+   ```
+
+   `Verdict  CONNECTED` means the key, the host and the daily budget are all fine. Any other verdict
+   (`INVALID_KEY`, `QUOTA_EXCEEDED`, `RATE_LIMITED`, `NETWORK_ERROR`, `CONFIG_INCOMPLETE`, …) names
+   the cause and the cPanel screen that fixes it. The same information is on the API Status panel
+   and in `/api/health` under `dataSource.reason`.
+5. Warm the data: admin console → **API Status** → *Sync fixtures*, then *Sync odds*
    (or wait for cron). Check **Fixtures** and **Odds** show rows with a green "verified Xm ago"
-   chip.
-5. Click **GENERATE TODAY'S TICKET**. The progress panel walks through the steps and ends with
+   chip. A row may also read `SKIPPED` with `REQUEST BUDGET RESERVED`: that is the reserve keeping
+   the last `api_quota_reserve` requests for the manual generation, not a failure.
+6. Click **GENERATE TODAY'S TICKET**. The progress panel walks through the steps and ends with
    either a published ticket (total odds inside 2.00–4.00) or **NO QUALIFYING TICKET** with its
    diagnostics. Both are correct outcomes; the second one simply means the day's verified data
    did not support a ticket.
-6. Confirm the access boundary. Signed out, every football URL must answer `401` with the
+7. Confirm the access boundary. Signed out, every football URL must answer `401` with the
    "login required" page and every football API must answer `401` with an empty body:
 
    ```bash
@@ -512,17 +524,29 @@ needs migration `003-api-credential-management.sql`. No Terminal required:
 | API Management: `500 CREDENTIAL_UNREADABLE` / *cannot be decrypted* | the encryption key changed (or `.env` was restored from another machine) after the credential was saved. Re-enter and save the API key on the API Management screen |
 | API Management shows a raw `SCHEMA_OUT_OF_DATE` | migration `003-api-credential-management.sql` was not applied to the live database — see section 9c. The site keeps working with the environment credential meanwhile |
 | `dataSource.state: "OPEN"` | the circuit breaker opened after repeated upstream failures; it half-opens automatically after the cooldown. Check quota/plan and `logs/cron.log` |
-| Generation ends `DATA_SOURCE_UNAVAILABLE` | by design when the API is unreachable — no ticket is fabricated. Re-run once the API Status panel shows `OK` |
+| Every job says `DATA SOURCE TEMPORARILY UNAVAILABLE` and API Status shows `QUOTA_EXHAUSTED` | the plan's daily request budget is spent (Free = 100/day). The message and `error_detail` now say so, and the client stops calling the provider until 00:00 UTC instead of retrying. Fix: raise the plan, or lower what a run costs — `sync_history_days`, `sync_days_ahead`, `history_refresh_minutes` (a history day that is still fresh is not requested again), `h2h_sync_max_calls` — and space the cron entries out |
+| Sync rows show `SKIPPED` / `REQUEST BUDGET RESERVED` | **not a failure**: background sync paused because only `api_quota_reserve` requests were left today, so an administrator can still generate the ticket from the console. Lower `api_quota_reserve` or raise the plan; it resumes by itself after 00:00 UTC |
+| A results sync is `SUCCESS` with `results=0 settled=0 tickets=0` while fixtures/odds `FAILED` | nothing was awaiting a result (`checked=0`), so that job made no upstream call at all — the fixtures and odds jobs are the ones that talk to the provider. Read their `error_detail`/reason, or run `npm run api:check` |
+| API Status: `AUTH_REJECTED` / "Missing application key" | `API_FOOTBALL_KEY` and `API_FOOTBALL_HOST` do not match (an api-sports.io key needs `v3.football.api-sports.io`), or the key was revoked. Re-run *Test connection* after saving |
+| API Status: `RATE_LIMITED` (HTTP 429) | more requests per minute than the plan allows (Free = 10/min). Lower `API_FOOTBALL_RATE_PER_MINUTE` and space the cron entries. Do **not** retry in a loop — API-Football firewalls keys/IPs that keep hammering |
+| API Status: `NETWORK_ERROR` / `TIMEOUT` | the account cannot reach the provider (outbound HTTPS/DNS blocked by the host). Confirm with `npm run api:check` |
+| Generation ends `DATA_SOURCE_UNAVAILABLE` | by design when the API cannot be used — no ticket is fabricated. The stored report and the console now carry the reason (`NO_API_KEY`, `QUOTA_EXCEEDED`, `AUTH_REJECTED`, …), the fix and the reset time; re-run once API Status shows `OK` |
 | Every day is `NO QUALIFYING TICKET` | inspect the diagnostics: usually odds are stale (`ODDS_FRESHNESS_MINUTES` too tight for your sync frequency), the league list is too small (`sync_leagues`), or form data has not accumulated yet — the engine needs at least `min_form_matches` real matches per team |
 | Times look shifted | the engine works in UTC day boundaries; kickoff display uses the visitor timezone (`display_timezone = auto`) |
 | `429` responses | rate limits; raise `RATE_LIMIT_MAX` / `ADMIN_RATE_LIMIT_MAX` only if the traffic is genuinely yours |
 | Cron produces no log output | wrong `node` path or a missing `logs/` directory; run the command once by hand in Terminal |
-> **Regenerating the ZIP is a repository-side job**, not something to do on the host: build it
-> where the source lives (`npm run build:zip`) and upload the result.
-
-| Anything else — start here | `npm run doctor`. It prints the cause and the exact cPanel screen that fixes it (masked values only), and exits non-zero so it can gate a deploy. `npm run doctor -- --json` for a machine readable report |
+| Anything else — start here | `npm run doctor` (add `--skip-probe` to skip the one free API-Football `/status` probe) and `npm run api:check`. It prints the cause and the exact cPanel screen that fixes it (masked values only), and exits non-zero so it can gate a deploy. `npm run doctor -- --json` for a machine readable report |
 | "Is the member area really private on the live site?" | `npm run verify:access -- --member=USER:PW --admin=USER:PW` against the deployed URL. It checks every guest/member/admin boundary with real HTTP requests and exits non-zero on any leak |
 | Static assets 404 after upload | the app serves `public/` itself; make sure `public/` is inside the Application root and that no `.htaccess` in `public_html` rewrites the domain away from the Node app |
+
+**Where the reason is written:** every failed job stores the provider's own words in
+`api_sync_logs.error_detail`, the reason/hint in the job message, and the daily budget in
+`requests_used` / `requests_limit`; the generation report (`generation_logs.report_json`) carries the
+same reason for the ticket screen. The admin dashboard reads all three, so the activity panel shows
+*why* instead of one sentence for every cause.
+
+> **Regenerating the ZIP is a repository-side job**, not something to do on the host: build it
+> where the source lives (`npm run build:zip`) and upload the result.
 
 ---
 

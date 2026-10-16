@@ -16,6 +16,7 @@ process.env.CRON_CONTEXT = '1';
 const syncService = require('../server/services/syncService');
 const pool = require('../server/database/connection');
 const logger = require('../server/utils/logger');
+const { describeRun, runExitCode } = require('./lib/sync-output');
 
 const log = logger.child('cron');
 
@@ -24,6 +25,10 @@ const log = logger.child('cron');
   const result = await syncService.syncResults({ trigger: 'cron' });
   log.info('cron results sync done', { ms: Date.now() - started, result });
   process.stdout.write(`${JSON.stringify({ job: 'results', ms: Date.now() - started, ...result })}\n`);
+  // plain-language line for logs/cron.log — never a bare "unavailable"
+  const why = describeRun('results', result);
+  if (why) process.stdout.write(`${why}\n`);
+  process.exitCode = runExitCode(result);
 })()
   .catch((err) => {
     process.stderr.write(`results sync failed: ${err.message}\n`);
