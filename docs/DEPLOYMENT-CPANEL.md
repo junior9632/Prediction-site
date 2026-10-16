@@ -441,7 +441,13 @@ the server environment:
    to `.env` with File Manager → **Edit**).
 3. **Restart** the application.
 
-Without it the platform **fails safely**: *Save configuration* answers
+**Optional:** you can skip the steps above. When `API_CREDENTIALS_ENCRYPTION_KEY` is not set, the
+server creates its own random key file (`storage/api-credentials.key`, permissions `0600`) the
+first time an administrator saves a key from **Admin → API Management**. Keep that file with your
+backups; deleting it makes saved keys unreadable (re-enter them). Set `API_CREDENTIALS_AUTO_KEY=0`
+to disable the file and require the environment variable.
+
+If neither is possible (for example the folder is read-only) the platform **fails safely**: *Save configuration* answers
 `503 ENCRYPTION_KEY_MISSING` with the exact variable name, and **nothing is written** — a key is
 never stored unencrypted. `npm run doctor` reports the same state.
 

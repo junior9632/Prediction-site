@@ -73,10 +73,11 @@ const config = {
   apiFootball: {
     key: str('API_FOOTBALL_KEY', ''),
     host: apiFootballHost,
-    // RapidAPI style hosts embed the version in the host string.
+    // Direct API-Sports hosts have NO version path (https://v3.football.api-sports.io/odds);
+    // RapidAPI serves the same API under /v3.
     baseUrl: apiFootballHost.includes('rapidapi.com')
-      ? `https://${apiFootballHost}`
-      : `https://${apiFootballHost}/v3`,
+      ? `https://${apiFootballHost.replace(/\/v3$/i, '')}/v3`
+      : `https://${apiFootballHost.replace(/\/v3$/i, '')}`,
     ratePerMinute: int('API_FOOTBALL_RATE_PER_MINUTE', 60),
     timeoutMs: int('API_FOOTBALL_TIMEOUT_MS', 15000),
     maxRetries: int('API_FOOTBALL_MAX_RETRIES', 2),

@@ -303,7 +303,8 @@ class ApiFootballClient {
     if (this.isRapidApi) {
       return {
         'x-rapidapi-key': this.key,
-        'x-rapidapi-host': this.host,
+        // the header carries the bare host, never the /v3 path
+        'x-rapidapi-host': String(this.host).replace(/\/.*$/, ''),
         accept: 'application/json',
       };
     }

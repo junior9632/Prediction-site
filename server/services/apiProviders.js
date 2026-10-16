@@ -43,7 +43,7 @@ const PROVIDERS = Object.freeze({
         id: 'v3.football.api-sports.io',
         label: 'v3.football.api-sports.io (official API-Sports host)',
         authStyle: AUTH_STYLES.API_SPORTS,
-        baseUrl: 'https://v3.football.api-sports.io/v3',
+        baseUrl: 'https://v3.football.api-sports.io',
         recommended: true,
       }),
       Object.freeze({
