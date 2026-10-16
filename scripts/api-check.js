@@ -50,6 +50,7 @@ function line(label, value) {
     ok: false,
     state: null,
     reason: null,
+    networkCode: null,
     message: null,
     hint: null,
     quota: null,
@@ -61,10 +62,10 @@ function line(label, value) {
   if (resolved.error) {
     // A stored credential that cannot be used is a hard stop — never masked by
     // silently testing a different key.
-    report.state = resolved.error.code === 'ENCRYPTION_KEY_MISSING' ? 'CREDENTIAL_UNREADABLE' : 'CREDENTIAL_UNREADABLE';
+    report.state = resolved.error.code === 'CONFIG_INVALID' ? 'CONFIG_INCOMPLETE' : 'CREDENTIAL_UNREADABLE';
     report.reason = resolved.error.code || UNAVAILABLE_REASONS.CREDENTIAL_UNREADABLE;
     report.message = resolved.error.message;
-    report.hint = reasonInfo(UNAVAILABLE_REASONS.CREDENTIAL_UNREADABLE).hint;
+    report.hint = reasonInfo(report.reason).hint || reasonInfo(UNAVAILABLE_REASONS.CREDENTIAL_UNREADABLE).hint;
   } else if (!resolved.key) {
     report.state = 'CONFIG_INCOMPLETE';
     report.reason = UNAVAILABLE_REASONS.NO_API_KEY;
@@ -83,6 +84,7 @@ function line(label, value) {
     report.ok = probe.ok;
     report.state = probe.state;
     report.reason = probe.reason || null;
+    report.networkCode = probe.networkCode || null;
     report.message = probe.message;
     report.hint = probe.hint || null;
     report.quota = probe.quota || null;
@@ -106,6 +108,7 @@ function line(label, value) {
     line('Verdict', report.state);
     line('Provider said', report.message);
     line('HTTP status', report.httpStatus);
+    line('Transport code', report.networkCode);
     line('Latency', report.latencyMs === null ? null : `${report.latencyMs} ms`);
     if (report.quota) line('Requests used today', `${report.quota.current}${report.quota.limitDay ? ` / ${report.quota.limitDay}` : ''}`);
     if (report.plan && report.plan.name) line('Plan', `${report.plan.name}${report.plan.active === false ? ' (inactive)' : ''}`);

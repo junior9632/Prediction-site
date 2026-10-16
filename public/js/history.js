@@ -29,6 +29,7 @@
   }
 
   async function load() {
+    await App.site.load();
     App.session.bindHeader();
     const result = $('#resultFilter').value || '';
     const list = $('#historyList');

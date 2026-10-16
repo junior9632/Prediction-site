@@ -203,7 +203,7 @@ async function syncResults(options = {}) {
   let rowsWritten = 0;
 
   if (ids.length) {
-    const refreshed = await fixtureService.syncFixturesByIds(ids, { api, now });
+    const refreshed = await fixtureService.syncFixturesByIds(ids, { api, now, beforeRequest: options.beforeRequest });
     endpointCalls += refreshed.endpointCalls;
     rowsWritten += refreshed.rowsWritten;
   }

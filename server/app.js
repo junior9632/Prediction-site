@@ -202,7 +202,9 @@ function corsOptions() {
   };
 }
 
-function createApp() {
+function createApp(options = {}) {
+  // Only the local sample-data harness opts into iframe previews.
+  const embeddedPreview = options.preview === true && !config.isProduction;
   const app = express();
 
   if (config.trustProxy) app.set('trust proxy', config.trustProxy);
@@ -215,6 +217,7 @@ function createApp() {
 
   app.use(
     helmet({
+      frameguard: embeddedPreview ? false : undefined,
       contentSecurityPolicy: {
         useDefaults: true,
         directives: {
@@ -226,7 +229,7 @@ function createApp() {
           'connect-src': ["'self'"],
           'font-src': ["'self'", 'data:'],
           'object-src': ["'none'"],
-          'frame-ancestors': ["'self'"],
+          'frame-ancestors': embeddedPreview ? null : ["'self'"],
           'base-uri': ["'self'"],
           'form-action': ["'self'"],
           'upgrade-insecure-requests': config.isProduction ? [] : null,
@@ -414,6 +417,8 @@ function createApp() {
   };
 
   app.get('/js/admin.js', guardedAdminScript('admin.js'));
+  app.get('/js/admin-settings.js', guardedAdminScript('admin-settings.js'));
+  app.get('/js/admin-fixtures.js', guardedAdminScript('admin-fixtures.js'));
   app.get('/js/admin-users.js', guardedAdminScript('admin-users.js'));
   app.get('/js/admin-api-management.js', guardedAdminScript('admin-api-management.js'));
 

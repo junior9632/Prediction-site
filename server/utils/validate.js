@@ -46,9 +46,10 @@ function coerce(rule, raw, key, errors) {
     case 'int':
     case 'number':
     case 'float': {
-      const n = rule.type === 'int' ? parseInt(raw, 10) : Number(raw);
+      if (!['number', 'string'].includes(typeof raw) || String(raw).trim() === '') return fail(`${key} must be a number`);
+      const n = Number(raw);
       if (!Number.isFinite(n)) return fail(`${key} must be a number`);
-      if (rule.type === 'int' && !Number.isInteger(n)) return fail(`${key} must be an integer`);
+      if (rule.type === 'int' && !Number.isSafeInteger(n)) return fail(`${key} must be an integer`);
       if (rule.min !== undefined && n < rule.min) return fail(`${key} must be >= ${rule.min}`);
       if (rule.max !== undefined && n > rule.max) return fail(`${key} must be <= ${rule.max}`);
       return n;
@@ -61,8 +62,9 @@ function coerce(rule, raw, key, errors) {
       return fail(`${key} must be a boolean`);
     }
     case 'date': {
-      const s = cleanString(raw, 10);
-      if (!DATE_RE.test(s) || Number.isNaN(new Date(`${s}T00:00:00Z`).getTime())) {
+      const s = typeof raw === 'string' ? raw.trim() : '';
+      const date = new Date(`${s}T00:00:00Z`);
+      if (!DATE_RE.test(s) || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== s) {
         return fail(`${key} must be a date in YYYY-MM-DD format`);
       }
       return s;

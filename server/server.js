@@ -27,6 +27,8 @@ async function start() {
     }
   }
 
+  // Database-managed credentials must work after a Passenger/cron restart too.
+  await require('./services/apiCredentialService').syncClientCredential();
   const app = createApp();
   server = http.createServer(app);
 

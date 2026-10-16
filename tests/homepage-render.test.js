@@ -10,7 +10,7 @@
  *
  *   1. The page it serves: marketing copy, the locked preview, the sign-in
  *      CTAs, and the absence of any prediction payload.
- *   2. The script it ships requests NOTHING but the shared session check
+ *   2. The script it ships requests only public branding metadata and the shared session check
  *      (`/api/auth/me`) — statically and at runtime, in an executed trace.
  *   3. Server side: every prediction/ticket/analytics endpoint answers a guest
  *      with 401 and an empty body, and every prediction PAGE answers 401 with
@@ -234,12 +234,12 @@ test('homepage: the script can reach no prediction endpoint (static allowlist)',
     assert.ok(!js.includes(path), `js/app.js must not name ${path}`);
     assert.ok(!html.includes(`/api${path}`), `index.html must not name /api${path}`);
   }
-  // the only endpoint the landing page may reach is the session check, and it
-  // lives in the shared helper (api.js) that every page already needs
-  assert.match(apiJs, /\/auth\/me/, 'the shared session check is the only call the header makes');
+  // Only session state and non-sensitive branding metadata are public.
+  assert.match(apiJs, /\/auth\/me/, 'the shared helper checks session state');
+  assert.match(apiJs, /\/meta/, 'the shared helper applies public branding settings');
 });
 
-test('homepage: at runtime it requests nothing but the session check (executed script trace)', async () => {
+test('homepage: at runtime it requests only branding and session state (executed script trace)', async () => {
   // A minimal DOM so the real public/js/app.js runs, with a recording fetch.
   const asked = [];
   const makeEl = (id) => ({
@@ -268,12 +268,13 @@ test('homepage: at runtime it requests nothing but the session check (executed s
       return nodes.get(id);
     },
     querySelectorAll: () => [],
-    addEventListener(type, fn) { (document._h = document._h || {})[type] = fn; },
+    addEventListener(type, fn) { document._h = document._h || {}; (document._h[type] = document._h[type] || []).push(fn); },
     createElement: () => makeEl('created'),
   };
 
   const fetchStub = async (url) => {
     asked.push(url);
+    if (url.endsWith('/api/meta')) return { ok: true, json: async () => ({ ok: true, data: { siteName: 'GoalPredict', tagline: 'Smarter Football Picks', displayTimezone: 'auto' } }) };
     if (url.endsWith('/api/auth/me')) return { ok: false, status: 401, json: async () => ({ ok: false, error: { code: 'UNAUTHORIZED' } }) };
     throw new Error(`the homepage tried to load ${url}`);
   };
@@ -289,11 +290,11 @@ test('homepage: at runtime it requests nothing but the session check (executed s
   vm.runInContext(apiJs, ctx, { filename: 'api.js' });
   vm.runInContext(js, ctx, { filename: 'app.js' });
 
-  await document._h.DOMContentLoaded();
+  await Promise.all(document._h.DOMContentLoaded.map((handler) => handler()));
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  // exactly the shared session check — nothing else
-  assert.deepEqual(asked, ['/api/auth/me'], `the homepage requested ${JSON.stringify(asked)}`);
+  // Branding contains no prediction payload; no protected data is requested.
+  assert.deepEqual(asked.sort(), ['/api/auth/me', '/api/meta'], `the homepage requested ${JSON.stringify(asked)}`);
   for (const url of asked) {
     for (const marker of PRIVATE_MARKERS.filter((m) => m !== 'auth/me')) {
       assert.ok(!url.toLowerCase().includes(marker), `no dashboard/admin request may be made (saw ${url})`);

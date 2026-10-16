@@ -751,8 +751,8 @@ async function getSettingsVersion() {
   return `${row?.total || 0}:${row?.v ? new Date(row.v).getTime() : 0}`;
 }
 
-async function upsertSetting(s, adminId = null) {
-  return db.execute(
+async function upsertSetting(s, adminId = null, executor = db) {
+  return executor.execute(
     `INSERT INTO settings (setting_key, setting_value, value_type, group_name, label, description, is_locked, min_value, max_value, updated_by)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
@@ -771,6 +771,14 @@ async function upsertSetting(s, adminId = null) {
       s.isLocked ? 1 : 0, s.min ?? null, s.max ?? null, adminId,
     ]
   );
+}
+
+/** Serialise settings patches and commit them without partially-written ranges. */
+async function withSettingsTransaction(work) {
+  return db.transaction(async (tx) => {
+    const rows = await tx.query(`SELECT * FROM settings ORDER BY setting_key FOR UPDATE`);
+    return work({ rows, upsert: (setting, adminId) => upsertSetting(setting, adminId, tx) });
+  });
 }
 
 async function updateSettingValue(key, value, adminId) {
@@ -1210,6 +1218,9 @@ async function upsertApiCredential(c) {
         key_last4 = VALUES(key_last4),
         key_length = VALUES(key_length),
         key_fingerprint = VALUES(key_fingerprint),
+        last_test_at = NULL, last_test_latency_ms = NULL, last_success_at = NULL,
+        last_request_at = NULL, last_error_at = NULL, last_error_code = NULL, last_error_message = NULL,
+        quota_used_today = NULL, quota_limit_day = NULL, quota_checked_at = NULL, plan_name = NULL,
         connection_state = VALUES(connection_state),
         connection_message = VALUES(connection_message),
         rate_limit_per_minute = VALUES(rate_limit_per_minute),
@@ -1235,7 +1246,7 @@ async function upsertApiCredential(c) {
 }
 
 /** Diagnostic fields only — never the ciphertext. */
-async function updateApiCredentialState(provider, patch) {
+async function updateApiCredentialState(provider, patch, identity = null) {
   const fields = [];
   const params = [];
   const push = (column, value) => {
@@ -1262,6 +1273,10 @@ async function updateApiCredentialState(provider, patch) {
 
   if (!fields.length) return { affectedRows: 0 };
   params.push(provider);
+  if (identity) {
+    params.push(identity.fingerprint, identity.host);
+    return db.execute(`UPDATE api_credentials SET ${fields.join(', ')} WHERE provider = ? AND key_fingerprint = ? AND host = ?`, params);
+  }
   return db.execute(`UPDATE api_credentials SET ${fields.join(', ')} WHERE provider = ?`, params);
 }
 
@@ -1463,7 +1478,7 @@ module.exports = {
   // settlement
   getPendingSelections, updateSelectionResult, upsertResult, getResultsByFixtureIds,
   // settings
-  getAllSettings, getSetting, getSettingsVersion, upsertSetting, updateSettingValue,
+  getAllSettings, getSetting, getSettingsVersion, upsertSetting, updateSettingValue, withSettingsTransaction,
   // logs
   insertApiSyncLog, finishApiSyncLog, getApiSyncLogs,
   insertGenerationLog, updateGenerationLog, getGenerationLog, getGenerationLogByDate, listGenerationLogs,

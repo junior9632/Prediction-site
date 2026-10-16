@@ -8,6 +8,8 @@
  * interrupted, awarded and walk-over fixtures are all rejected.
  */
 
+const time = require('./time');
+
 // Not started
 const UPCOMING = new Set(['NS', 'TBD']);
 // Finished (full time, after extra time, after penalties)
@@ -58,7 +60,7 @@ function isPlayable(fixture, now = new Date()) {
   const code = normalize(fixture && fixture.statusShort);
   if (!UPCOMING.has(code)) return false;
   if (NOT_PLAYABLE.has(code)) return false;
-  const kickoff = fixture && fixture.kickoffAt ? new Date(fixture.kickoffAt) : null;
+  const kickoff = time.toDate(fixture && fixture.kickoffAt);
   if (!kickoff || Number.isNaN(kickoff.getTime())) return false;
   return kickoff.getTime() > now.getTime();
 }

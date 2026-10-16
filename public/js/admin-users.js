@@ -260,7 +260,13 @@
   }
 
   async function boot() {
-    const me = await App.session.me();
+    App.session.onUnauthorized = () => {
+      if (App.session.unauthorizedHandled) return;
+      App.session.unauthorizedHandled = true;
+      const here = `${window.location.pathname}${window.location.search}${window.location.hash || ''}`;
+      window.location.replace(`/admin/login?next=${encodeURIComponent(here)}`);
+    };
+    const [me] = await Promise.all([App.session.me(), App.site.load()]);
     if (!me || me.type !== 'admin') {
       window.location.replace('/admin/login');
       return;

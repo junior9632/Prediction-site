@@ -32,6 +32,7 @@ process.env.API_CREDENTIALS_AUTO_KEY = '0'; // the "missing key" tests below nee
 process.env.API_CREDENTIALS_TEST_TIMEOUT_MS = '300';
 process.env.API_CREDENTIALS_TEST_MIN_INTERVAL_MS = '0';
 process.env.API_CREDENTIALS_TEST_REUSE_MS = '0';
+process.env.ADMIN_RATE_LIMIT_MAX = '500'; // this suite exercises many authenticated actions
 delete process.env.API_FOOTBALL_KEY;
 delete process.env.API_FOOTBALL_HOST;
 
@@ -47,6 +48,8 @@ globalThis.fetch = async (url, options = {}) => {
   const target = String(url);
   if (!target.startsWith(UPSTREAM) && !target.startsWith(UPSTREAM_RAPIDAPI)) return realFetch(url, options);
   upstreamCalls.push({ url: target, headers: options.headers || {} });
+  if (upstream.entered) upstream.entered();
+  if (upstream.wait) await upstream.wait;
 
   if (upstream.mode === 'hang') {
     // never resolves on its own: only the client's AbortController can stop it
@@ -55,7 +58,7 @@ globalThis.fetch = async (url, options = {}) => {
       setTimeout(resolve, 5000);
     });
   }
-  if (upstream.mode === 'network') throw new TypeError('fetch failed: getaddrinfo ENOTFOUND');
+  if (upstream.mode === 'network') throw new TypeError('fetch failed', { cause: Object.assign(new Error('DNS lookup failed'), { code: 'ENOTFOUND' }) });
   if (upstream.mode === 'down') return jsonResponse(503, { errors: { server: 'Service Unavailable' }, response: [] });
   if (upstream.mode === 'rate_limited') return jsonResponse(429, { errors: { rate: 'Too many requests' }, response: [] });
   if (upstream.mode === 'invalid_key') {
@@ -69,13 +72,11 @@ globalThis.fetch = async (url, options = {}) => {
     get: 'status',
     errors: [],
     results: 1,
-    response: [
-      {
+    response: {
         account: { firstname: 'Goal', lastname: 'Predict' },
         subscription: { plan: 'Pro', active: true, end: '2027-01-01T00:00:00+00:00' },
         requests: { current: 120, limit_day: 7500 },
-      },
-    ],
+    },
   });
 };
 
@@ -407,7 +408,7 @@ test('test connection: success reports the provider plan and quota from a real r
   assert.equal(res.status, 200, JSON.stringify(res.json));
   assert.equal(res.json.data.ok, true);
   assert.equal(res.json.data.state, 'CONNECTED');
-  assert.equal(res.json.data.httpStatus, null);
+  assert.equal(res.json.data.httpStatus, 200);
   assert.equal(res.json.data.endpoint, '/status');
   assert.deepEqual(res.json.data.quota, { current: 120, limitDay: 7500 });
   assert.equal(res.json.data.plan.name, 'Pro');
@@ -802,7 +803,7 @@ test('diagnostics: the refresh button gets safe quota/connection data and never 
   await put('/api/admin/api-management/credentials', { provider: 'api_football', key: 'live-test-key-rotated-77aa' }, { token: adminBearer });
   const changed = await get('/api/admin/api-management/diagnostics?probe=1', { token: adminBearer });
   assert.equal(changed.status, 200);
-  assert.equal(changed.json.data.liveProbe.reused, undefined, 'a different credential is probed for real');
+  assert.equal(changed.json.data.liveProbe.reused, false, 'a different credential is probed for real');
   assert.equal(upstreamCalls.length, callsBeforeChange + 1, 'the rotated credential gets its own real request');
   credentialService.__resetForTests();
 });
@@ -818,4 +819,178 @@ test('audit: configuration changes are recorded in the audit trail', async () =>
     assert.ok(!String(event.message || '').includes(API_KEY), 'no audit row may contain a key');
     assert.ok(!String(event.endpoint || '').includes('http'), 'the audit stores the endpoint path only');
   }
+});
+
+/* Repairs against the actual v3 contract and real DOM workflow. */
+test('repair: an unsaved candidate cannot overwrite the stored credential verdict or quota', async () => {
+  resetUpstream('ok'); store.apiCredentials.length = 0;
+  await saveKey(API_KEY);
+  await post('/api/admin/api-management/activate', { provider: 'api_football' }, { token: adminBearer });
+  await post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+  const before = { ...store.apiCredentials[0] };
+  resetUpstream('invalid_key');
+  const candidate = await post('/api/admin/api-management/test', { provider: 'api_football', key: 'unsaved-invalid-candidate' }, { token: adminBearer });
+  assert.equal(candidate.json.data.state, 'INVALID_KEY');
+  assert.equal(store.apiCredentials[0].connection_state, before.connection_state);
+  assert.equal(store.apiCredentials[0].last_test_at, before.last_test_at);
+  assert.equal(store.apiCredentials[0].quota_used_today, before.quota_used_today);
+  const status = await get('/api/admin/api-management', { token: adminBearer });
+  assert.equal(status.json.data.connection.state, 'CONNECTED');
+});
+
+test('repair: a test against a different host does not overwrite the stored host diagnostics', async () => {
+  resetUpstream('ok'); store.apiCredentials.length = 0;
+  await saveKey(API_KEY);
+  await post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+  resetUpstream('invalid_key');
+  await post('/api/admin/api-management/test', { provider: 'api_football', host: 'api-football-v1.p.rapidapi.com/v3' }, { token: adminBearer });
+  assert.equal(store.apiCredentials[0].connection_state, 'CONNECTED');
+  assert.equal(store.apiCredentials[0].host, 'v3.football.api-sports.io');
+});
+
+test('repair: omitted host uses the saved marketplace host, not the direct-host default', async () => {
+  resetUpstream('ok'); store.apiCredentials.length = 0;
+  await saveKey(API_KEY, 'api-football-v1.p.rapidapi.com/v3');
+  const tested = await post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+  assert.equal(tested.json.data.ok, true);
+  assert.equal(upstreamCalls[0].url, UPSTREAM_RAPIDAPI + '/status');
+  assert.equal(upstreamCalls[0].headers['x-rapidapi-key'], API_KEY);
+});
+
+test('repair: environment-only tests survive status reload and report the real quota', async () => {
+  const config = require('../server/config');
+  const original = { ...config.apiFootball };
+  resetUpstream('ok'); store.apiCredentials.length = 0;
+  try {
+    config.apiFootball.key = 'environment-test-only';
+    config.apiFootball.host = 'https://api-football-v1.p.rapidapi.com/';
+    const tested = await post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+    assert.equal(tested.json.data.ok, true);
+    const status = await get('/api/admin/api-management', { token: adminBearer });
+    assert.equal(status.json.data.credentialSource, 'environment');
+    assert.equal(status.json.data.connection.state, 'CONNECTED');
+    assert.equal(status.json.data.quota.current, 120);
+    assert.equal(status.json.data.plan.name, 'Pro');
+    assert.equal(status.json.data.connection.host, 'api-football-v1.p.rapidapi.com/v3');
+    assert.ok(!status.text.includes('environment-test-only'));
+  } finally { Object.assign(config.apiFootball, original); credentialService.__resetForTests(); }
+});
+
+test('repair: refresh persists failures, exposes the DNS cause, then clears errors on recovery', async () => {
+  resetUpstream('ok'); store.apiCredentials.length = 0;
+  await saveKey(API_KEY);
+  await post('/api/admin/api-management/activate', { provider: 'api_football' }, { token: adminBearer });
+  await get('/api/admin/api-management/diagnostics?probe=1', { token: adminBearer });
+  resetUpstream('network');
+  const failed = await get('/api/admin/api-management/diagnostics?probe=1', { token: adminBearer });
+  assert.equal(failed.json.data.liveProbe.networkCode, 'ENOTFOUND');
+  assert.equal(failed.json.data.connection.state, 'NETWORK_ERROR');
+  assert.match(failed.json.data.connection.hint, /DNS/);
+  assert.equal(store.apiCredentials[0].last_error_code, 'NETWORK_ERROR');
+  resetUpstream('ok');
+  const recovered = await get('/api/admin/api-management/diagnostics?probe=1', { token: adminBearer });
+  assert.equal(recovered.json.data.connection.state, 'CONNECTED');
+  assert.equal(store.apiCredentials[0].last_error_code, null);
+  assert.equal(store.apiCredentials[0].last_error_message, null);
+  assert.equal(store.apiCredentials[0].last_error_at, null);
+});
+
+test('repair: concurrent identical tests share one real request; different concurrent keys are throttled', async () => {
+  resetUpstream('ok'); store.apiCredentials.length = 0;
+  let release;
+  let entered;
+  upstream.wait = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { entered = resolve; });
+  upstream.entered = entered;
+  const first = post('/api/admin/api-management/test', { provider: 'api_football', key: API_KEY }, { token: adminBearer });
+  await started;
+  const same = post('/api/admin/api-management/test', { provider: 'api_football', key: API_KEY }, { token: adminBearer });
+  const different = await post('/api/admin/api-management/test', { provider: 'api_football', key: 'a-different-test-key' }, { token: adminBearer });
+  assert.equal(different.status, 429);
+  release();
+  const [a, b] = await Promise.all([first, same]);
+  assert.equal(a.json.data.ok, true);
+  assert.equal(b.json.data.ok, true);
+  assert.equal(b.json.data.reused, true);
+  assert.equal(upstreamCalls.length, 1);
+});
+
+test('repair: rotating a saved credential while its test is pending ignores the old verdict', async () => {
+  resetUpstream('ok'); store.apiCredentials.length = 0;
+  await saveKey(API_KEY);
+  let release;
+  let entered;
+  upstream.wait = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { entered = resolve; }); upstream.entered = entered;
+  const pending = post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+  await started;
+  await saveKey('rotated-while-testing-12345');
+  release();
+  assert.equal((await pending).json.data.ok, true, 'the old key really did work, but is no longer the saved key');
+  assert.equal(store.apiCredentials[0].key_fingerprint, vault.fingerprint('rotated-while-testing-12345'));
+  assert.equal(store.apiCredentials[0].connection_state, 'NOT_TESTED');
+  assert.equal(store.apiCredentials[0].quota_used_today, null);
+  assert.equal(store.apiCredentials[0].last_test_at, null);
+});
+
+test('repair: refresh and test share the same reuse window rather than calling twice', async () => {
+  resetUpstream('ok'); store.apiCredentials.length = 0;
+  await saveKey(API_KEY);
+  await post('/api/admin/api-management/activate', { provider: 'api_football' }, { token: adminBearer });
+  credentialService.setTestWindowsForTests({ reuseMs: 60000, minIntervalMs: 0 });
+  await post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+  const refreshed = await get('/api/admin/api-management/diagnostics?probe=1', { token: adminBearer });
+  assert.equal(refreshed.json.data.liveProbe.reused, true);
+  assert.equal(upstreamCalls.length, 1);
+});
+
+test('repair: API Management shows the saved prediction thresholds, not environment defaults', async () => {
+  await settingsService.updateSettings({ min_confidence: 80, max_risk: 25 });
+  try {
+    const status = await get('/api/admin/api-management', { token: adminBearer });
+    assert.equal(status.json.data.predictionRules.minConfidence, 80);
+    assert.equal(status.json.data.predictionRules.maxRisk, 25);
+    assert.equal(status.json.data.predictionRules.automaticTicketGeneration, false);
+  } finally { await settingsService.updateSettings({ min_confidence: 72, max_risk: 35 }); }
+});
+
+test('repair: invalid environment URLs are configuration errors, not fake network outages', async () => {
+  const config = require('../server/config');
+  const original = { ...config.apiFootball };
+  resetUpstream('ok'); store.apiCredentials.length = 0;
+  try {
+    config.apiFootball.key = 'environment-test-only';
+    config.apiFootball.host = 'https://attacker.test/path';
+    const status = await credentialService.getStatus();
+    assert.equal(status.connection.state, 'CONFIG_INCOMPLETE');
+    assert.equal(status.connection.reason, 'CONFIG_INVALID');
+    assert.equal(upstreamCalls.length, 0);
+  } finally { Object.assign(config.apiFootball, original); credentialService.__resetForTests(); }
+});
+
+test('repair: production can boot without an environment API key so a DB key can be configured', () => {
+  const config = require('../server/config');
+  const oldProduction = config.isProduction; const oldKey = config.apiFootball.key;
+  try {
+    config.isProduction = true; config.apiFootball.key = '';
+    assert.ok(!config.validate().some((problem) => /API_FOOTBALL_KEY/.test(problem)));
+    assert.ok(config.auth.jwtSecret.length >= 32, 'session authentication remains required');
+  } finally { config.isProduction = oldProduction; config.apiFootball.key = oldKey; }
+});
+
+test('repair: a newer successful data request supersedes a failed probe without falsifying its history', async () => {
+  resetUpstream('network'); store.apiCredentials.length = 0;
+  await saveKey(API_KEY);
+  await post('/api/admin/api-management/activate', { provider: 'api_football' }, { token: adminBearer });
+  await post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+  assert.equal(store.apiCredentials[0].connection_state, 'NETWORK_ERROR');
+  const { apiFootball } = require('../server/services/apiFootball');
+  apiFootball._recordSuccess(); // the request client observed a new valid provider payload
+  await credentialService.recordUpstreamRequest({ ok: true });
+  const status = await credentialService.getStatus();
+  assert.equal(status.connection.state, 'CONNECTED');
+  assert.equal(status.connection.reason, null);
+  assert.equal(status.connection.hint, null);
+  assert.equal(status.connection.lastTestState, 'NETWORK_ERROR', 'the historical failed test stays historical');
+  assert.equal(store.apiCredentials[0].connection_state, 'NETWORK_ERROR', 'a data request does not rewrite test history');
 });

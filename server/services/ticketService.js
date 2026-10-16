@@ -234,6 +234,7 @@ async function runGeneration(params = {}) {
   try {
     /* -------- data source availability -------- */
     await step('LOADING_FIXTURES');
+    if (typeof api._refreshCredential === 'function') await api._refreshCredential();
     if (!api.configured) {
       return await finalize(RUN_STATES.DATA_SOURCE_UNAVAILABLE, {
         error: 'API-Football key is not configured on the server',

@@ -126,8 +126,8 @@ CSS, never by hiding a navigation link:
   loses access even while its JWT is still cryptographically valid.
 * The **authenticated user is always resolved from the session** and re-read from the database. A
   `userId` in the query string, a `role` parameter or an `X-User-Id` header changes nothing.
-* The **homepage is marketing only**: it fetches nothing but the shared session check
-  (`GET /api/auth/me`), shows a locked preview behind **Unlock AI Football Predictions**, and
+* The **homepage is marketing only**: it fetches the shared session check (`GET /api/auth/me`)
+  and public branding metadata (`GET /api/meta`), shows a locked preview behind **Unlock AI Football Predictions**, and
   names no prediction endpoint. No team, price, confidence, selection or statistic is rendered.
 * Member-only navigation (`Dashboard · Predictions · Today's Ticket · Ticket History · Analytics`)
   ships `hidden` and is revealed only after `/api/auth/me` confirms a session.
@@ -295,6 +295,9 @@ product rules cannot be weakened from the dashboard. The odds window itself is b
 
 ## API Management (admin console)
 
+See [API-Football repair and deployment verification](docs/API-FOOTBALL-REPAIR.md) for the v3
+contract fixes, network diagnosis and the safe Test → Save → Activate workflow.
+
 The admin console has an **API Management** screen (`/admin#api-management`) that makes the
 API-Football credential an admin task instead of a deployment edit:
 
@@ -316,9 +319,9 @@ API-Football credential an admin task instead of a deployment edit:
   (nothing leaves the sandbox and every value is labelled sample data).
 
 Saving, testing or switching a credential **never** generates, publishes or replaces a
-prediction ticket — the market stays Over 1.5 Goals, combined odds 2.00–4.00, minimum
-confidence 72, maximum risk 35, minimum data quality 60, at most 6 selections, odds freshness
-90 minutes, and generation stays manual.
+prediction ticket. The market stays Over 1.5 Goals, combined odds stay 2.00–4.00, generation
+stays manual, and the rules card reflects the current validated Settings. Replacing a credential
+that is already active takes effect immediately; a new inactive credential still needs activation.
 
 ---
 
@@ -358,6 +361,18 @@ Documentation:
 
 ---
 
+## Admin settings & fixtures
+
+The settings editor validates every editable setting, saves only changes, and preserves rejected
+or unsaved drafts. Fixtures can be searched, filtered and refreshed for a selected UTC date without
+creating a ticket. Sync budgets (including zero H2H requests), live playability, actual fetch times,
+90-minute scores and configured display timezones are enforced end to end.
+
+See [the repair and post-deployment checklist](docs/SETTINGS-AND-FIXTURES.md) for the full scope,
+validation rules, production verification steps and sample-only preview limitations.
+
+---
+
 ## Security
 
 * Helmet with a strict CSP — **no inline JavaScript anywhere**; `script-src 'self'`.
@@ -380,7 +395,7 @@ Documentation:
 ## Tests
 
 ```bash
-npm test          # 225 tests, ~16s, no database or network required
+npm test          # offline regression suite; no database or network required
 ```
 
 | File | Covers |
@@ -389,6 +404,10 @@ npm test          # 225 tests, ~16s, no database or network required
 | `tests/acceptance.test.js` | manual-trigger guards, data-source-unavailable runs, a full qualified generation, regeneration, settlement end to end |
 | `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
 | `tests/deployment-zip.test.js` | `GoalPredict-cPanel-deployment.zip` is the build of the current tree, byte for byte: it contains every file the host needs (never `node_modules`, `.git`, logs, `.env`), the build is deterministic, and the committed archive matches the source |
+| `tests/settings-validation.test.js` | all 50 editable defaults round-trip, strict types/weights/timezones/leagues, locked values, cross-field rules, legacy repair warnings and transactional persistence |
+| `tests/fixture-settings.test.js` | UNIX timestamps, 90-minute AET/PEN scores, real sync clocks, selected-date sync, zero H2H budgets, per-request quota reserves and fixture/odds settings over HTTP |
+| `tests/admin-settings-client.test.js` · `tests/admin-fixtures-client.test.js` | executed editor/browser modules: changed-only saves, drafts/errors, touch controls, race safety, date sync, quota reporting, filtering and pagination |
+| `tests/site-settings-client.test.js` | public branding, display timezones/DST, date-only calendar labels and metadata failures |
 | `tests/settings-wiring.test.js` | every admin-editable setting reaches the code that claims to honour it: the combination weights/leg-penalty reach the builder, `results_settle_mode` is enforced (a tampered value stops settlement with `SETTLE_MODE_UNSUPPORTED`), `sync_timezone` anchors the sync's calendar day with UTC storage and a safe fallback, and no newly declared setting is inert |
 | `tests/dashboard-activity.test.js` | the member boundary: guest `401`/redirect with no payload, self-scoped feed (another member's rows and IPs never leak, query parameters cannot widen the scope), disabled/locked/deleted accounts refused, admin permissions preserved, and the page contract (`no-store`, `noindex`, hidden-until-authenticated card, bfcache re-validation) |
 | `tests/fakeDb.js` | in-memory double for `server/database/connection.js`; the SQL still comes from `queries.js` |

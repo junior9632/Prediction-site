@@ -130,6 +130,7 @@ function install(overrides = {}) {
     if (/^SELECT id, email, username, role, is_active, last_login_at, last_login_ip, must_change_password, created_at/.test(s)) {
       return store.admins;
     }
+    if (/^SELECT \* FROM settings WHERE setting_key = \?/.test(s)) return store.settings.filter((row) => row.setting_key === params[0]);
     if (/^SELECT \* FROM settings/.test(s)) return store.settings;
     if (/^SELECT \* FROM leagues/.test(s)) return store.leagues;
     if (/^SELECT id FROM predictions/.test(s)) {
@@ -183,6 +184,10 @@ function install(overrides = {}) {
     if (/^SELECT \* FROM odds WHERE fixture_id IN/.test(s)) return store.odds.filter((o) => params.map(Number).includes(Number(o.fixture_id)));
     if (/^SELECT fixture_id, MAX\(fetched_at\)/.test(s)) return [];
     if (/^SELECT \* FROM fixtures WHERE id = \?/.test(s)) return store.fixtures.filter((f) => f.id === Number(params[0]));
+    if (/^SELECT f\.\* FROM fixtures f/.test(s) && /f\.is_finished = 0/.test(s)) {
+      const limit = Number((s.match(/LIMIT (\d+)/) || [null, 200])[1]);
+      return store.fixtures.filter((f) => f.kickoff_at >= params[0] && f.kickoff_at < params[1] && f.kickoff_at < params[2] && Number(f.is_finished) === 0).slice(0, limit);
+    }
     if (/^SELECT f\.id, f\.kickoff_at, f\.home_team_id/.test(s)) return []; // form/h2h lookups -> empty (DATA UNAVAILABLE paths)
     // incremental history: when was each calendar day last fetched?
     if (/^SELECT DATE_FORMAT\(f\.kickoff_at, '%Y-%m-%d'\) AS day/.test(s)) {
@@ -459,6 +464,30 @@ function install(overrides = {}) {
 
   async function execute(sql, params = []) {
     const s = String(sql).replace(/\s+/g, ' ').trim();
+    if (/^INSERT INTO fixtures /.test(s)) {
+      const columns = s.match(/^INSERT INTO fixtures \(([^)]+)\)/)[1].split(',').map((column) => column.trim());
+      const row = Object.fromEntries(columns.map((column, index) => [column, params[index]]));
+      const existing = store.fixtures.find((fixture) => Number(fixture.id) === Number(row.id));
+      if (existing) Object.assign(existing, row);
+      else store.fixtures.push(row);
+      return { affectedRows: 1 };
+    }
+    if (/^INSERT INTO settings /.test(s)) {
+      const row = {
+        setting_key: params[0], setting_value: params[1], value_type: params[2], group_name: params[3],
+        label: params[4], description: params[5], is_locked: params[6], min_value: params[7], max_value: params[8],
+        updated_by: params[9], updated_at: nowIso(),
+      };
+      const existing = store.settings.find((item) => item.setting_key === row.setting_key);
+      if (existing) Object.assign(existing, row);
+      else store.settings.push(row);
+      return { affectedRows: 1 };
+    }
+    if (/^UPDATE settings SET setting_value = \?/.test(s)) {
+      const row = store.settings.find((item) => item.setting_key === params[2]);
+      if (row) Object.assign(row, { setting_value: params[0], updated_by: params[1], updated_at: nowIso() });
+      return { affectedRows: row ? 1 : 0 };
+    }
     if (/^INSERT INTO users/.test(s)) {
       const id = nextId();
       store.users.push({
@@ -769,7 +798,9 @@ function install(overrides = {}) {
         key_length: params[8], key_fingerprint: params[9],
         connection_state: params[10], connection_message: params[11],
         rate_limit_per_minute: params[12], created_by_admin_id: params[13], updated_by_admin_id: params[14],
-        is_active: 0, quota_used_today: null, quota_limit_day: null,
+        is_active: 0, quota_used_today: null, quota_limit_day: null, quota_checked_at: null, plan_name: null,
+        last_test_at: null, last_test_latency_ms: null, last_success_at: null, last_request_at: null,
+        last_error_at: null, last_error_code: null, last_error_message: null,
         created_at: nowIso(), updated_at: nowIso(),
       };
       const at = store.apiCredentials.findIndex((c) => c.provider === row.provider);
@@ -812,7 +843,8 @@ function install(overrides = {}) {
       // generic diagnostic patch (connection state, last test/success/request
       // times, quota, plan). Fields are `col = ?` pairs in SQL order; a field
       // with no bound parameter (e.g. `disabled_at = NOW()`) is left alone.
-      const row = store.apiCredentials.find((c) => c.provider === params[params.length - 1]);
+      const guarded = /AND key_fingerprint = \? AND host = \?/.test(s);
+      const row = store.apiCredentials.find((c) => c.provider === params[params.length - (guarded ? 3 : 1)] && (!guarded || (c.key_fingerprint === params[params.length - 2] && c.host === params[params.length - 1])));
       if (row) {
         const assignments = (s.match(/SET (.+) WHERE/) || [null, ''])[1]
           .split(',')
@@ -822,7 +854,7 @@ function install(overrides = {}) {
           const [column, value] = assignment.split(' = ');
           if (!column || !value) continue;
           if (value.includes('?')) {
-            if (params[bound] !== undefined && params[bound] !== null) row[column.trim()] = params[bound];
+            if (params[bound] !== undefined) row[column.trim()] = params[bound];
             bound += 1;
           } else if (/^NOW\(\)$/i.test(value.trim())) {
             row[column.trim()] = nowIso();
@@ -858,12 +890,15 @@ function install(overrides = {}) {
   connection.execute = execute;
   connection.ping = async () => true;
   connection.getPool = () => ({ query: async () => [[{ 1: 1 }]], execute: async () => [[{ 1: 1 }]], getConnection: async () => ({ release() {}, ping: async () => {}, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, execute: async () => [[]] }) });
-  connection.transaction = async (work) =>
-    work({
-      query: async (sql, params) => query(sql, params),
-      queryOne: async (sql, params) => queryOne(sql, params),
-      execute: async (sql, params) => execute(sql, params),
-    });
+  connection.transaction = async (work) => {
+    const snapshot = structuredClone(store);
+    try {
+      return await work({ query, queryOne, execute });
+    } catch (err) {
+      Object.assign(store, snapshot);
+      throw err;
+    }
+  };
 
   return {
     store,

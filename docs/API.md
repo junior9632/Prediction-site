@@ -209,7 +209,9 @@ Before any run: `status: "PENDING"`, `statusLabel: "NOT GENERATED YET"`.
 
 ### `GET /api/fixtures/:id`
 
-One fixture with its verified prices and, when available, its stored prediction.
+One fixture with its verified prices and, when available, its stored prediction. Both list and
+detail revalidate prices against current settings, freshness and kickoff/status. The selected price
+is also attached to `fixture.over15`; expired or started fixtures never expose a price as available.
 
 ### `GET /api/odds?date=`
 
@@ -326,12 +328,12 @@ request. Rate limited separately from the public API.
 | `GET /generation-progress?run_id=` | `{runId, status, currentStep, currentMessage, progress[], finishedAt, report, ticket, error}` |
 | `GET /generation-report?run_id=&date=` | the persisted run: `{…, counters {…18 keys…}, report, error}` |
 | `GET /generations?limit=` | recent runs as a flat array |
-| `GET /settings` | `{items[], effective {}}` — `items` carry `key, label, description, group, type, options, min, max, locked, value, updatedAt` |
-| `PUT /settings` | `{key: value, …}` → `{applied[], rejected[{key, reason}], settings}` |
+| `GET /settings` | `{items[], effective {}}` — `items` carry `key, label, description, group, type, options, min, max, integer, required, maxLength, locked, value, warning, needsRepair, updatedAt` |
+| `PUT /settings` | `{key: value, …}` → `{applied[], rejected[{key, reason, message}], settings}` |
 | `GET /fixtures?date=` · `GET /odds?date=` · `GET /predictions?date=&eligible=&limit=` | stored rows for inspection, including rejected prices and reject reasons |
 | `GET /tickets/history?limit=` | every generated day |
 | `GET /analytics` | the admin variant (adds `qualified`, `noTicketDays`, `pending`, `avgConfidence`, per-leg stats) |
-| `POST /sync` | `{job: "fixtures"|"odds"|"results"|"all"}` → `{job, result}`; `503 NO_API_KEY` when the key is missing. **Never creates a ticket** |
+| `POST /sync` | `{job: "fixtures"|"odds"|"results"|"all", date?: "YYYY-MM-DD"}` (date is accepted for fixtures only) → `{job, result}`; `503 NO_API_KEY` when the key is missing. **Never creates a ticket** |
 | `GET /api-status` | `{configured, keyConfigured, state, available, quota, plan, host, baseUrl, ratePerMinute, keyPreview, recentSyncs}` — masked key only |
 | `GET /sync-logs?limit=&job=` | background sync history |
 | `GET /system-logs?level=&channel=&event=&page=&limit=` | `{page, limit, total, items}` audit/error trail |
@@ -349,11 +351,19 @@ none of these routes can create, publish or replace a prediction ticket.
 | --- | --- |
 | `GET /api-management` (alias `GET /api-management/status`) | `{provider, providers[], activeProviderId, credentialSource, credential {provider, host, maskedKey, keyLength, isActive, algorithm, savedAt, updatedAt, location}, environment {keyConfigured, host, maskedKey, isActive}, connection {state, label, message, testedAt, latencyMs, lastSuccessAt, lastErrorAt, lastErrorCode, lastErrorMessage, host}, lastRequestAt, lastSuccessfulSyncs {fixtures, odds, results {lastSuccessAt, runs}}, quota {current, limitDay, checkedAt, source}\|null, rateLimits, plan, encryption {configured, algorithm, keyEnvVar, message}, client, recentEvents[], recentErrors[], predictionRules, serverTime}`. `credentialSource` is `database`, `environment` or `none`. On a live database that has not received migration 003 the endpoint still answers `200` with `databaseManaged: false` and `degradedReason: SCHEMA_OUT_OF_DATE` instead of a `500`, and the environment credential keeps driving the syncs |
 | `GET /api-management/providers` | the allowlisted provider registry: `{providers[], defaultProviderId}`. Only `implemented: true` providers can be configured; the others are declared for extension and carry **no** host |
-| `GET /api-management/diagnostics?probe=1` | safe quota/connection diagnostics. `probe=1` performs one real `/status` call (skipped — `liveProbe.skipped: true` — when no usable credential exists, and repeated inside the reuse window with `liveProbe.reused: true` instead of a second upstream call; a changed credential is always probed for real) and returns `{quota, rateLimits, connection, liveProbe, recentErrors, encryption}` |
-| `PUT /api-management/credentials` | `{provider, key, host?}` → stores the key **AES-256-GCM encrypted** (`api_credentials`). Refuses `400 HOST_NOT_ALLOWED` (SSRF guard), `400 UNKNOWN_PROVIDER`, `400 PROVIDER_NOT_IMPLEMENTED`, `503 ENCRYPTION_KEY_MISSING` (nothing is written). Saving never activates the provider and never reports it as connected |
-| `POST /api-management/test` | `{provider, key?, host?}` → **one real request** to the provider's official `/status` endpoint. Returns `{ok, state, label, message, httpStatus, latencyMs, quota, plan, keyOrigin, reused, testedAt}` with `state` ∈ `CONNECTED`, `INVALID_KEY`, `QUOTA_EXCEEDED`, `RATE_LIMITED`, `NETWORK_ERROR`, `TIMEOUT`, `PROVIDER_UNAVAILABLE`, `CONFIG_INCOMPLETE`. `429 TEST_THROTTLED` when called again inside the floor window |
+| `GET /api-management/diagnostics?probe=1` | safe quota/connection diagnostics. `probe=1` performs one real `/status` call (skipped — `liveProbe.skipped: true` — when no usable credential exists, and repeated inside the reuse window with `liveProbe.reused: true` instead of a second upstream call; a changed credential is always probed for real) and returns refreshed `{quota, rateLimits, connection, liveProbe, recentErrors, encryption, status}` |
+| `PUT /api-management/credentials` | `{provider, key, host?}` → stores the key **AES-256-GCM encrypted** (`api_credentials`). Refuses `400 HOST_NOT_ALLOWED` (SSRF guard), `400 UNKNOWN_PROVIDER`, `400 PROVIDER_NOT_IMPLEMENTED`, `503 ENCRYPTION_KEY_MISSING` (nothing is written). Saving an inactive credential does not activate it. Replacing an active credential takes effect immediately and clears its old diagnostics. Saving is not a connection test |
+| `POST /api-management/test` | `{provider, key?, host?}` → **one real request** to the provider's official `/status` endpoint. Returns `{ok, state, label, message, reason, hint, networkCode, resetAt, httpStatus, latencyMs, quota, plan, rateLimitPerMinute, keyOrigin, reused, testedAt}` with `state` ∈ `CONNECTED`, `INVALID_KEY`, `QUOTA_EXCEEDED`, `RATE_LIMITED`, `NETWORK_ERROR`, `TIMEOUT`, `PROVIDER_UNAVAILABLE`, `CONFIG_INCOMPLETE`, `REQUEST_REJECTED`, `SUBSCRIPTION_INACTIVE`. `429 TEST_THROTTLED` when called again inside the floor window |
 | `POST /api-management/activate` | `{provider}` → the server starts using the stored (encrypted) credential; `400 NOTHING_TO_ACTIVATE` when nothing was saved, `500 CREDENTIAL_UNREADABLE` when the stored key cannot be decrypted |
 | `POST /api-management/disable` | `{provider}` → stops using the stored credential (it stays encrypted for re-activation) and falls back to the environment configuration |
+
+Test and Refresh share a throttled, single-flight probe and explicit reuse window. A typed key is
+never saved by Test. If `host` is omitted, the key's stored/environment host is used. Only the exact
+saved key fingerprint and host can receive persisted test diagnostics, including during concurrent
+key rotation. Success clears old error fields; Refresh persists failed checks as well as successes.
+`connection` includes `inUse`, `reason`, `hint` and `networkCode`; `effectiveCredential` names the
+active source/host/masked key separately from a saved-but-inactive credential. Environment-only
+observations live in the current process; database-backed observations persist across restarts.
 
 ### User management (`/api/admin/users*`) — registration approval
 
@@ -397,11 +407,33 @@ qualifiedCombinations, selectedPicks
 
 ### Settings keys
 
-Grouped as `market` (locked), `odds_window`, `filters`, `model`, `scoring`, `correlation`,
-`sync`, `site`. Rejection reasons returned by `PUT /settings`:
-`UNKNOWN_SETTING`, `LOCKED_SETTING`, `NOT_A_NUMBER`, `BELOW_MINIMUM_<min>`,
-`ABOVE_MAXIMUM_<max>`, `INVALID_OPTION`, `INVALID_JSON`, `ODDS_WINDOW_INVALID`,
-`SELECTION_RANGE_INVALID`, `SINGLE_ODDS_RANGE_INVALID`.
+54 settings, grouped as `market` (locked), `odds_window`, `filters`, `model`, `scoring`,
+`correlation`, `sync`, `site`. Four code-enforced rules are locked; 50 settings are editable.
+
+Send a nonempty object of changed keys. JSON settings accept a JSON object or a JSON-encoded
+object. Counts must be integers; blank numeric values are not zero; booleans must explicitly name
+on/off; timezone names and comma-separated positive league IDs are validated. Scoring objects
+accept known, bounded numeric components only. Cross-field rules are checked against the current
+locked database rows. The accepted subset is committed atomically, including inserts for settings
+not yet seeded. **HTTP 200 can contain rejections**: check `applied` and `rejected`, never assume all
+submitted fields were saved. Database failures roll back the accepted subset.
+
+`GET /settings` uses code-enforced values for locked fields. Invalid legacy settings show a safe
+default with `warning` and `needsRepair: true`, matching what the engine actually uses.
+
+Rejection codes include `UNKNOWN_SETTING`, `LOCKED_SETTING`, `NOT_A_NUMBER`, `NOT_AN_INTEGER`,
+`BELOW_MINIMUM_<min>`, `ABOVE_MAXIMUM_<max>`, `INVALID_BOOLEAN`, `INVALID_OPTION`, `INVALID_JSON`,
+`INVALID_WEIGHTS`, `UNKNOWN_WEIGHT`, `INVALID_WEIGHT`, `ZERO_WEIGHT_TOTAL`, `NOT_A_STRING`,
+`REQUIRED`, `TOO_LONG`, `INVALID_TEXT`, `INVALID_TIMEZONE`, `INVALID_LEAGUE_IDS`,
+`ODDS_WINDOW_INVALID`, `SELECTION_RANGE_INVALID`, `SINGLE_ODDS_RANGE_INVALID`,
+`CANDIDATE_POOL_TOO_SMALL`, `FORM_WINDOW_TOO_SMALL`, `VENUE_WINDOW_TOO_SMALL`, `ZERO_MODEL_WEIGHTS`.
+Every rejection includes a human-readable `message`.
+
+`POST /sync` with `{job: "fixtures", date: "2026-10-16"}` refreshes that **one UTC date**,
+without the history/upcoming backfill. It respects league filters, enrichment and quota settings.
+An invalid date is a 400; a date attached to another job is `400 SYNC_DATE_UNSUPPORTED`.
+`GET /fixtures?date=` includes `statusLabel`, `live`, current `playable`, `finished`, 90-minute
+`score` and `fetchedAt` for each stored fixture. No sync operation generates a ticket.
 
 ### Generation run states
 
@@ -412,7 +444,8 @@ A run that hits the daily request quota ends `DATA_SOURCE_UNAVAILABLE` with
 Background sync jobs (`fixtures`, `odds`, `results`) log `SUCCESS | FAILED | PARTIAL | SKIPPED`
 in `api_sync_logs`; `SKIPPED` means the job paused itself because the plan had only
 `api_quota_reserve` (or fewer) requests left for the day — nothing is broken, the requests are kept
-for a manual generation. The same table now records the daily budget the provider reported
+for a manual generation. This check runs between requests as well as at job start; a partially
+completed job retains its rows and reports actual call counts with `SKIPPED`. The same table records the daily budget the provider reported
 (`requests_used` / `requests_limit`).
 Trigger sources accepted: `admin_ui`, `admin_api`, `cli_manual`. Anything else (including
 `cron`/`scheduler`) is refused with `403 AUTOMATIC_GENERATION_DISABLED`, and any process with

@@ -149,6 +149,7 @@ function harness(responses = {}) {
 
   const render = (html) => {
     lastHtml = html;
+    nodes.clear(); // innerHTML replaces the DOM; old controls/feedback do not survive.
     for (const match of String(html).matchAll(/id="([\w-]+)"/g)) {
       if (!nodes.has(match[1])) nodes.set(match[1], makeEl(match[1]));
     }
@@ -425,4 +426,109 @@ test('admin API Management view: the provider selector only offers allowlisted h
   assert.match(host.innerHTML, /api-football-v1\.p\.rapidapi\.com\/v3/, 'the approved RapidAPI host is offered');
   // a host that is not on the allowlist can never be typed into the page
   assert.ok(!h.html().includes('type="url"'), 'there is no free-text host field at all');
+});
+
+test('API Management repair: a real DOM replacement does not erase save/test feedback', async () => {
+  const h = harness({
+    'GET /admin/api-management': () => STATUS_PAYLOAD,
+    'PUT /admin/api-management/credentials': () => ({ maskedKey: '********7890', status: STATUS_PAYLOAD }),
+    'POST /admin/api-management/test': () => ({ ok: true, state: 'CONNECTED', label: 'Connection successful', message: 'The provider accepted the credential.', latencyMs: 12 }),
+  });
+  await h.view.load(h.helpers);
+  const oldBox = h.nodes.get('apiActionBox');
+  h.nodes.get('apiKey').value = 'test-only-key-1234567890';
+  await h.nodes.get('apiSaveBtn').onclick();
+  assert.notEqual(h.nodes.get('apiActionBox'), oldBox, 'render replaces the DOM, just as innerHTML does in a browser');
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /API key saved/);
+  await h.nodes.get('apiTestBtn').onclick();
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /Connection successful/);
+});
+
+test('API Management repair: Test before Save preserves the typed key and chosen host', async () => {
+  const h = harness({
+    'GET /admin/api-management': () => STATUS_PAYLOAD,
+    'POST /admin/api-management/test': () => ({ ok: false, state: 'INVALID_KEY', message: 'Not accepted', latencyMs: 9 }),
+  });
+  await h.view.load(h.helpers);
+  const key = h.nodes.get('apiKey'); key.value = 'candidate-not-yet-saved';
+  h.nodes.get('apiHost').value = 'api-football-v1.p.rapidapi.com/v3';
+  await h.nodes.get('apiTestBtn').onclick();
+  assert.equal(h.nodes.get('apiKey'), key, 'test does not rebuild the credential form');
+  assert.equal(key.value, 'candidate-not-yet-saved');
+  assert.equal(h.nodes.get('apiHost').value, 'api-football-v1.p.rapidapi.com/v3');
+  assert.ok(!h.html().includes(key.value), 'the secret is never interpolated into HTML');
+  assert.equal(h.view.hasUnsavedChanges(), true);
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /not been saved/);
+});
+
+test('API Management repair: all actions and inputs are disabled while a request runs', async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const h = harness({ 'GET /admin/api-management': () => STATUS_PAYLOAD, 'POST /admin/api-management/test': () => pending });
+  await h.view.load(h.helpers);
+  const running = h.nodes.get('apiTestBtn').onclick();
+  for (const id of ['apiSaveBtn', 'apiTestBtn', 'apiActivateBtn', 'apiDisableBtn', 'apiRefreshBtn', 'apiKey', 'apiHost']) assert.equal(h.nodes.get(id).disabled, true, id);
+  await h.nodes.get('apiSaveBtn').onclick();
+  assert.equal(h.requests.filter((r) => r.method === 'PUT').length, 0, 'a competing save cannot run');
+  release({ ok: true, state: 'CONNECTED', message: 'accepted', latencyMs: 1 });
+  await running;
+  assert.equal(h.view.isBusy(), false);
+  assert.equal(h.nodes.get('apiKey').disabled, false);
+});
+
+test('API Management repair: environment marketplace hosts are selected instead of the recommendation', async () => {
+  const payload = structuredClone(STATUS_PAYLOAD);
+  payload.credential = null;
+  payload.environment = { keyConfigured: true, host: 'api-football-v1.p.rapidapi.com/v3', maskedKey: '********1234' };
+  payload.credentialSource = 'environment';
+  const h = harness({ 'GET /admin/api-management': () => payload });
+  await h.view.load(h.helpers);
+  assert.equal(h.nodes.get('apiHost').value, payload.environment.host);
+});
+
+test('API Management repair: Activate refuses an unsaved key or host draft', async () => {
+  const h = harness({ 'GET /admin/api-management': () => STATUS_PAYLOAD });
+  await h.view.load(h.helpers);
+  h.nodes.get('apiKey').value = 'unsaved-test-only-key';
+  await h.nodes.get('apiActivateBtn').onclick();
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /Save the configuration first/);
+  assert.equal(h.requests.filter((r) => r.method === 'POST').length, 0);
+});
+
+test('API Management repair: a late response cannot replace another dashboard view', async () => {
+  let finish;
+  let visible = true;
+  const pending = new Promise((resolve) => { finish = resolve; });
+  const h = harness({ 'GET /admin/api-management': () => pending });
+  const loading = h.view.load({ ...h.helpers, isCurrent: () => visible });
+  visible = false;
+  h.helpers.render('<div>Another dashboard view</div>');
+  finish(STATUS_PAYLOAD);
+  await loading;
+  assert.equal(h.html(), '<div>Another dashboard view</div>');
+});
+
+test('API Management repair: refresh failures preserve the test verdict and the unsaved key', async () => {
+  let reads = 0;
+  const h = harness({
+    'GET /admin/api-management': () => { if (++reads > 1) throw new Error('status temporarily unavailable'); return STATUS_PAYLOAD; },
+    'POST /admin/api-management/test': () => ({ ok: true, label: 'Connection successful', message: 'accepted', latencyMs: 1 }),
+  });
+  await h.view.load(h.helpers);
+  h.nodes.get('apiKey').value = 'unsaved-test-only-key';
+  await h.nodes.get('apiTestBtn').onclick();
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /Connection successful/);
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /Status refresh failed/);
+  assert.equal(h.nodes.get('apiKey').value, 'unsaved-test-only-key');
+});
+
+test('API Management repair: schema/encryption failures disable saving without hiding the diagnosis', async () => {
+  const payload = structuredClone(STATUS_PAYLOAD);
+  payload.databaseManaged = false; payload.degradedReason = 'SCHEMA_OUT_OF_DATE';
+  payload.encryption.configured = false;
+  const h = harness({ 'GET /admin/api-management': () => payload });
+  await h.view.load(h.helpers);
+  assert.equal(h.nodes.get('apiSaveBtn').disabled, true);
+  assert.equal(h.nodes.get('apiTestBtn').disabled, false);
+  assert.match(h.html(), /npm run db:migrate/);
 });

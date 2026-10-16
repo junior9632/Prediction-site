@@ -18,6 +18,7 @@
  */
 
 const { AppError } = require('../utils/errors');
+const { normalizeHost } = require('../utils/providerConfig');
 
 /** How the credential is presented to the provider. */
 const AUTH_STYLES = Object.freeze({
@@ -37,7 +38,7 @@ const PROVIDERS = Object.freeze({
     testEndpoint: '/status',
     /** Requests per minute budget used when the provider does not report one. */
     defaultRatePerMinute: 60,
-    docsUrl: 'https://dashboard.api-football.com',
+    docsUrl: 'https://www.api-football.com/documentation-v3',
     hosts: Object.freeze([
       Object.freeze({
         id: 'v3.football.api-sports.io',
@@ -112,7 +113,8 @@ function list() {
 }
 
 function get(providerId) {
-  return PROVIDERS[String(providerId || '').trim().toLowerCase()] || null;
+  const id = String(providerId || '').trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(PROVIDERS, id) ? PROVIDERS[id] : null;
 }
 
 /** Resolve a provider id or throw a 400 explaining the accepted values. */
@@ -131,14 +133,6 @@ function requireProvider(providerId) {
     );
   }
   return provider;
-}
-
-/** Normalise a host or host-URL into its allowlist id form. */
-function normalizeHost(value) {
-  let raw = String(value === null || value === undefined ? '' : value).trim().toLowerCase();
-  if (!raw) return '';
-  raw = raw.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-  return raw;
 }
 
 /**
