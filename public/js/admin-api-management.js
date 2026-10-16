@@ -139,7 +139,7 @@
           <div class="diag-cell"><div class="k">Masked API key</div><div class="v">${escapeHtml(masked || 'not saved')}</div></div>
           <div class="diag-cell"><div class="k">Host</div><div class="v">${escapeHtml(status.connection.host || '—')}</div></div>
           <div class="diag-cell"><div class="k">Encryption</div><div class="v ${status.encryption.configured ? 'good' : 'warn'}">${escapeHtml(
-            status.encryption.configured ? 'AES-256-GCM ready' : 'not configured'
+            status.encryption.configured ? (status.encryption.pending ? 'AES-256-GCM ready (server key created on first save)' : 'AES-256-GCM ready') : 'not configured'
           )}</div></div>
         </div>
         ${notice}

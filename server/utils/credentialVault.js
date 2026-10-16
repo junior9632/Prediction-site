@@ -9,10 +9,14 @@
  *   * a fresh random 12-byte nonce per encryption, plus an additional
  *     authenticated data (AAD) binding of `provider:field`, so a ciphertext
  *     copied to another provider/row/column fails authentication.
- *   * the master key is supplied ONLY through the server environment variable
- *     `API_CREDENTIALS_ENCRYPTION_KEY` (64 hex chars / base64 of 32 bytes). It
- *     is never written to the database, never logged and never sent to the
- *     browser.
+ *   * the master key comes from the server environment variable
+ *     `API_CREDENTIALS_ENCRYPTION_KEY` (64 hex chars / base64 of 32 bytes). When
+ *     that variable is NOT set, the vault creates a random key file on the
+ *     server's own disk the first time an administrator saves a credential from
+ *     the dashboard (`storage/api-credentials.key`, mode 0600, git-ignored) so
+ *     no one has to touch the server environment. The environment variable
+ *     always wins when present. The key is never written to the database, never
+ *     logged and never sent to the browser.
  *   * FAIL SAFE: with no usable master key, `encryptSecret` refuses to store
  *     anything (it throws) — the platform never silently saves a plaintext key
  *     and never downgrades to "no encryption".
@@ -23,6 +27,8 @@
  */
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { AppError } = require('./errors');
 
 const ALGORITHM = 'aes-256-gcm';
@@ -34,60 +40,109 @@ const ENV_VAR = 'API_CREDENTIALS_ENCRYPTION_KEY';
 /** How an operator creates the value, shown verbatim in the dashboard + docs. */
 const GENERATE_COMMAND = `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`;
 
+const DEFAULT_KEY_FILE = path.resolve(__dirname, '..', '..', 'storage', 'api-credentials.key');
+
 let cached = { raw: null, key: null, problem: null };
 
+/** Where the auto-managed key file lives (override with API_CREDENTIALS_KEY_FILE). */
+function keyFilePath() {
+  const custom = String(process.env.API_CREDENTIALS_KEY_FILE || '').trim();
+  return custom ? path.resolve(custom) : DEFAULT_KEY_FILE;
+}
+
+/** API_CREDENTIALS_AUTO_KEY=0 turns the key file off (environment key only). */
+function autoKeyEnabled() {
+  return !/^(0|false|no|off)$/i.test(String(process.env.API_CREDENTIALS_AUTO_KEY || '1').trim());
+}
+
 function failConfiguration(reason, message) {
+  const auto = autoKeyEnabled();
   return new AppError(message, {
     status: 503,
     code: 'ENCRYPTION_KEY_MISSING',
     details: {
       envVar: ENV_VAR,
       reason,
+      keyFile: auto ? keyFilePath() : null,
       generate: GENERATE_COMMAND,
-      hint: `Set ${ENV_VAR} in the cPanel Node.js application environment (or .env) to 64 hex characters and restart the application.`,
+      hint: `Set ${ENV_VAR} in the cPanel Node.js application environment (or .env) to 64 hex characters and restart the application.${
+        auto ? ` Alternatively make ${path.dirname(keyFilePath())} writable so the server can create its own key file.` : ''
+      }`,
     },
   });
 }
 
+/** Parse a raw 64-hex / base64(32 bytes) master key string. */
+function parseKey(raw) {
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) return { key: Buffer.from(raw, 'hex'), problem: null };
+  // 16 bytes in hex is refused: AES-256 requires 32 bytes.
+  if (/^[0-9a-fA-F]{32}$/.test(raw)) return { key: null, problem: 'TOO_SHORT' };
+  const b64 = Buffer.from(raw, 'base64');
+  if (b64.length === KEY_BYTES && /^[A-Za-z0-9+/=_-]+$/.test(raw)) return { key: b64, problem: null };
+  return { key: null, problem: 'MALFORMED' };
+}
+
 /**
  * Parse the configured master key.
- * @returns {{key: Buffer|null, raw: string, problem: string|null}}
+ * @returns {{key: Buffer|null, raw: string, problem: string|null, source: 'env'|'file'|null}}
  */
 function readKey() {
-  const raw = String(process.env[ENV_VAR] || '').trim();
-  if (cached.raw === raw && cached.key !== undefined) return cached;
+  const envRaw = String(process.env[ENV_VAR] || '').trim();
 
-  if (!raw) {
-    cached = { raw, key: null, problem: 'NOT_SET' };
+  if (envRaw) {
+    if (cached.raw === envRaw && cached.source === 'env') return cached;
+    const parsed = parseKey(envRaw);
+    cached = { raw: envRaw, key: parsed.key, problem: parsed.problem, source: 'env' };
     return cached;
   }
 
-  let key = null;
-  let problem = null;
-  if (/^[0-9a-fA-F]{64}$/.test(raw)) {
-    key = Buffer.from(raw, 'hex');
-  } else if (/^[0-9a-fA-F]{32}$/.test(raw)) {
-    // 16 bytes in hex: accepted only for a local smoke test, never silent — the
-    // caller keeps working but AES-256 requires 32 bytes, so this is refused.
-    problem = 'TOO_SHORT';
-  } else {
-    const b64 = Buffer.from(raw, 'base64');
-    if (b64.length === KEY_BYTES && /^[A-Za-z0-9+/=_-]+$/.test(raw)) key = b64;
-    else problem = 'MALFORMED';
+  // No environment key: use the server-managed key file when it exists.
+  if (autoKeyEnabled()) {
+    let fileRaw = '';
+    try {
+      fileRaw = fs.readFileSync(keyFilePath(), 'utf8').trim();
+    } catch (_err) {
+      fileRaw = '';
+    }
+    if (fileRaw) {
+      const parsed = parseKey(fileRaw);
+      cached = { raw: fileRaw, key: parsed.key, problem: parsed.problem ? 'KEY_FILE_INVALID' : null, source: 'file' };
+      return cached;
+    }
   }
 
-  if (key && key.length !== KEY_BYTES) {
-    key = null;
-    problem = 'WRONG_LENGTH';
-  }
-
-  cached = { raw, key, problem };
+  cached = { raw: '', key: null, problem: 'NOT_SET', source: null };
   return cached;
 }
 
-/** True when a usable master key is present. Never throws. */
+/**
+ * Create the server-managed key file (first save from the dashboard).
+ * Exclusive create: an existing key is never overwritten — that would make
+ * every stored credential undecryptable.
+ */
+function createKeyFile() {
+  const file = keyFilePath();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, `${crypto.randomBytes(KEY_BYTES).toString('hex')}\n`, { flag: 'wx', mode: 0o600 });
+  } catch (err) {
+    // another request created the file first — use theirs, never overwrite
+    if (err && err.code === 'EEXIST' && fs.existsSync(file) && fs.statSync(file).isFile()) return;
+    throw failConfiguration(
+      'KEY_FILE_UNWRITABLE',
+      `API credentials cannot be saved: ${ENV_VAR} is not set and the server could not create its key file (${err && err.code ? err.code : 'write failed'}).`
+    );
+  }
+}
+
+/**
+ * True when credentials can be stored: either a usable master key exists, or
+ * the server may create its own key file on the first save.
+ */
 function isConfigured() {
-  return Boolean(readKey().key);
+  const { key, problem } = readKey();
+  if (key) return true;
+  return problem === 'NOT_SET' && autoKeyEnabled();
 }
 
 /**
@@ -95,14 +150,29 @@ function isConfigured() {
  * how to fix it — and never includes the key itself.
  */
 function status() {
-  const { key, problem } = readKey();
+  const { key, problem, source } = readKey();
   if (key) {
     return {
       configured: true,
       algorithm: ALGORITHM,
       keyEnvVar: ENV_VAR,
       keyId: keyId(key),
-      message: `${ENV_VAR} is set (${ALGORITHM}).`,
+      source,
+      message:
+        source === 'env'
+          ? `${ENV_VAR} is set (${ALGORITHM}).`
+          : `Encrypted with a key file managed by the server (${ALGORITHM}).`,
+    };
+  }
+  if (problem === 'NOT_SET' && autoKeyEnabled()) {
+    return {
+      configured: true,
+      pending: true,
+      algorithm: ALGORITHM,
+      keyEnvVar: ENV_VAR,
+      keyId: null,
+      source: 'file',
+      message: `No ${ENV_VAR} is set — the server will create its own encryption key file the first time you save an API key (${ALGORITHM}).`,
     };
   }
   const messages = {
@@ -110,6 +180,7 @@ function status() {
     TOO_SHORT: `${ENV_VAR} is too short — it must be 64 hex characters (32 bytes).`,
     MALFORMED: `${ENV_VAR} is not valid — it must be 64 hex characters (32 bytes), or the base64 form of 32 bytes.`,
     WRONG_LENGTH: `${ENV_VAR} does not decode to 32 bytes.`,
+    KEY_FILE_INVALID: `The server key file ${keyFilePath()} is not valid — remove it (stored keys must then be re-entered) or set ${ENV_VAR}.`,
   };
   return {
     configured: false,
@@ -129,10 +200,18 @@ function keyId(keyBuffer) {
   return crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
 }
 
-/** Throw the "configure the encryption key" error when encryption is unusable. */
+/**
+ * Return the master key for ENCRYPTING, creating the server key file on first
+ * use when no environment key is set. Throws when encryption is unusable.
+ */
 function assertConfigured() {
-  const { key, problem } = readKey();
+  let { key, problem } = readKey();
   if (key) return key;
+  if (problem === 'NOT_SET' && autoKeyEnabled()) {
+    createKeyFile();
+    ({ key, problem } = readKey());
+    if (key) return key;
+  }
   const message =
     problem === 'NOT_SET'
       ? `API credentials cannot be saved: ${ENV_VAR} is not configured on the server.`
@@ -250,6 +329,7 @@ module.exports = {
   ALGORITHM,
   ENV_VAR,
   GENERATE_COMMAND,
+  keyFilePath,
   isConfigured,
   status,
   keyId,

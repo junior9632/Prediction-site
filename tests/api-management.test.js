@@ -28,6 +28,7 @@
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'api-management-test-secret-0123456789abcdef';
 process.env.API_CREDENTIALS_ENCRYPTION_KEY = 'a'.repeat(63) + 'b';
+process.env.API_CREDENTIALS_AUTO_KEY = '0'; // the "missing key" tests below need the file fallback off
 process.env.API_CREDENTIALS_TEST_TIMEOUT_MS = '300';
 process.env.API_CREDENTIALS_TEST_MIN_INTERVAL_MS = '0';
 process.env.API_CREDENTIALS_TEST_REUSE_MS = '0';
@@ -37,7 +38,7 @@ delete process.env.API_FOOTBALL_HOST;
 /* The upstream stub must be in place BEFORE the server modules are required:
  * the API-Football client captures `globalThis.fetch` when it is built. */
 const realFetch = globalThis.fetch;
-const UPSTREAM = 'https://v3.football.api-sports.io/v3';
+const UPSTREAM = 'https://v3.football.api-sports.io';
 const UPSTREAM_RAPIDAPI = 'https://api-football-v1.p.rapidapi.com/v3';
 let upstream = { mode: 'ok' };
 const upstreamCalls = [];
@@ -615,7 +616,7 @@ test('RapidAPI compatibility: the marketplace host uses its own auth headers and
   const call = upstreamCalls[upstreamCalls.length - 1];
   assert.equal(call.url, `${UPSTREAM_RAPIDAPI}/status`);
   assert.equal(call.headers['x-rapidapi-key'], API_KEY, 'RapidAPI uses x-rapidapi-key');
-  assert.equal(call.headers['x-rapidapi-host'], 'api-football-v1.p.rapidapi.com/v3');
+  assert.equal(call.headers['x-rapidapi-host'], 'api-football-v1.p.rapidapi.com');
   assert.equal(call.headers['x-apisports-key'], undefined, 'the direct host header is not sent to RapidAPI');
 
   // back to the official direct host for the remaining tests

@@ -168,27 +168,46 @@ async function syncOdds(options = {}) {
     let totalRows = 0;
     let totalCalls = 0;
     const perDate = [];
+    const skipped = [];
     for (let i = 0; i <= days; i += 1) {
       const date = time.addDays(anchor, i);
-      // eslint-disable-next-line no-await-in-loop
-      const res = await oddsService.syncOddsForDate(date, {
-        api,
-        settings,
-        maxPages: Number(settings.oddsSyncMaxPages) || 12,
-        now: options.now,
-      });
+      let res;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        res = await oddsService.syncOddsForDate(date, {
+          api,
+          settings,
+          maxPages: Number(settings.oddsSyncMaxPages) || 12,
+          now: options.now,
+        });
+      } catch (err) {
+        // A single date being rejected (e.g. no odds window for it) must not
+        // throw away the dates that do work. Credential problems, quota and
+        // outages still abort the whole job.
+        const d = (err && err.details) || {};
+        const dateOnlyRejection =
+          err instanceof ApiFootballUnavailable && d.reason === 'REQUEST_REJECTED' && Number(d.status) >= 400 && Number(d.status) < 500;
+        if (!dateOnlyRejection) throw err;
+        log.warn('odds sync skipped a date rejected by the provider', { date: time.toMysqlDate(date), message: err.message });
+        skipped.push({ date: time.toMysqlDate(date), error: err.message });
+        continue;
+      }
       totalRows += res.rowsWritten;
       totalCalls += res.endpointCalls;
       perDate.push(res);
+    }
+    if (!perDate.length && skipped.length) {
+      throw new ApiFootballUnavailable(skipped[0].error, { reason: 'REQUEST_REJECTED', skipped });
     }
     await logService.finishSync(handle, {
       status: 'SUCCESS',
       endpointCalls: totalCalls,
       rowsWritten: totalRows,
-      message: `dates=${perDate.length} rows=${totalRows} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}`,
+      message: `dates=${perDate.length} rows=${totalRows} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}${skipped.length ? ` skipped=${skipped.length}` : ''}`,
     });
     return {
       job: 'odds',
+      skippedDates: skipped,
       rowsWritten: totalRows,
       endpointCalls: totalCalls,
       syncTimezone: zone,
@@ -201,7 +220,17 @@ async function syncOdds(options = {}) {
       errorDetail: err.message,
       message: err instanceof ApiFootballUnavailable ? 'DATA SOURCE TEMPORARILY UNAVAILABLE' : 'odds sync failed',
     });
-    if (err instanceof ApiFootballUnavailable) return { job: 'odds', status: 'DATA_SOURCE_UNAVAILABLE', error: err.message };
+    if (err instanceof ApiFootballUnavailable) {
+      const d = err.details || {};
+      return {
+        job: 'odds',
+        status: 'DATA_SOURCE_UNAVAILABLE',
+        error: err.message,
+        ...(d.reason ? { reason: d.reason } : {}),
+        ...(d.status ? { httpStatus: d.status } : {}),
+        ...(d.hint ? { hint: d.hint } : {}),
+      };
+    }
     throw err;
   }
 }

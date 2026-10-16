@@ -303,7 +303,8 @@ class ApiFootballClient {
     if (this.isRapidApi) {
       return {
         'x-rapidapi-key': this.key,
-        'x-rapidapi-host': this.host,
+        // the header carries the bare host, never the /v3 path
+        'x-rapidapi-host': String(this.host).replace(/\/.*$/, ''),
         accept: 'application/json',
       };
     }
@@ -406,7 +407,8 @@ class ApiFootballClient {
           body = null;
         }
 
-        if (res.status === 429 || res.status >= 500) {
+        // 499/408/425 are transient timeouts on the provider side, not a rejected request
+        if (res.status === 429 || res.status >= 500 || res.status === 499 || res.status === 408 || res.status === 425) {
           lastError = new ApiFootballUnavailable(
             res.status === 429
               ? 'API-Football rejected the request: rate limit reached'
@@ -423,11 +425,22 @@ class ApiFootballClient {
           const apiErrors = (body && body.errors) || null;
           this._recordFailure(`HTTP ${res.status} on ${endpoint}`);
           this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: 'HTTP_ERROR' });
-          throw new ApiFootballUnavailable('API-Football request rejected', {
-            status: res.status,
-            endpoint,
-            errors: apiErrors,
-          });
+          const providerMessage = summarizeProviderError(apiErrors);
+          const authRejected = res.status === 401 || res.status === 403;
+          const hint = authRejected
+            ? 'check API_FOOTBALL_KEY / API_FOOTBALL_HOST (an api-sports.io key needs host v3.football.api-sports.io; a RapidAPI key needs the rapidapi.com host) and that the plan includes this endpoint'
+            : null;
+          throw new ApiFootballUnavailable(
+            `API-Football request rejected (HTTP ${res.status} on ${endpoint}${providerMessage ? `: ${providerMessage}` : ''})`,
+            {
+              status: res.status,
+              endpoint,
+              params,
+              errors: apiErrors,
+              reason: authRejected ? 'AUTH_REJECTED' : 'REQUEST_REJECTED',
+              hint,
+            }
+          );
         }
 
         if (!body) {
