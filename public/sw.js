@@ -12,7 +12,7 @@
  *  - Page navigations are network-first with a branded offline fallback.
  */
 
-const VERSION = 'v2';
+const VERSION = 'v3';
 const STATIC_CACHE = `goalpredict-static-${VERSION}`;
 const OFFLINE_URL = '/offline.html';
 
@@ -63,9 +63,12 @@ self.addEventListener('fetch', (event) => {
   // HARD RULE: never intercept or cache API traffic — live data only.
   if (url.pathname.startsWith('/api/')) return;
 
-  // HARD RULE: the admin console script is access controlled on the server;
-  // it must never be cached or replayed from the service worker cache.
+  // HARD RULE: the admin console scripts are access controlled on the server;
+  // they must never be cached or replayed from the service worker cache.
   if (url.pathname === '/js/admin.js') return;
+  if (url.pathname === '/js/admin-api-management.js') return;
+  if (url.pathname === '/js/admin-users.js') return;
+  if (url.pathname.startsWith('/js/admin-')) return;
 
   // Page navigations: network first, offline fallback.
   if (request.mode === 'navigate') {
