@@ -32,6 +32,9 @@ const health = asyncHandler(async (_req, res) => {
       dataSource: {
         configured: apiFootball.configured,
         available: breaker.available,
+        // Availability is a local permission to call, not a live connectivity test.
+        verified: breaker.verified === true,
+        lastCheckedAt: breaker.lastCheckedAt || null,
         state: breaker.state,
         // WHY it is unavailable + what to do — never an invented quota
         reason: breaker.reason || null,

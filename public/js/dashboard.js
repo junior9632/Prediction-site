@@ -1,5 +1,6 @@
 'use strict';
 document.addEventListener('DOMContentLoaded', async () => {
+  await App.site.load();
   const $ = (s) => document.querySelector(s);
   const { API, fmt, escapeHtml, emptyState } = App;
 

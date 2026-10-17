@@ -145,7 +145,14 @@ async function quotaPause(api, settings = {}, options = {}) {
   if (reserve <= 0) return null;
   const now = options.now ? time.toDate(options.now) || new Date() : new Date();
 
-  const live = typeof api.quotaState === 'function' ? api.quotaState() : null;
+  if (typeof api._refreshCredential === 'function') await api._refreshCredential();
+  let live = typeof api.quotaState === 'function' ? api.quotaState() : null;
+  // Old sync rows have no credential identity. A real client must ask the free
+  // /status endpoint before applying another key's historical daily budget.
+  if (typeof api._refreshCredential === 'function' && api.configured && (!live || live.remaining == null)) {
+    await api.getStatus();
+    live = api.quotaState();
+  }
   const quota =
     live && live.known && live.remaining !== null && live.remaining !== undefined ? live : await lastRecordedBudget(now);
   if (!quota || quota.remaining === null || quota.remaining === undefined) return null;
@@ -159,6 +166,22 @@ async function quotaPause(api, settings = {}, options = {}) {
     message: `REQUEST BUDGET RESERVED · ${quota.remaining} of ${quota.limitDay ?? '?'} request(s) left today (api_quota_reserve=${reserve}) — background sync paused so a manual generation can still run (resets ${quota.resetsAt})`,
     hint: info.hint,
   };
+}
+
+/** Recheck the reserve between provider calls, not just at job start. */
+function quotaGuard(api, settings, options) {
+  let paused = null;
+  return {
+    get paused() { return paused; },
+    async beforeRequest() {
+      if (!paused) paused = await quotaPause(api, settings, options);
+      return !paused;
+    },
+  };
+}
+
+function pausedFields(paused) {
+  return paused ? { status: 'SKIPPED', reason: UNAVAILABLE_REASONS.QUOTA_RESERVED, label: reasonInfo(UNAVAILABLE_REASONS.QUOTA_RESERVED).label, hint: paused.hint, quota: paused.quota } : {};
 }
 
 /** Keep the model inputs (team form + league environment) up to date. */
@@ -203,7 +226,7 @@ async function refreshModelInputs(ticketDate, options = {}) {
   let h2hCalls = 0;
   let h2hSkippedSufficient = 0;
   if (settings.enableH2hApi && api && api.configured && api.isAvailable()) {
-    const limit = Math.max(0, Math.min(fixtures.length, Number(options.h2hLimit) || Number(settings.h2hSyncMaxCalls) || 20));
+    const limit = Math.floor(Math.min(fixtures.length, numberOr(options.h2hLimit ?? settings.h2hSyncMaxCalls, 20)));
     const minSample = Number(settings.h2hMinMeetings) || 3;
     for (const f of fixtures) {
       if (h2hCalls >= limit) break;
@@ -221,8 +244,10 @@ async function refreshModelInputs(ticketDate, options = {}) {
           continue;
         }
         // eslint-disable-next-line no-await-in-loop
-        await statsService.syncH2HFromApi(Number(f.home_team_id), Number(f.away_team_id), { api, last: 6, now: new Date() });
+        if (options.beforeRequest && !(await options.beforeRequest())) break;
+        // Failed requests consume budget too; count the attempt before I/O.
         h2hCalls += 1;
+        await statsService.syncH2HFromApi(Number(f.home_team_id), Number(f.away_team_id), { api, last: Math.max(6, minSample), now: options.now || new Date() });
       } catch (err) {
         if (err instanceof ApiFootballUnavailable) {
           log.warn('h2h enrichment stopped: API unavailable', { reason: (err.details || {}).reason || null });
@@ -269,6 +294,7 @@ async function syncFixtures(options = {}) {
   const api = options.api || defaultApi;
   const trigger = options.trigger || 'manual';
   const handle = await logService.startSync('fixtures', trigger);
+  const budget = quotaGuard(api, settings, { now: options.now });
 
   try {
     // Never spend the operator's last requests on a background job.
@@ -283,46 +309,56 @@ async function syncFixtures(options = {}) {
     }
 
     const { zone, valid, requested } = resolveSyncZone(settings);
-    const anchor = syncAnchor(options.now, zone);
-    const upcoming = await fixtureService.syncUpcoming({
+    const now = time.toDate(options.now) || new Date();
+    const anchor = options.date ? time.startOfUtcDay(options.date) : syncAnchor(now, zone);
+    const fixtureOptions = {
       api,
       daysAhead: numberOr(settings.syncDaysAhead, 2),
       leagueIds: settings.syncLeagues.length ? settings.syncLeagues : null,
-      now: anchor,
-    });
+      dateAnchor: anchor,
+      now,
+      beforeRequest: budget.beforeRequest,
+    };
+    const upcoming = options.date
+      ? await fixtureService.syncDate(anchor, fixtureOptions)
+      : await fixtureService.syncUpcoming(fixtureOptions);
 
     let history = { rowsWritten: 0, endpointCalls: 0, skippedFresh: 0 };
-    if (options.includeHistory !== false) {
+    if (!options.date && options.includeHistory !== false) {
       history = await fixtureService.syncHistory({
         api,
         days: numberOr(settings.syncHistoryDays, 25),
         leagueIds: settings.syncLeagues.length ? settings.syncLeagues : null,
-        now: anchor,
+        now,
+        dateAnchor: anchor,
+        beforeRequest: budget.beforeRequest,
         // History is a backfill, not a live feed: a day whose stored data is
         // still fresh is not requested again (history_refresh_minutes).
         refreshMinutes: Number(settings.historyRefreshMinutes) || 0,
       });
     }
 
-    const modelInputs = await refreshModelInputs(anchor, { settings, api });
+    const modelInputs = await refreshModelInputs(anchor, { settings, api, now, beforeRequest: budget.beforeRequest });
+    const endpointCalls = upcoming.endpointCalls + history.endpointCalls + modelInputs.h2hCalls;
 
     await logService.finishSync(handle, {
-      status: 'SUCCESS',
-      endpointCalls: upcoming.endpointCalls + history.endpointCalls,
+      status: budget.paused ? 'SKIPPED' : 'SUCCESS',
+      endpointCalls,
       rowsWritten: upcoming.rowsWritten + history.rowsWritten,
       ...quotaLogFields(api),
-      message: `upcoming=${upcoming.rowsWritten} history=${history.rowsWritten}${history.skippedFresh ? ` (${history.skippedFresh} fresh day(s) skipped)` : ''} teams=${modelInputs.teams} leagues=${modelInputs.leagues} h2h=${modelInputs.h2hCalls} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}`,
+      message: budget.paused ? budget.paused.message : `upcoming=${upcoming.rowsWritten} history=${history.rowsWritten}${history.skippedFresh ? ` (${history.skippedFresh} fresh day(s) skipped)` : ''} teams=${modelInputs.teams} leagues=${modelInputs.leagues} h2h=${modelInputs.h2hCalls} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}`,
     });
     return {
       job: 'fixtures',
       upcoming: upcoming.rowsWritten,
       history: history.rowsWritten,
       historySkippedFresh: history.skippedFresh || 0,
-      endpointCalls: upcoming.endpointCalls + history.endpointCalls,
+      endpointCalls,
       syncTimezone: zone,
       syncTimezoneValid: valid,
       syncedFromDate: time.toMysqlDate(anchor),
       modelInputs,
+      ...pausedFields(budget.paused),
     };
   } catch (err) {
     await logService.finishSync(handle, {
@@ -342,6 +378,7 @@ async function syncOdds(options = {}) {
   const api = options.api || defaultApi;
   const trigger = options.trigger || 'manual';
   const handle = await logService.startSync('odds', trigger);
+  const budget = quotaGuard(api, settings, { now: options.now });
 
   try {
     const paused = await quotaPause(api, settings, { now: options.now });
@@ -371,6 +408,7 @@ async function syncOdds(options = {}) {
           settings,
           maxPages: Number(settings.oddsSyncMaxPages) || 12,
           now: options.now,
+          beforeRequest: budget.beforeRequest,
         });
       } catch (err) {
         // A single date being rejected (e.g. no odds window for it) must not
@@ -384,6 +422,8 @@ async function syncOdds(options = {}) {
         const dateOnlyRejection =
           err instanceof ApiFootballUnavailable &&
           !authRejected &&
+          status !== 429 &&
+          !['QUOTA_EXCEEDED', 'RATE_LIMITED'].includes(d.reason) &&
           Number.isFinite(status) &&
           status >= 400 &&
           status < 500;
@@ -395,6 +435,7 @@ async function syncOdds(options = {}) {
       totalRows += res.rowsWritten;
       totalCalls += res.endpointCalls;
       perDate.push(res);
+      if (budget.paused) break;
     }
     if (!perDate.length && skipped.length) {
       const first = skipped[0] || {};
@@ -409,11 +450,11 @@ async function syncOdds(options = {}) {
       });
     }
     await logService.finishSync(handle, {
-      status: 'SUCCESS',
+      status: budget.paused ? 'SKIPPED' : 'SUCCESS',
       endpointCalls: totalCalls,
       rowsWritten: totalRows,
       ...quotaLogFields(api),
-      message: `dates=${perDate.length} rows=${totalRows} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}${skipped.length ? ` skipped=${skipped.length}` : ''}`,
+      message: budget.paused ? budget.paused.message : `dates=${perDate.length} rows=${totalRows} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}${skipped.length ? ` skipped=${skipped.length}` : ''}`,
     });
     return {
       job: 'odds',
@@ -423,6 +464,7 @@ async function syncOdds(options = {}) {
       syncTimezone: zone,
       syncTimezoneValid: valid,
       perDate,
+      ...pausedFields(budget.paused),
     };
   } catch (err) {
     await logService.finishSync(handle, {
@@ -447,6 +489,7 @@ async function syncResults(options = {}) {
   const api = options.api || defaultApi;
   const trigger = options.trigger || 'manual';
   const handle = await logService.startSync('results', trigger);
+  const budget = quotaGuard(api, settings, { now: options.now });
 
   try {
     const paused = await quotaPause(api, settings, { now: options.now });
@@ -460,23 +503,27 @@ async function syncResults(options = {}) {
     }
 
     const { zone, valid, requested } = resolveSyncZone(settings);
-    const anchor = syncAnchor(options.now, zone);
+    const now = time.toDate(options.now) || new Date();
+    const anchor = syncAnchor(now, zone);
+    const days = numberOr(options.days, Math.min(7, numberOr(settings.syncHistoryDays, 7)));
     const res = await resultService.syncResults({
       api,
-      days: Number(options.days) || Math.min(7, Number(settings.syncHistoryDays) || 7),
-      now: anchor,
+      from: time.addDays(anchor, -days),
+      to: anchor,
+      now,
       settings,
+      beforeRequest: budget.beforeRequest,
     });
     await logService.finishSync(handle, {
-      status: 'SUCCESS',
+      status: budget.paused ? 'SKIPPED' : 'SUCCESS',
       endpointCalls: res.endpointCalls,
       rowsWritten: res.resultsRecorded + res.selectionsSettled,
       ...quotaLogFields(api),
       // `checked` explains a SUCCESS with all zeros: nothing was awaiting a
       // result, so the job made no upstream call in the first place.
-      message: `results=${res.resultsRecorded} settled=${res.selectionsSettled} tickets=${res.ticketsUpdated} checked=${res.fixturesChecked} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}`,
+      message: budget.paused ? budget.paused.message : `results=${res.resultsRecorded} settled=${res.selectionsSettled} tickets=${res.ticketsUpdated} checked=${res.fixturesChecked} tz=${zone}${valid ? '' : ` (unknown: ${requested})`}`,
     });
-    return { job: 'results', syncTimezone: zone, syncTimezoneValid: valid, ...res };
+    return { job: 'results', syncTimezone: zone, syncTimezoneValid: valid, ...res, ...pausedFields(budget.paused) };
   } catch (err) {
     await logService.finishSync(handle, {
       status: 'FAILED',
@@ -503,7 +550,8 @@ async function syncAll(options = {}) {
 /** Health / quota information for the admin "API Status" panel. */
 async function getApiStatus(options = {}) {
   const api = options.api || defaultApi;
-  const breaker = api.breakerState();
+  if (typeof api._refreshCredential === 'function') await api._refreshCredential();
+  let breaker = api.breakerState();
   let quota = breaker.quota;
   let plan = null;
   if (api.configured && api.isAvailable() && options.probe !== false) {
@@ -513,13 +561,14 @@ async function getApiStatus(options = {}) {
         quota = status.requests ? { current: status.requests.current, limit_day: status.requests.limit_day } : quota;
         plan = {
           subscription: status.subscription ? status.subscription.name || status.subscription.plan : null,
-          active: Boolean(status.active ?? true),
+          active: status.subscription ? status.subscription.active ?? null : null,
         };
       }
     } catch (err) {
       log.warn('api status probe failed', { message: err.message });
     }
   }
+  breaker = api.breakerState();
   const syncs = await logService.recentSyncs(12);
   // The most recent run that actually recorded the provider's daily budget.
   const lastBudget = syncs.find((s) => s.requests_used !== null && s.requests_used !== undefined) || null;

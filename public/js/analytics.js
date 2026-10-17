@@ -69,6 +69,7 @@
   }
 
   async function load() {
+    await App.site.load();
     App.session.bindHeader();
     try {
       const a = await API.get('/analytics');

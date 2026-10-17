@@ -11,8 +11,12 @@
  */
 
 const config = require('../config');
+const { createHash } = require('node:crypto');
 const logger = require('../utils/logger');
 const { AppError } = require('../utils/errors');
+const { normalizeHost, baseUrlForHost, normalizeApiKey, redactSecret, unquote } = require('../utils/providerConfig');
+const { createProviderDispatcher, networkFailure } = require('../utils/providerTransport');
+const providerDispatcher = createProviderDispatcher(config.apiFootball.ipFamily);
 
 const log = logger.child('api-football');
 
@@ -32,6 +36,8 @@ const CREDENTIAL_REFRESH_MS = 15 * 1000;
 const CONNECTION_STATES = Object.freeze({
   CONNECTED: 'CONNECTED',
   INVALID_KEY: 'INVALID_KEY',
+  REQUEST_REJECTED: 'REQUEST_REJECTED',
+  SUBSCRIPTION_INACTIVE: 'SUBSCRIPTION_INACTIVE',
   QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
   RATE_LIMITED: 'RATE_LIMITED',
   NETWORK_ERROR: 'NETWORK_ERROR',
@@ -46,6 +52,8 @@ const CONNECTION_STATES = Object.freeze({
 const CONNECTION_LABELS = Object.freeze({
   CONNECTED: 'Connection successful',
   INVALID_KEY: 'Invalid API key or unauthorized',
+  REQUEST_REJECTED: 'Provider rejected the request',
+  SUBSCRIPTION_INACTIVE: 'Subscription is inactive',
   QUOTA_EXCEEDED: 'Daily quota exceeded',
   RATE_LIMITED: 'Rate limit exceeded',
   NETWORK_ERROR: 'Network failure',
@@ -67,6 +75,8 @@ const CONNECTION_LABELS = Object.freeze({
  */
 const UNAVAILABLE_REASONS = Object.freeze({
   NO_API_KEY: 'NO_API_KEY',
+  CONFIG_INVALID: 'CONFIG_INVALID',
+  SUBSCRIPTION_INACTIVE: 'SUBSCRIPTION_INACTIVE',
   CREDENTIAL_UNREADABLE: 'CREDENTIAL_UNREADABLE',
   CIRCUIT_OPEN: 'CIRCUIT_OPEN',
   QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
@@ -88,6 +98,14 @@ const REASON_INFO = Object.freeze({
   NO_API_KEY: {
     label: 'no API key configured',
     hint: 'Set API_FOOTBALL_KEY in the application environment (or save and ACTIVATE a key in Admin -> API Management) and restart the Node.js application.',
+  },
+  CONFIG_INVALID: {
+    label: 'the API configuration is invalid',
+    hint: 'Use an approved API-Football host and the key issued for that host. Check API Management or API_FOOTBALL_HOST / API_FOOTBALL_KEY, then run npm run api:check.',
+  },
+  SUBSCRIPTION_INACTIVE: {
+    label: 'the provider subscription is inactive',
+    hint: 'Check the subscription in the provider dashboard and renew or activate it, then use Refresh API status.',
   },
   CREDENTIAL_UNREADABLE: {
     label: 'the stored API credential cannot be used',
@@ -137,9 +155,9 @@ const REASON_INFO = Object.freeze({
 
 /** Compare an HTTP status code to a numeric limit handed over as a string. */
 function toNumberOrNull(value) {
-  if (value === null || value === undefined || value === '') return null;
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
   const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
 }
 
 /** The moment API-Football resets its daily counter: 00:00 UTC. */
@@ -166,10 +184,11 @@ function describeUnavailable(err) {
   const info = reasonInfo(reason);
   return {
     reason,
-    label: info.label,
-    hint: info.hint || null,
+    label: details.networkCode ? `${info.label} (${details.networkCode})` : info.label,
+    hint: details.hint || info.hint || null,
+    networkCode: details.networkCode || null,
     detail: err && err.message ? String(err.message) : null,
-    httpStatus: Number.isFinite(Number(details.status)) ? Number(details.status) : null,
+    httpStatus: details.status != null && Number.isFinite(Number(details.status)) ? Number(details.status) : null,
     resetAt: details.resetAt || null,
     quota: details.quota || null,
   };
@@ -199,35 +218,28 @@ function classifyProviderError({ httpStatus = null, errors = null, message = '' 
     .join(' ')
     .toLowerCase();
 
-  // Order matters: the QUOTA wording is checked first, then the HTTP status of
-  // the response, and only then the remaining wording. A 5xx body may well say
-  // "rate limited" in passing, and reporting that as RATE_LIMITED would be a
-  // guess — the status is the fact.
-  if (/request[s]? limit|daily limit|quota|limit for the day|reached the limit/.test(text)) {
-    return CONNECTION_STATES.QUOTA_EXCEEDED;
-  }
-  if (httpStatus && httpStatus >= 500) return CONNECTION_STATES.PROVIDER_UNAVAILABLE;
-  if (httpStatus === 401 || httpStatus === 403) return CONNECTION_STATES.INVALID_KEY;
-  if (/missing application key|no api key|invalid api key|invalid token|token.*invalid|not authorized|unauthorized|incorrect|account suspended|subscription.*(expired|inactive|not active)|invalid.*key/.test(text)) {
-    return CONNECTION_STATES.INVALID_KEY;
-  }
+  // Per-minute wording must win over generic "request limit" wording.
+  if (/per minute|rate.?limit|too many requests/.test(text) || (errors && errors.rateLimit)) return CONNECTION_STATES.RATE_LIMITED;
+  if ((errors && errors.requests) || /daily|quota|limit for the day|requests? limit|reached the limit/.test(text)) return CONNECTION_STATES.QUOTA_EXCEEDED;
+  if (httpStatus && (httpStatus >= 500 || httpStatus === 499 || httpStatus === 408 || httpStatus === 425)) return CONNECTION_STATES.PROVIDER_UNAVAILABLE;
+  if (/subscription.*(expired|inactive|not active)/.test(text)) return CONNECTION_STATES.SUBSCRIPTION_INACTIVE;
+  if (httpStatus === 401 || httpStatus === 403 || /missing application key|no api key|invalid api key|invalid token|token.*invalid|not authorized|unauthorized|account suspended|invalid.*key/.test(text)) return CONNECTION_STATES.INVALID_KEY;
   if (httpStatus === 429) return CONNECTION_STATES.RATE_LIMITED;
-  if (/rate limit|too many requests|per minute/.test(text)) return CONNECTION_STATES.RATE_LIMITED;
-  return CONNECTION_STATES.PROVIDER_UNAVAILABLE;
+  return CONNECTION_STATES.REQUEST_REJECTED;
 }
 
 /** JSON-safe summary of a provider error — never a credential or a header. */
-function summarizeProviderError(errors) {
+function summarizeProviderError(errors, secret = null) {
   if (!errors) return null;
-  if (Array.isArray(errors)) return errors.join('; ').slice(0, 300) || null;
+  if (Array.isArray(errors)) return redactSecret(errors.join('; '), secret).slice(0, 300) || null;
   if (typeof errors === 'object') {
     try {
-      return JSON.stringify(errors).slice(0, 300);
+      return redactSecret(JSON.stringify(errors), secret).slice(0, 300);
     } catch (_) {
       return null;
     }
   }
-  return String(errors).slice(0, 300) || null;
+  return redactSecret(String(errors), secret).slice(0, 300) || null;
 }
 
 /** Thrown whenever API-Football cannot be used right now. */
@@ -249,14 +261,18 @@ const DEFAULT_TTL = {
 
 class ApiFootballClient {
   constructor(options = {}) {
-    this.baseUrl = options.baseUrl || config.apiFootball.baseUrl;
-    this.key = options.key || config.apiFootball.key;
-    this.host = options.host || config.apiFootball.host;
+    this.host = normalizeHost(options.host || config.apiFootball.host);
+    this.baseUrl = options.baseUrl || baseUrlForHost(this.host);
+    this.key = unquote(options.key ?? config.apiFootball.key);
     this.isRapidApi = /rapidapi\.com/i.test(this.host);
-    this.timeoutMs = options.timeoutMs || config.apiFootball.timeoutMs;
+    const timeout = Number(options.timeoutMs ?? config.apiFootball.timeoutMs);
+    this.timeoutMs = Number.isFinite(timeout) && timeout > 0 ? timeout : 15000;
     this.maxRetries = options.maxRetries ?? config.apiFootball.maxRetries;
-    this.ratePerMinute = options.ratePerMinute || config.apiFootball.ratePerMinute;
+    const rate = Number(options.ratePerMinute ?? config.apiFootball.ratePerMinute);
+    this.ratePerMinute = Number.isFinite(rate) && rate > 0 ? Math.min(600, Math.floor(rate) || 1) : 60;
     this.fetchImpl = options.fetch || globalThis.fetch;
+    this.dispatcher = options.dispatcher || providerDispatcher;
+    this._rateLimitedUntil = 0;
 
     // Where the current key/host came from: 'environment' (API_FOOTBALL_KEY)
     // or 'database' (an active row in api_credentials). Surfaced in the admin
@@ -305,7 +321,7 @@ class ApiFootballClient {
     this.onRequest = null;
 
     // counters surfaced in the admin "API Status" panel
-    this.stats = { calls: 0, failures: 0, cacheHits: 0, lastCallAt: null, lastError: null, quota: null };
+    this.stats = { calls: 0, failures: 0, cacheHits: 0, lastCallAt: null, lastError: null, lastOutcome: null, lastSuccessAt: null, quota: null };
   }
 
   /* ------------------------------------------------------------------ */
@@ -323,25 +339,35 @@ class ApiFootballClient {
    */
   applyCredential(credential = {}) {
     const nextKey = credential.key || '';
-    const nextHost = credential.host || config.apiFootball.host;
+    const nextHost = normalizeHost(credential.host || config.apiFootball.host);
+    const nextBaseUrl = credential.baseUrl || baseUrlForHost(nextHost);
     const loginChanged =
-      nextKey !== this.key || nextHost !== this.host || (credential.baseUrl || null) !== this.baseUrl;
+      nextKey !== this.key || nextHost !== this.host || nextBaseUrl !== this.baseUrl;
 
     this.key = nextKey;
     this.host = nextHost;
-    this.baseUrl = credential.baseUrl || config.apiFootball.baseUrl;
+    this.baseUrl = nextBaseUrl;
     this.isRapidApi = /rapidapi\.com/i.test(this.host);
     this.credentialSource = credential.source || (nextKey ? 'environment' : 'none');
     this.providerId = credential.providerId || this.providerId;
     this.credentialError = credential.error || null;
-    if (credential.ratePerMinute) this.ratePerMinute = credential.ratePerMinute;
+    const configuredRate = Number(credential.ratePerMinute);
+    if (Number.isFinite(configuredRate) && configuredRate > 0) {
+      this.ratePerMinute = Math.max(1, Math.min(600, Math.floor(configuredRate), loginChanged ? Infinity : this._quota.perMinuteLimit || Infinity));
+    }
 
     if (loginChanged) {
       // a different key/host must never be served a cached payload, and the
       // daily budget we learned belongs to the previous credential/plan
       this._cache.clear();
       this._breaker = { ...this._breaker, failures: 0, openedAt: 0 };
-      this._quota = { ...this._quota, current: null, remaining: null, limitDay: null, source: null, exhaustedUntil: 0, exhaustedReason: null };
+      this._quota = { ...this._quota, current: null, remaining: null, limitDay: null, source: null, checkedAt: null, exhaustedUntil: 0, exhaustedReason: null, perMinuteLimit: null };
+      this.stats.quota = null;
+      this.stats.lastOutcome = null;
+      this.stats.lastError = null;
+      this.stats.lastSuccessAt = null;
+      this.stats.lastCallAt = null;
+      this._rateLimitedUntil = 0;
       log.info('API credential changed', {
         source: this.credentialSource,
         host: this.host,
@@ -398,6 +424,14 @@ class ApiFootballClient {
    * `known:false` means the provider has not told us yet — nothing is invented.
    */
   quotaState() {
+    // A long-lived Passenger worker must not retain yesterday's zero forever.
+    const now = Date.now();
+    const checked = this._quota.checkedAt && new Date(this._quota.checkedAt);
+    if ((checked && Number.isFinite(checked.getTime()) && nextDailyReset(checked).getTime() <= now) ||
+        (this._quota.exhaustedUntil && this._quota.exhaustedUntil <= now)) {
+      Object.assign(this._quota, { current: null, remaining: null, checkedAt: null, source: null, exhaustedUntil: 0, exhaustedReason: null });
+      this.stats.quota = null;
+    }
     const exhaustedByProvider = this._quota.remaining !== null && this._quota.remaining <= 0;
     const blocked = Date.now() < this._quota.exhaustedUntil;
     return {
@@ -409,6 +443,7 @@ class ApiFootballClient {
       checkedAt: this._quota.checkedAt,
       exhausted: exhaustedByProvider || blocked,
       exhaustedReason: this._quota.exhaustedReason,
+      perMinuteLimit: this._quota.perMinuteLimit,
       resetsAt: (blocked ? new Date(this._quota.exhaustedUntil) : nextDailyReset()).toISOString(),
     };
   }
@@ -421,8 +456,11 @@ class ApiFootballClient {
     const remaining = toNumberOrNull(headers.get('x-ratelimit-requests-remaining'));
     const perMinute = toNumberOrNull(headers.get('x-ratelimit-limit'));
     if (limit !== null) this._quota.limitDay = limit;
-    if (remaining !== null) this._quota.remaining = remaining;
-    if (limit !== null && remaining !== null) this._quota.current = Math.max(0, limit - remaining);
+    if (remaining !== null) {
+      this._quota.remaining = remaining;
+      if (remaining > 0) { this._quota.exhaustedUntil = 0; this._quota.exhaustedReason = null; }
+    }
+    if (this._quota.limitDay !== null && remaining !== null) this._quota.current = Math.max(0, this._quota.limitDay - remaining);
     if (limit !== null || remaining !== null) {
       this._quota.source = 'response headers';
       this._quota.checkedAt = new Date().toISOString();
@@ -443,7 +481,10 @@ class ApiFootballClient {
     const limitDay = toNumberOrNull(info.requests.limit_day);
     if (limitDay !== null) this._quota.limitDay = limitDay;
     if (current !== null) this._quota.current = current;
-    if (limitDay !== null && current !== null) this._quota.remaining = Math.max(0, limitDay - current);
+    if (limitDay !== null && current !== null) {
+      this._quota.remaining = Math.max(0, limitDay - current);
+      if (this._quota.remaining > 0) { this._quota.exhaustedUntil = 0; this._quota.exhaustedReason = null; }
+    }
     this._quota.source = 'provider /status';
     this._quota.checkedAt = new Date().toISOString();
     this.stats.quota = {
@@ -494,17 +535,19 @@ class ApiFootballClient {
 
   breakerState() {
     const quota = this.quotaState();
-    if (!this.configured) {
+    const observation = { configured: this.configured, verified: Boolean(this.stats.lastOutcome && this.stats.lastOutcome.ok), lastCheckedAt: this.stats.lastOutcome ? this.stats.lastOutcome.at : null };
+    if (!this.configured || this.credentialError) {
       // Not having a key is a REASON, not just a state: the operator asked
       // "why is the data source unavailable", and the answer (plus the fix)
       // must travel with every surface that renders the state.
       return {
+        ...observation,
         state: 'UNCONFIGURED',
         available: false,
         callable: false,
-        reason: UNAVAILABLE_REASONS.NO_API_KEY,
-        label: reasonInfo(UNAVAILABLE_REASONS.NO_API_KEY).label,
-        hint: reasonInfo(UNAVAILABLE_REASONS.NO_API_KEY).hint,
+        reason: this.credentialError ? (this.credentialError.code || 'CONFIG_INVALID') : UNAVAILABLE_REASONS.NO_API_KEY,
+        label: this.credentialError ? this.credentialError.message : reasonInfo(UNAVAILABLE_REASONS.NO_API_KEY).label,
+        hint: this.credentialError ? reasonInfo(this.credentialError.code).hint : reasonInfo(UNAVAILABLE_REASONS.NO_API_KEY).hint,
         resetsAt: null,
         retryInMs: 0,
         quota: this.stats.quota,
@@ -513,6 +556,7 @@ class ApiFootballClient {
     }
     if (quota.exhausted) {
       return {
+        ...observation,
         state: 'QUOTA_EXHAUSTED',
         available: false,
         callable: false,
@@ -532,6 +576,7 @@ class ApiFootballClient {
       };
     }
     return {
+      ...observation,
       state: this.isAvailable() ? (this._breaker.failures ? 'DEGRADED' : 'OK') : 'OPEN',
       available: this.isAvailable(),
       callable: this.isAvailable(),
@@ -555,13 +600,16 @@ class ApiFootballClient {
 
   _recordSuccess() {
     this._breaker.failures = 0;
+    this.stats.lastSuccessAt = new Date().toISOString();
+    this.stats.lastOutcome = { ok: true, at: this.stats.lastSuccessAt };
   }
 
-  _recordFailure(message) {
-    this._breaker.failures += 1;
+  _recordFailure(message, { tripBreaker = true, ...details } = {}) {
+    if (tripBreaker) this._breaker.failures += 1;
     this.stats.failures += 1;
-    this.stats.lastError = { message, at: new Date().toISOString() };
-    if (this._breaker.failures >= this._maxFailures) {
+    this.stats.lastError = { message, ...details, at: new Date().toISOString() };
+    this.stats.lastOutcome = { ...this.stats.lastError, ok: false };
+    if (tripBreaker && this._breaker.failures >= this._maxFailures) {
       this._breaker.openedAt = Date.now();
       log.error('circuit breaker opened', { failures: this._breaker.failures, message });
     }
@@ -582,16 +630,16 @@ class ApiFootballClient {
     }
   }
 
-  _headers() {
-    if (this.isRapidApi) {
+  _headers(credential = this) {
+    if (credential.isRapidApi) {
       return {
-        'x-rapidapi-key': this.key,
+        'x-rapidapi-key': credential.key,
         // the header carries the bare host, never the /v3 path
-        'x-rapidapi-host': String(this.host).replace(/\/.*$/, ''),
+        'x-rapidapi-host': String(credential.host).replace(/\/.*$/, ''),
         accept: 'application/json',
       };
     }
-    return { 'x-apisports-key': this.key, accept: 'application/json' };
+    return { 'x-apisports-key': credential.key, accept: 'application/json' };
   }
 
   _cacheKey(endpoint, params) {
@@ -631,238 +679,120 @@ class ApiFootballClient {
    * Low level GET. Returns the decoded API-Football envelope
    * { get, parameters, errors, results, paging, response }.
    */
-  async request(endpoint, params = {}, { ttl = 0, retries = this.maxRetries } = {}) {
+  async request(endpoint, params = {}, { ttl = 0, retries = this.maxRetries, bypassCircuit = false } = {}) {
     await this._refreshCredential();
-
     if (this.credentialError) {
-      throw new ApiFootballUnavailable(this.credentialError.message, {
-        reason: this.credentialError.code || UNAVAILABLE_REASONS.CREDENTIAL_UNREADABLE,
-        host: this.host,
-      });
+      throw new ApiFootballUnavailable(this.credentialError.message, { reason: this.credentialError.code || 'CREDENTIAL_UNREADABLE' });
     }
-    if (!this.configured) {
-      throw new ApiFootballUnavailable('API-Football key is not configured', {
-        reason: UNAVAILABLE_REASONS.NO_API_KEY,
-      });
+    if (!this.configured) throw new ApiFootballUnavailable('API-Football key is not configured', { reason: 'NO_API_KEY' });
+    let apiKey;
+    let url;
+    try {
+      apiKey = normalizeApiKey(this.key);
+      if (!this.baseUrl || !/^\/[a-z0-9/-]+$/i.test(endpoint)) throw new Error('Invalid API URL');
+      url = new URL(`${this.baseUrl}${endpoint}`);
+      for (const [k, v] of Object.entries(params)) {
+        if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+      }
+    } catch (_err) {
+      throw new ApiFootballUnavailable('API-Football host or key is invalid. Check API Management.', { reason: 'CONFIG_INVALID' });
     }
-
-    // The daily budget guard. `/status` is documented as NOT counting against
-    // the daily quota, so it stays callable — it is the only way an operator
-    // can see the real usage while everything else is paused.
-    const quota = this.quotaState();
-    if (quota.exhausted && endpoint !== '/status') {
-      throw new ApiFootballUnavailable('API-Football daily request quota exhausted', {
-        reason: UNAVAILABLE_REASONS.QUOTA_EXCEEDED,
-        endpoint,
-        resetAt: quota.resetsAt,
-        quota,
-      });
+    if (!bypassCircuit && !this.isAvailable()) {
+      throw new ApiFootballUnavailable('DATA SOURCE TEMPORARILY UNAVAILABLE', { ...this.breakerState(), reason: 'CIRCUIT_OPEN' });
     }
-
-    if (!this.isAvailable()) {
-      throw new ApiFootballUnavailable('DATA SOURCE TEMPORARILY UNAVAILABLE', {
-        reason: UNAVAILABLE_REASONS.CIRCUIT_OPEN,
-        ...this.breakerState(),
-      });
+    if (Date.now() < this._rateLimitedUntil) {
+      throw new ApiFootballUnavailable('API-Football rate limit cooldown is active', { reason: 'RATE_LIMITED', resetAt: new Date(this._rateLimitedUntil).toISOString() });
     }
-
-    const key = this._cacheKey(endpoint, params);
-    const cached = this._cacheGet(key);
-    if (cached) {
-      this.stats.cacheHits += 1;
-      return cached;
-    }
-
-    const url = new URL(`${this.baseUrl}${endpoint}`);
-    for (const [k, v] of Object.entries(params)) {
-      if (v === undefined || v === null || v === '') continue;
-      url.searchParams.set(k, String(v));
-    }
-
-    let attempt = 0;
-    let rateLimitRetries = 0;
-    let lastError = null;
-
-    while (attempt <= retries) {
-      attempt += 1;
+    const cacheKey = this._cacheKey(endpoint, params);
+    const cached = ttl > 0 ? this._cacheGet(cacheKey) : null;
+    if (cached) { this.stats.cacheHits += 1; return cached; }
+    // Do not send a newly activated key to the old host while a request waits.
+    const credential = { key: apiKey, host: this.host, isRapidApi: this.isRapidApi };
+    const isCurrent = () => this.key === apiKey && this.host === credential.host;
+    const recordFailure = (err, tripBreaker = true) => {
+      if (!isCurrent()) return;
+      const info = describeUnavailable(err);
+      this._recordFailure(err.message, { ...info, tripBreaker });
+      this._notifyRequest({ ok: false, endpoint, httpStatus: info.httpStatus, errorCode: info.reason, message: info.detail });
+    };
+    const maxRetries = Math.max(0, Math.min(5, Number(retries) || 0));
+    let lastError;
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      const quota = this.quotaState();
+      if (isCurrent() && quota.exhausted && endpoint !== '/status') {
+        throw new ApiFootballUnavailable('API-Football daily request quota exhausted', { reason: 'QUOTA_EXCEEDED', endpoint, resetAt: quota.resetsAt, quota });
+      }
       await this._acquireRateSlot();
-
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       this.stats.calls += 1;
       this.stats.lastCallAt = new Date().toISOString();
-
+      let retryWait = null;
       try {
         const res = await this.fetchImpl(url.toString(), {
-          method: 'GET',
-          headers: this._headers(),
-          signal: controller.signal,
+          method: 'GET', headers: this._headers(credential), signal: controller.signal,
+          dispatcher: this.dispatcher,
+          // Never forward a secret-bearing header to an unapproved redirect.
+          redirect: 'manual',
         });
-
+        if (isCurrent()) this._learnQuotaFromHeaders(res);
         const text = await res.text();
-        let body = null;
-        try {
-          body = text ? JSON.parse(text) : null;
-        } catch (_) {
-          body = null;
-        }
-
-        // Every API-Football answer carries the remaining daily budget.
-        this._learnQuotaFromHeaders(res);
-
-        // 429: either the per-minute rate limit or a spent daily quota. Retrying
-        // a rate limit more than once (and retrying at all once the day's
-        // budget is gone) is what gets an API key firewalled — so the daily
-        // case stops immediately and the per-minute case backs off once.
-        if (res.status === 429) {
-          const state = this.quotaState();
-          if (state.exhausted) {
-            this._recordFailure('daily request quota exhausted');
-            this._notifyRequest({ ok: false, endpoint, httpStatus: 429, errorCode: UNAVAILABLE_REASONS.QUOTA_EXCEEDED });
-            throw new ApiFootballUnavailable('API-Football daily request quota exhausted', {
-              reason: UNAVAILABLE_REASONS.QUOTA_EXCEEDED,
-              status: 429,
-              endpoint,
-              resetAt: state.resetsAt,
-              quota: state,
-            });
-          }
-          lastError = new ApiFootballUnavailable('API-Football rejected the request: rate limit reached', {
-            reason: UNAVAILABLE_REASONS.RATE_LIMITED,
-            status: 429,
-            endpoint,
-            params,
-            quota: state,
-          });
-          this._recordFailure(lastError.message);
-          this._notifyRequest({ ok: false, endpoint, httpStatus: 429, errorCode: UNAVAILABLE_REASONS.RATE_LIMITED });
-          if (rateLimitRetries >= 1) throw lastError;
-          rateLimitRetries += 1;
-          await this._backoff(attempt, this._retryAfterMs(res));
-          continue;
-        }
-
-        // 499/408/425 are transient timeouts on the provider side, not a rejected request
-        if (res.status >= 500 || res.status === 499 || res.status === 408 || res.status === 425) {
-          lastError = new ApiFootballUnavailable('API-Football is temporarily unavailable', {
-            reason: UNAVAILABLE_REASONS.PROVIDER_UNAVAILABLE,
-            status: res.status,
-            endpoint,
-          });
-          this._recordFailure(lastError.message);
-          this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: 'UPSTREAM_STATUS' });
-          await this._backoff(attempt);
-          continue;
-        }
-
-        if (!res.ok) {
-          const apiErrors = (body && body.errors) || null;
-          this._recordFailure(`HTTP ${res.status} on ${endpoint}`);
-          this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: 'HTTP_ERROR' });
-          const providerMessage = summarizeProviderError(apiErrors);
-          const authRejected = res.status === 401 || res.status === 403;
-          const hint = authRejected
-            ? reasonInfo(UNAVAILABLE_REASONS.AUTH_REJECTED).hint
-            : null;
-          throw new ApiFootballUnavailable(
-            `API-Football request rejected (HTTP ${res.status} on ${endpoint}${providerMessage ? `: ${providerMessage}` : ''})`,
-            {
-              status: res.status,
-              endpoint,
-              params,
-              errors: apiErrors,
-              reason: authRejected ? UNAVAILABLE_REASONS.AUTH_REJECTED : UNAVAILABLE_REASONS.REQUEST_REJECTED,
-              hint,
-            }
+        let body;
+        try { body = text ? JSON.parse(redactSecret(text, apiKey)) : null; } catch (_err) { body = null; }
+        if (res.status === 204 && endpoint !== '/status') body = { errors: [], response: [], results: 0 };
+        const errors = body && body.errors;
+        const hasErrors = errors && (typeof errors !== 'object' || Object.keys(errors).length > 0);
+        if (!res.ok || hasErrors) {
+          const state = classifyProviderError({ httpStatus: res.status, errors, message: body && body.message || '' });
+          const reason = state === 'INVALID_KEY' ? 'AUTH_REJECTED' : state;
+          const summary = summarizeProviderError(errors || (body && body.message), apiKey);
+          let q = this.quotaState();
+          // An explicit zero daily budget is stronger evidence than a generic 429.
+          const actualReason = res.status === 429 && q.exhausted ? 'QUOTA_EXCEEDED' : reason;
+          if (actualReason === 'QUOTA_EXCEEDED' && isCurrent()) q = this._markQuotaExhausted(summary || 'daily request quota exhausted');
+          const transient = actualReason === 'PROVIDER_UNAVAILABLE';
+          const rate = actualReason === 'RATE_LIMITED';
+          lastError = new ApiFootballUnavailable(
+            transient ? 'API-Football is temporarily unavailable' : actualReason === 'QUOTA_EXCEEDED' ? 'API-Football daily request quota exhausted' : `API-Football request rejected (HTTP ${res.status} on ${endpoint}${summary ? `: ${summary}` : ''})`,
+            { reason: actualReason, status: res.status, endpoint, errors: errors || null,
+              hint: reasonInfo(actualReason).hint, quota: q,
+              resetAt: actualReason === 'QUOTA_EXCEEDED' ? q.resetsAt : null }
           );
-        }
-
-        if (!body) {
-          this._recordFailure('empty body');
-          lastError = new ApiFootballUnavailable('API-Football returned an empty response', {
-            reason: UNAVAILABLE_REASONS.EMPTY_RESPONSE,
-            status: res.status,
-            endpoint,
-          });
-          this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: 'EMPTY_BODY' });
-          await this._backoff(attempt);
-          continue;
-        }
-
-        // API-Football reports soft errors with HTTP 200 + `errors`. A spent
-        // daily quota or a per-minute rate limit is a hard stop (the caller
-        // must report it, not treat the empty payload as "no data today");
-        // anything else stays a warning, exactly as before.
-        if (body.errors && (Array.isArray(body.errors) ? body.errors.length : Object.keys(body.errors).length)) {
-          const errText = Array.isArray(body.errors) ? body.errors.join('; ') : JSON.stringify(body.errors);
-          const quotaError = Object.prototype.hasOwnProperty.call(body.errors, 'requests') || /requests? limits?|quota|limit for the day|reached the limit/i.test(errText);
-          const rateError = Object.prototype.hasOwnProperty.call(body.errors, 'rateLimit') || /rate limit|too many requests|per minute/i.test(errText);
-          if (quotaError) {
-            const state = this._markQuotaExhausted(`the provider answered: ${errText}`);
-            this._recordFailure(errText);
-            this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: UNAVAILABLE_REASONS.QUOTA_EXCEEDED });
-            throw new ApiFootballUnavailable('API-Football daily quota reached', {
-              reason: UNAVAILABLE_REASONS.QUOTA_EXCEEDED,
-              endpoint,
-              errors: body.errors,
-              resetAt: state.resetsAt,
-              quota: state,
-            });
-          }
-          if (rateError) {
-            this._recordFailure(errText);
-            this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: UNAVAILABLE_REASONS.RATE_LIMITED });
-            throw new ApiFootballUnavailable('API-Football rate limit reached', {
-              reason: UNAVAILABLE_REASONS.RATE_LIMITED,
-              endpoint,
-              errors: body.errors,
-              quota: this.quotaState(),
-            });
-          }
-          log.warn('API-Football soft error', { endpoint, errText });
-          body.softErrors = body.errors;
-          this._notifyRequest({ ok: false, endpoint, httpStatus: res.status, errorCode: 'SOFT_ERROR' });
+          recordFailure(lastError, transient);
+          retryWait = rate ? this._retryAfterMs(res) ?? 1000 : null;
+          if (rate && isCurrent()) this._rateLimitedUntil = Date.now() + retryWait;
+          if ((!transient && !rate) || attempt >= maxRetries || (rate && (attempt >= 1 || retryWait > 60000))) throw lastError;
+        } else if (!body || typeof body !== 'object' || (!Array.isArray(body.response) && !(endpoint === '/status' && body.response && typeof body.response === 'object'))) {
+          lastError = new ApiFootballUnavailable('API-Football returned an empty or malformed response', { reason: 'EMPTY_RESPONSE', status: res.status, endpoint });
+          recordFailure(lastError);
+          if (attempt >= maxRetries) throw lastError;
         } else {
-          this._notifyRequest({ ok: true, endpoint, httpStatus: res.status });
+          const info = endpoint === '/status' ? (Array.isArray(body.response) ? body.response[0] : body.response) : null;
+          if (isCurrent()) {
+            if (info && info.requests) this._learnQuotaFromStatus(info);
+            this._recordSuccess();
+            this._notifyRequest({ ok: true, endpoint, httpStatus: res.status });
+          }
+          const normalised = {
+            get: body.get || endpoint, parameters: body.parameters || params,
+            errors: errors || null, httpStatus: res.status,
+            results: typeof body.results === 'number' ? body.results : Array.isArray(body.response) ? body.response.length : 1,
+            paging: body.paging || { current: 1, total: 1 }, response: body.response,
+          };
+          if (isCurrent()) this._cacheSet(cacheKey, normalised, ttl);
+          return normalised;
         }
-
-        this._recordSuccess();
-        if (body.response && body.response[0] && body.response[0].requests) {
-          this._learnQuotaFromStatus(body.response[0]);
-        }
-        const normalised = {
-          get: body.get || endpoint,
-          parameters: body.parameters || params,
-          errors: body.errors || null,
-          results: typeof body.results === 'number' ? body.results : (body.response || []).length,
-          paging: body.paging || { current: 1, total: 1 },
-          response: Array.isArray(body.response) ? body.response : [],
-        };
-        this._cacheSet(key, normalised, ttl);
-        return normalised;
       } catch (err) {
         if (err instanceof ApiFootballUnavailable) throw err;
-        const timedOut = err && (err.name === 'AbortError' || /aborted|timeout/i.test(err.message || ''));
-        lastError = new ApiFootballUnavailable('API-Football network error', {
-          endpoint,
-          message: err && err.message ? err.message : String(err),
-          reason: timedOut ? UNAVAILABLE_REASONS.TIMEOUT : UNAVAILABLE_REASONS.NETWORK_ERROR,
-        });
-        this._recordFailure(lastError.details?.message || 'network error');
-        this._notifyRequest({
-          ok: false,
-          endpoint,
-          httpStatus: null,
-          errorCode: timedOut ? UNAVAILABLE_REASONS.TIMEOUT : UNAVAILABLE_REASONS.NETWORK_ERROR,
-        });
-        if (attempt > retries) throw lastError;
-        await this._backoff(attempt);
-      } finally {
-        clearTimeout(timer);
-      }
+        const failure = networkFailure(err, { timedOut: controller.signal.aborted });
+        lastError = new ApiFootballUnavailable(`${failure.message}${failure.networkCode ? ` (${failure.networkCode})` : ''}`, { endpoint, ...failure });
+        recordFailure(lastError);
+        if (attempt >= maxRetries || (failure.networkCode && /CERT|ISSUER|SIGNATURE/.test(failure.networkCode))) throw lastError;
+      } finally { clearTimeout(timer); }
+      // Never sleep after the final attempt; a test is exactly one bounded call.
+      await this._backoff(attempt + 1, retryWait);
     }
-
-    throw lastError || new ApiFootballUnavailable('API-Football request failed');
+    throw lastError;
   }
 
   /** How long the provider asked us to wait (Retry-After), bounded. */
@@ -872,9 +802,9 @@ class ApiFootballClient {
     const raw = headers.get('retry-after');
     if (raw === null || raw === undefined || raw === '') return null;
     const seconds = Number(raw);
-    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 15000);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 86400000);
     const at = new Date(raw);
-    if (!Number.isNaN(at.getTime())) return Math.min(Math.max(0, at.getTime() - Date.now()), 15000);
+    if (!Number.isNaN(at.getTime())) return Math.min(Math.max(0, at.getTime() - Date.now()), 86400000);
     return null;
   }
 
@@ -885,7 +815,7 @@ class ApiFootballClient {
   _notifyRequest(info) {
     if (typeof this.onRequest !== 'function') return;
     try {
-      const result = this.onRequest(info);
+      const result = this.onRequest({ ...info, identity: { host: this.host, fingerprint: createHash('sha256').update(String(this.key)).digest('hex') } });
       if (result && typeof result.catch === 'function') result.catch(() => {});
     } catch (_err) {
       /* never break a request because diagnostics could not be recorded */
@@ -907,6 +837,7 @@ class ApiFootballClient {
    */
   async probeCredentials({ endpoint = '/status' } = {}) {
     const startedAt = Date.now();
+    await this._refreshCredential();
     const base = {
       ok: false,
       state: CONNECTION_STATES.NOT_TESTED,
@@ -933,9 +864,9 @@ class ApiFootballClient {
 
     try {
       // No cache, no retries: a credential test must be a real, single request.
-      const data = await this.request(endpoint, {}, { ttl: 0, retries: 0 });
+      const data = await this.request(endpoint, {}, { ttl: 0, retries: 0, bypassCircuit: true });
       const latencyMs = Date.now() - startedAt;
-      const info = (data.response && data.response[0]) || null;
+      const info = (Array.isArray(data.response) ? data.response[0] : data.response) || null;
 
       if (data.errors && (Array.isArray(data.errors) ? data.errors.length : Object.keys(data.errors).length)) {
         const state = classifyProviderError({ httpStatus: null, errors: data.errors });
@@ -949,28 +880,38 @@ class ApiFootballClient {
         };
       }
 
-      if (!info) {
+      if (!info || !(info.requests && toNumberOrNull(info.requests.current) !== null) && !(info.subscription && typeof info.subscription.active === 'boolean')) {
         return {
           ...base,
           state: CONNECTION_STATES.PROVIDER_UNAVAILABLE,
           label: CONNECTION_LABELS.PROVIDER_UNAVAILABLE,
           latencyMs,
-          message: 'The provider answered without any status payload.',
+          httpStatus: data.httpStatus || 200,
+          reason: 'EMPTY_RESPONSE', hint: reasonInfo('EMPTY_RESPONSE').hint,
+          message: 'The provider answered without a valid status payload.',
         };
       }
 
       const quota =
-        info.requests && Number.isFinite(Number(info.requests.current))
-          ? { current: Number(info.requests.current), limitDay: Number(info.requests.limit_day) || null }
+        info.requests && toNumberOrNull(info.requests.current) !== null
+          ? { current: Number(info.requests.current), limitDay: toNumberOrNull(info.requests.limit_day) }
           : null;
 
+      const inactive = info.subscription && info.subscription.active === false;
+      const exhausted = quota && quota.limitDay !== null && quota.current >= quota.limitDay;
+      const state = inactive ? 'SUBSCRIPTION_INACTIVE' : exhausted ? 'QUOTA_EXCEEDED' : 'CONNECTED';
       return {
         ...base,
-        ok: true,
-        state: CONNECTION_STATES.CONNECTED,
-        label: CONNECTION_LABELS.CONNECTED,
+        httpStatus: data.httpStatus || 200,
+        rateLimitPerMinute: this._quota.perMinuteLimit,
+        reason: state === 'CONNECTED' ? null : state,
+        hint: state === 'CONNECTED' ? null : reasonInfo(state).hint,
+        resetAt: exhausted ? this.quotaState().resetsAt : null,
+        ok: state === 'CONNECTED',
+        state,
+        label: CONNECTION_LABELS[state],
         latencyMs,
-        message: `The provider accepted the credential${
+        message: `${inactive ? 'The provider reports an inactive subscription' : exhausted ? 'The credential was accepted, but today’s daily quota is exhausted' : 'The provider accepted the credential'}${
           quota ? ` (${quota.current}${quota.limitDay ? `/${quota.limitDay}` : ''} requests used today)` : ''
         }.`,
         quota,
@@ -994,9 +935,11 @@ class ApiFootballClient {
       else if (reason === UNAVAILABLE_REASONS.RATE_LIMITED) state = CONNECTION_STATES.RATE_LIMITED;
       else if (reason === UNAVAILABLE_REASONS.AUTH_REJECTED) state = CONNECTION_STATES.INVALID_KEY;
       else if (reason === UNAVAILABLE_REASONS.PROVIDER_UNAVAILABLE) state = CONNECTION_STATES.PROVIDER_UNAVAILABLE;
-      else if (reason === UNAVAILABLE_REASONS.NETWORK_ERROR || reason === UNAVAILABLE_REASONS.EMPTY_RESPONSE) state = CONNECTION_STATES.NETWORK_ERROR;
+      else if (reason === UNAVAILABLE_REASONS.NETWORK_ERROR) state = CONNECTION_STATES.NETWORK_ERROR;
+      else if (reason === UNAVAILABLE_REASONS.EMPTY_RESPONSE) state = CONNECTION_STATES.PROVIDER_UNAVAILABLE;
       else if (reason === UNAVAILABLE_REASONS.CIRCUIT_OPEN) state = CONNECTION_STATES.PROVIDER_UNAVAILABLE;
-      else if (reason === UNAVAILABLE_REASONS.NO_API_KEY) state = CONNECTION_STATES.CONFIG_INCOMPLETE;
+      else if (reason === UNAVAILABLE_REASONS.NO_API_KEY || reason === UNAVAILABLE_REASONS.CONFIG_INVALID) state = CONNECTION_STATES.CONFIG_INCOMPLETE;
+      else if (reason === 'REQUEST_REJECTED' || reason === 'SUBSCRIPTION_INACTIVE') state = reason;
       else if (details.errors || details.status) {
         state = classifyProviderError({ httpStatus, errors: details.errors || null, message: err.message });
       } else state = CONNECTION_STATES.NETWORK_ERROR;
@@ -1008,6 +951,8 @@ class ApiFootballClient {
         label: CONNECTION_LABELS[state] || state,
         reason: described.reason,
         hint: described.hint,
+        networkCode: described.networkCode,
+        resetAt: described.resetAt,
         httpStatus,
         latencyMs,
         message: err.message || 'The credential test failed',
@@ -1028,7 +973,7 @@ class ApiFootballClient {
   /** GET /status — plan, subscription and daily request usage (never billed). */
   async getStatus() {
     const data = await this.request('/status', {}, { ttl: this._cacheTtl.status });
-    const info = (data.response && data.response[0]) || null;
+    const info = (Array.isArray(data.response) ? data.response[0] : data.response) || null;
     if (info && info.requests) this._learnQuotaFromStatus(info);
     return info;
   }
@@ -1038,10 +983,11 @@ class ApiFootballClient {
     return this.request('/fixtures', { date, timezone: 'UTC', ...extra }, { ttl: this._cacheTtl.fixtures });
   }
 
-  /** GET /fixtures?id=1-2-3 (batched) */
+  /** GET /fixtures?ids=1-2-3 — documented maximum: 20 IDs. */
   async getFixturesByIds(ids) {
     if (!ids || !ids.length) return { response: [], results: 0 };
-    return this.request('/fixtures', { id: ids.join('-'), timezone: 'UTC' }, { ttl: this._cacheTtl.fixtures });
+    const values = fixtureIds(ids);
+    return this.request('/fixtures', { ids: values.join('-'), timezone: 'UTC' }, { ttl: this._cacheTtl.fixtures });
   }
 
   /** GET /fixtures?team=X&last=N&status=FT — used for form samples. */
@@ -1058,18 +1004,24 @@ class ApiFootballClient {
 
   /** GET /odds?date=YYYY-MM-DD&page=N — bulk pre-match odds. */
   async getOddsByDate(date, page = 1) {
-    return this.request('/odds', { date, page }, { ttl: 0 }); // odds are never served from cache when refreshing
+    return this.request('/odds', { date, page, bet: 5 }, { ttl: 0 }); // odds are never served from cache when refreshing
   }
 
   /** GET /odds?fixture=ID — exact price for one fixture (used at generation time). */
   async getOddsByFixture(fixtureId) {
-    return this.request('/odds', { fixture: fixtureId }, { ttl: 0 });
+    return this.request('/odds', { fixture: fixtureIds([fixtureId])[0], bet: 5 }, { ttl: 0 });
   }
 
-  /** GET /odds?fixture=1-2-3 — batched variant where the plan supports it. */
-  async getOddsByFixtures(fixtureIds) {
-    if (!fixtureIds || !fixtureIds.length) return { response: [], results: 0 };
-    return this.request('/odds', { fixture: fixtureIds.join('-') }, { ttl: 0 });
+  /** /odds accepts ONE fixture integer; combine individual real responses. */
+  async getOddsByFixtures(ids) {
+    if (!ids || !ids.length) return { response: [], results: 0 };
+    const values = fixtureIds(ids);
+    const response = [];
+    for (const id of values) {
+      const data = await this.getOddsByFixture(id);
+      response.push(...data.response);
+    }
+    return { response, results: response.length, paging: { current: 1, total: 1 }, endpointCalls: values.length };
   }
 
   /** GET /injuries?fixture=ID — only when the plan provides it. */
@@ -1081,6 +1033,13 @@ class ApiFootballClient {
   async getStandings(leagueId, season) {
     return this.request('/standings', { league: leagueId, season }, { ttl: 6 * 60 * 60 * 1000 });
   }
+}
+
+function fixtureIds(ids) {
+  if (!Array.isArray(ids) || ids.length > 20 || ids.some((id) => !['string', 'number'].includes(typeof id) || !/^\d+$/.test(String(id)) || !Number.isSafeInteger(Number(id)) || Number(id) <= 0)) {
+    throw AppError.badRequest('Supply up to 20 positive fixture IDs.', 'INVALID_FIXTURE_IDS');
+  }
+  return [...new Set(ids.map(Number))];
 }
 
 /** Shared singleton used by the running server. */

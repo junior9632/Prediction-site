@@ -10,6 +10,7 @@
 
 const path = require('path');
 const dotenv = require('dotenv');
+const { normalizeHost, baseUrlForHost, unquote, DIRECT_HOST } = require('../utils/providerConfig');
 
 const rootDir = path.resolve(__dirname, '..', '..');
 dotenv.config({ path: path.join(rootDir, '.env') });
@@ -44,7 +45,7 @@ function list(key, fallback = []) {
 const nodeEnv = str('NODE_ENV', 'development');
 const appUrl = str('APP_URL', `http://localhost:${int('PORT', 3000)}`).replace(/\/+$/, '');
 
-const apiFootballHost = str('API_FOOTBALL_HOST', 'v3.football.api-sports.io').replace(/\/+$/, '');
+const apiFootballHost = normalizeHost(str('API_FOOTBALL_HOST', DIRECT_HOST)) || DIRECT_HOST;
 
 const config = {
   env: nodeEnv,
@@ -71,13 +72,12 @@ const config = {
   },
 
   apiFootball: {
-    key: str('API_FOOTBALL_KEY', ''),
+    key: unquote(str('API_FOOTBALL_KEY', '')),
     host: apiFootballHost,
     // Direct API-Sports hosts have NO version path (https://v3.football.api-sports.io/odds);
     // RapidAPI serves the same API under /v3.
-    baseUrl: apiFootballHost.includes('rapidapi.com')
-      ? `https://${apiFootballHost.replace(/\/v3$/i, '')}/v3`
-      : `https://${apiFootballHost.replace(/\/v3$/i, '')}`,
+    baseUrl: baseUrlForHost(apiFootballHost),
+    ipFamily: ['auto', '4', '6'].includes(str('API_FOOTBALL_IP_FAMILY', 'auto')) ? str('API_FOOTBALL_IP_FAMILY', 'auto') : 'auto',
     ratePerMinute: int('API_FOOTBALL_RATE_PER_MINUTE', 60),
     timeoutMs: int('API_FOOTBALL_TIMEOUT_MS', 15000),
     maxRetries: int('API_FOOTBALL_MAX_RETRIES', 2),
@@ -176,7 +176,8 @@ const config = {
 config.validate = function validate() {
   const problems = [];
   if (config.isProduction) {
-    if (!config.apiFootball.key) problems.push('API_FOOTBALL_KEY is not set');
+    // An active encrypted DB credential may be used instead. The dashboard
+    // must also remain available so the administrator can configure one.
     if (!config.auth.jwtSecret || config.auth.jwtSecret.length < 32) {
       problems.push('JWT_SECRET must be set to a long random string (32+ characters)');
     }

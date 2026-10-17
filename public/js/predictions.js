@@ -48,6 +48,7 @@
   }
 
   async function load() {
+    await App.site.load();
     App.session.bindHeader();
     const date = $('#dateInput').value || new Date().toISOString().slice(0, 10);
     const eligible = $('#eligibleOnly').checked;

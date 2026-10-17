@@ -73,7 +73,9 @@ const saveCredentials = asyncHandler(async (req, res) => {
       maskedKey: result.maskedKey,
       replaced: result.replaced,
       isActive: result.isActive,
-      note: 'Saved encrypted. Saving does not mark the provider connected — run Test Connection, then Activate Provider.',
+      note: result.isActive
+        ? 'Saved encrypted. The active credential was replaced immediately; test the connection before syncing.'
+        : 'Saved encrypted. Run Test Connection, then Activate Provider to use this credential.',
       status: result.status,
     },
   });

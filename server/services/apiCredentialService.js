@@ -33,11 +33,14 @@ const logger = require('../utils/logger');
 const vault = require('../utils/credentialVault');
 const { AppError } = require('../utils/errors');
 const providers = require('./apiProviders');
+const settingsService = require('./settingsService');
+const { normalizeApiKey, redactSecret } = require('../utils/providerConfig');
 const {
   ApiFootballClient,
   CONNECTION_STATES,
   CONNECTION_LABELS,
   apiFootball,
+  reasonInfo,
 } = require('./apiFootball');
 
 const log = logger.child('api-credentials');
@@ -70,6 +73,8 @@ let lastTest = { at: 0, keyFingerprint: null, host: null, provider: null, result
 // an impatient operator cannot burn the daily quota with repeat clicks.
 let lastProbe = { at: 0, keyFingerprint: null, host: null, provider: null, result: null };
 let lastTouchAt = 0;
+let probeInFlight = null;
+let lastProbeStartedAt = 0;
 
 /** Test hook: build the client used for a probe (tests inject a stub fetch). */
 let clientFactory = (options) => new ApiFootballClient(options);
@@ -93,20 +98,17 @@ function invalidate() {
 /* ---------------------------------------------------------------------- */
 
 function environmentCredential(providerId = providers.DEFAULT_PROVIDER_ID) {
+  if (!config.apiFootball.key) return null;
   const provider = providers.get(providerId);
-  const key = (config.apiFootball.key || '').trim();
-  if (!key) return null;
-  const host = providers.normalizeHost(config.apiFootball.host) || (provider && provider.defaultHostId) || null;
-  return {
-    providerId,
-    key,
-    host,
-    baseUrl: config.apiFootball.baseUrl,
-    ratePerMinute: config.apiFootball.ratePerMinute,
-    source: 'environment',
-    savedAt: null,
-    maskedKey: vault.maskSecret(key),
-  };
+  try {
+    const key = normalizeApiKey(config.apiFootball.key);
+    const host = providers.requireHost(provider, config.apiFootball.host);
+    return { providerId, key, host: host.id, baseUrl: host.baseUrl,
+      ratePerMinute: config.apiFootball.ratePerMinute, source: 'environment', savedAt: null, maskedKey: vault.maskSecret(key) };
+  } catch (_err) {
+    return { providerId, key: '', host: null, baseUrl: null, source: 'environment', maskedKey: null,
+      error: new AppError('The environment API host or key is invalid. Select an approved host in API Management or correct API_FOOTBALL_HOST / API_FOOTBALL_KEY.', { code: 'CONFIG_INVALID', status: 503 }) };
+  }
 }
 
 /**
@@ -175,7 +177,7 @@ async function resolveActiveCredential({ force = false } = {}) {
   } else {
     const env = environmentCredential();
     resolved = env
-      ? { ...env, source: 'environment', row: null, error: null }
+      ? { ...env, source: 'environment', row: null, error: env.error || null }
       : {
           source: 'none',
           providerId: providers.DEFAULT_PROVIDER_ID,
@@ -216,17 +218,44 @@ async function syncClientCredential(client = apiFootball) {
 /** Persist "last API request time" at most once every REQUEST_TOUCH_INTERVAL_MS. */
 async function recordUpstreamRequest(info = {}) {
   const now = new Date();
-  if (now.getTime() - lastTouchAt < REQUEST_TOUCH_INTERVAL_MS) return;
+  if (info.ok && now.getTime() - lastTouchAt < REQUEST_TOUCH_INTERVAL_MS) return;
   lastTouchAt = now.getTime();
   try {
     const resolved = await resolveActiveCredential();
-    if (resolved.source !== 'database' || !resolved.row) return;
+    if (resolved.source !== 'database' || !resolved.row || !resolved.key) return;
+    const fingerprint = vault.fingerprint(resolved.key);
+    if (info.identity && (info.identity.fingerprint !== fingerprint || info.identity.host !== resolved.host)) return;
+    const state = info.errorCode === 'AUTH_REJECTED' ? 'INVALID_KEY' : info.errorCode;
     await db.updateApiCredentialState(resolved.providerId, {
-      lastRequestAt: now,
-      lastSuccessAt: info.ok ? now : undefined,
-    });
+      lastRequestAt: now, lastSuccessAt: info.ok ? now : undefined,
+      lastErrorAt: info.ok ? null : now, lastErrorCode: info.ok ? null : state,
+      lastErrorMessage: info.ok ? null : info.message,
+    }, { fingerprint, host: resolved.host });
   } catch (err) {
     log.debug('unable to persist the last API request time', { message: err.message });
+  }
+}
+
+function latestProbe(providerId, host, fingerprint) {
+  return [lastTest, lastProbe]
+    .filter((item) => item.result && item.provider === providerId && item.host === host && item.keyFingerprint === fingerprint)
+    .sort((a, b) => b.at - a.at)[0] || null;
+}
+
+/** Reconcile a real probe with the live client only if the identity still matches. */
+async function applyLiveProbe(result, { providerId, host, fingerprint }) {
+  const resolved = await syncClientCredential(apiFootball);
+  if (resolved.error || !resolved.key || resolved.providerId !== providerId || resolved.host !== host || vault.fingerprint(resolved.key) !== fingerprint) return;
+  if (result.quota) apiFootball._learnQuotaFromStatus({ requests: { current: result.quota.current, limit_day: result.quota.limitDay } });
+  if (result.rateLimitPerMinute > 0) {
+    apiFootball._quota.perMinuteLimit = result.rateLimitPerMinute;
+    apiFootball.ratePerMinute = Math.min(apiFootball.ratePerMinute, result.rateLimitPerMinute);
+  }
+  if (!result.reused) {
+    apiFootball.stats.lastCallAt = result.testedAt;
+    if (result.ok) apiFootball._recordSuccess();
+    else apiFootball._recordFailure(result.message, { reason: result.reason || result.state, hint: result.hint,
+      httpStatus: result.httpStatus, networkCode: result.networkCode, tripBreaker: false });
   }
 }
 
@@ -260,7 +289,8 @@ function isoOrNull(value) {
  * `GET /api/admin/api-management`.
  */
 async function getStatus() {
-  const resolved = await resolveActiveCredential({ force: true });
+  const resolved = await syncClientCredential(apiFootball);
+  const settings = await settingsService.getEngineSettings();
   const provider = providers.get(resolved.providerId) || providers.get(providers.DEFAULT_PROVIDER_ID);
 
   const asArray = (value) => (Array.isArray(value) ? value : []);
@@ -304,10 +334,37 @@ async function getStatus() {
   const breaker = apiFootball.breakerState();
 
   const isStoredActive = Boolean(storedRow) && Number(storedRow.is_active) === 1;
+  const selectedHost = storedRow ? providers.normalizeHost(storedRow.host) : resolved.host;
+  const selectedFingerprint = storedRow ? storedRow.key_fingerprint : resolved.key ? vault.fingerprint(resolved.key) : null;
+  const measured = latestProbe(provider.id, selectedHost, selectedFingerprint);
+  const measuredResult = measured && measured.result;
+  const lastStoredError = storedRow && isoOrNull(storedRow.last_error_at);
+  const lastStoredSuccess = storedRow && isoOrNull(storedRow.last_success_at);
+  const storedOutcome = isStoredActive && (lastStoredError || lastStoredSuccess)
+    ? lastStoredError && (!lastStoredSuccess || lastStoredError >= lastStoredSuccess)
+      ? { ok: false, at: lastStoredError, reason: storedRow.last_error_code === 'INVALID_KEY' ? 'AUTH_REJECTED' : storedRow.last_error_code, message: storedRow.last_error_message }
+      : { ok: true, at: lastStoredSuccess }
+    : null;
+  const live = !storedRow || isStoredActive
+    ? [apiFootball.stats.lastOutcome, storedOutcome].filter(Boolean).sort((a, b) => new Date(b.at) - new Date(a.at))[0] || null : null;
+  const liveCurrent = live && (!measured || new Date(live.at).getTime() >= measured.at);
+  const liveFailed = liveCurrent && !live.ok;
+  const liveState = liveFailed ? live.reason === 'AUTH_REJECTED' ? 'INVALID_KEY' : live.reason || 'NETWORK_ERROR' : null;
+  const currentQuota = (!storedRow || isStoredActive) ? apiFootball.quotaState() : null;
+  const measuredQuota = measuredResult && measuredResult.quota ? { ...measuredResult.quota, checkedAt: measuredResult.testedAt, source: 'provider /status' } : null;
+  const storedQuota = storedRow && storedRow.quota_used_today != null ? { current: Number(storedRow.quota_used_today), limitDay: storedRow.quota_limit_day == null ? null : Number(storedRow.quota_limit_day), checkedAt: isoOrNull(storedRow.quota_checked_at), source: 'provider /status' } : null;
+  let quota = currentQuota && currentQuota.current !== null ? { current: currentQuota.current, limitDay: currentQuota.limitDay, checkedAt: currentQuota.checkedAt, source: currentQuota.source } : measuredQuota || storedQuota;
+  if (quota && (!quota.checkedAt || quota.checkedAt.slice(0, 10) !== new Date().toISOString().slice(0, 10))) quota = null;
+  const reason = resolved.error ? resolved.error.code : currentQuota && currentQuota.exhausted ? 'QUOTA_EXCEEDED'
+    : liveCurrent ? live.ok ? null : live.reason : measuredResult ? measuredResult.reason || null : null;
+  const hint = reason ? liveFailed && live.hint || measuredResult && measuredResult.reason === reason && measuredResult.hint || reasonInfo(reason).hint : null;
   const connectionState = resolved.error
     ? resolved.error.code === 'ENCRYPTION_KEY_MISSING'
       ? 'ENCRYPTION_KEY_MISSING'
-      : 'CREDENTIAL_UNREADABLE'
+      : resolved.error.code === 'CONFIG_INVALID' ? 'CONFIG_INCOMPLETE' : 'CREDENTIAL_UNREADABLE'
+    : currentQuota && currentQuota.exhausted ? 'QUOTA_EXCEEDED'
+    : liveCurrent ? liveState || 'CONNECTED'
+    : measuredResult ? measuredResult.state
     : storedRow && !isStoredActive
       ? // saved but never switched on: show the verdict of the last real test
         // when there is one, otherwise "disabled" — a saved key alone is never
@@ -326,6 +383,7 @@ async function getStatus() {
     providers: providers.list(),
     activeProviderId: activeRow ? activeRow.provider : null,
     credentialSource: resolved.source,
+    effectiveCredential: { source: resolved.source, host: resolved.host, maskedKey: resolved.maskedKey || null },
     databaseManaged,
     degradedReason,
     credential: storedRow
@@ -361,6 +419,9 @@ async function getStatus() {
           : CONNECTION_LABELS[connectionState] || connectionState,
       message: resolved.error
         ? resolved.error.message
+        : currentQuota && currentQuota.exhausted ? 'The daily quota is exhausted; data requests resume after the next reset.'
+        : liveCurrent ? live.ok ? 'The provider accepted the latest request.' : live.message
+        : measuredResult ? measuredResult.message + (storedRow && !isStoredActive ? ' Saved credential is not active.' : '')
         : storedRow && !isStoredActive
           ? `Saved, not active.${
               resolved.source === 'environment'
@@ -374,37 +435,33 @@ async function getStatus() {
               : 'No API credential is configured yet.',
       // what the last real test measured — reported even while the stored
       // credential is not the active one
-      lastTestState: storedRow ? storedRow.connection_state || null : null,
+      inUse: !storedRow || isStoredActive,
+      reason,
+      hint,
+      networkCode: liveCurrent ? liveFailed ? live.networkCode || null : null : measuredResult ? measuredResult.networkCode || null : null,
+      lastTestState: measuredResult ? measuredResult.state : storedRow ? storedRow.connection_state || null : null,
       lastTestMessage: storedRow ? storedRow.connection_message || null : null,
-      testedAt: storedRow ? isoOrNull(storedRow.last_test_at) : null,
-      latencyMs:
+      testedAt: measuredResult ? measuredResult.testedAt : storedRow ? isoOrNull(storedRow.last_test_at) : null,
+      latencyMs: measuredResult ? measuredResult.latencyMs :
         storedRow && storedRow.last_test_latency_ms !== null && storedRow.last_test_latency_ms !== undefined
           ? Number(storedRow.last_test_latency_ms)
           : null,
-      lastSuccessAt: storedRow ? isoOrNull(storedRow.last_success_at) : null,
+      lastSuccessAt: storedRow ? isoOrNull(storedRow.last_success_at) : apiFootball.stats.lastSuccessAt || null,
       lastErrorAt: storedRow ? isoOrNull(storedRow.last_error_at) : null,
-      lastErrorCode: storedRow ? storedRow.last_error_code || null : null,
-      lastErrorMessage: storedRow ? storedRow.last_error_message || null : null,
-      host: resolved.host,
+      lastErrorCode: liveFailed ? live.reason : storedRow ? storedRow.last_error_code || null : null,
+      lastErrorMessage: liveFailed ? live.message : storedRow ? storedRow.last_error_message || null : null,
+      host: selectedHost,
       resolvedFromDatabase: resolved.source === 'database',
     },
     lastRequestAt: apiFootball.stats.lastCallAt || (storedRow ? isoOrNull(storedRow.last_request_at) : null),
     lastSuccessfulSyncs: lastSyncs,
-    quota:
-      storedRow && storedRow.quota_used_today !== null && storedRow.quota_used_today !== undefined
-        ? {
-            current: Number(storedRow.quota_used_today),
-            limitDay: storedRow.quota_limit_day === null ? null : Number(storedRow.quota_limit_day),
-            checkedAt: isoOrNull(storedRow.quota_checked_at),
-            source: 'provider /status',
-          }
-        : null,
+    quota,
     rateLimits: {
       requestsPerMinute: apiFootball.ratePerMinute,
-      source: 'server configuration',
-      providerBudgetPerMinute: provider && provider.defaultRatePerMinute ? provider.defaultRatePerMinute : null,
+      source: currentQuota && currentQuota.perMinuteLimit ? 'provider response headers' : 'server configuration',
+      providerBudgetPerMinute: currentQuota ? currentQuota.perMinuteLimit : null,
     },
-    plan: storedRow && storedRow.plan_name ? { name: storedRow.plan_name } : null,
+    plan: measuredResult && measuredResult.plan ? measuredResult.plan : storedRow && storedRow.plan_name ? { name: storedRow.plan_name } : null,
     encryption: vault.status(),
     client: {
       configured: apiFootball.configured,
@@ -426,12 +483,12 @@ async function getStatus() {
     predictionRules: {
       market: config.market.label,
       marketKey: config.market.key,
-      oddsWindow: [config.odds.minTotalOdds, config.odds.maxTotalOdds],
-      minConfidence: config.odds.minConfidence,
-      maxRisk: config.odds.maxRisk,
-      minDataQuality: config.odds.minDataQuality,
-      maxSelections: config.odds.maxSelections,
-      oddsFreshnessMinutes: config.odds.freshnessMinutes,
+      oddsWindow: [Number(settings.minTotalOdds), Number(settings.maxTotalOdds)],
+      minConfidence: Number(settings.minConfidence),
+      maxRisk: Number(settings.maxRisk),
+      minDataQuality: Number(settings.minDataQuality),
+      maxSelections: Number(settings.maxSelections),
+      oddsFreshnessMinutes: Number(settings.oddsFreshnessMinutes),
       automaticTicketGeneration: false,
       ticketGeneration: 'MANUAL ONLY — API changes never generate a ticket',
     },
@@ -441,75 +498,23 @@ async function getStatus() {
 
 /** Safe quota + connection diagnostics (used by the Refresh API Status button). */
 async function getDiagnostics({ probe = false } = {}) {
-  const status = await getStatus();
   let liveProbe = null;
-
   if (probe) {
-    const resolved = await resolveActiveCredential();
-    const persistProbe = async (result) => {
-      if (!result.ok || !result.quota || resolved.source !== 'database') return;
-      await db
-        .updateApiCredentialState(resolved.providerId, {
-          quotaUsedToday: result.quota.current,
-          quotaLimitDay: result.quota.limitDay,
-          quotaCheckedAt: new Date(),
-          planName: result.plan ? result.plan.name : undefined,
-          connectionState: CONNECTION_STATES.CONNECTED,
-          connectionMessage: result.message,
-          lastSuccessAt: new Date(),
-        })
-        .catch((err) => log.warn('unable to persist the probe quota', { message: err.message }));
-      invalidate();
-    };
-    if (resolved.error) {
-      liveProbe = {
-        ok: false,
-        state: resolved.error.code === 'ENCRYPTION_KEY_MISSING' ? 'ENCRYPTION_KEY_MISSING' : 'CREDENTIAL_UNREADABLE',
-        label: resolved.error.message,
-        message: resolved.error.message,
-        quota: null,
-        skipped: true,
-      };
-    } else if (!apiFootball.configured) {
-      liveProbe = {
-        ok: false,
-        state: CONNECTION_STATES.CONFIG_INCOMPLETE,
-        label: CONNECTION_LABELS.CONFIG_INCOMPLETE,
-        message: 'No API credential is configured, so there is nothing to probe.',
-        quota: null,
-        skipped: true,
-      };
+    const resolved = await syncClientCredential(apiFootball);
+    if (resolved.error || !resolved.key) {
+      liveProbe = { ok: false, state: resolved.error ? resolved.error.code : 'CONFIG_INCOMPLETE',
+        label: resolved.error ? resolved.error.message : CONNECTION_LABELS.CONFIG_INCOMPLETE,
+        message: resolved.error ? resolved.error.message : 'No API credential is configured, so there is nothing to probe.',
+        quota: null, skipped: true };
     } else {
-      // One real request to the provider's /status endpoint. Pressing Refresh
-      // again inside the reuse window returns the verdict that was just
-      // measured (flagged `reused`) instead of making a second call — the
-      // client's own TTL cache covers the longer window after that.
-      const fingerprint = resolved.key ? vault.fingerprint(resolved.key) : null;
-      const now = Date.now();
-      const comparable =
-        lastProbe.result &&
-        lastProbe.provider === resolved.providerId &&
-        lastProbe.host === resolved.host &&
-        lastProbe.keyFingerprint === fingerprint;
-      if (comparable && now - lastProbe.at < testWindows.reuseMs) {
-        liveProbe = { ...lastProbe.result, reused: true, testedAt: new Date(lastProbe.at).toISOString() };
-      } else {
-        liveProbe = await apiFootball.probeCredentials();
-        lastProbe = { at: now, keyFingerprint: fingerprint, host: resolved.host, provider: resolved.providerId, result: liveProbe };
-        await persistProbe(liveProbe);
-      }
+      liveProbe = await testConnection({ provider: resolved.providerId, key: resolved.key, host: resolved.host });
+      lastProbe = { at: new Date(liveProbe.testedAt).getTime(), keyFingerprint: vault.fingerprint(resolved.key), host: resolved.host, provider: resolved.providerId, result: liveProbe };
     }
   }
-
-  return {
-    quota: liveProbe && liveProbe.quota ? { ...liveProbe.quota, source: 'provider /status' } : status.quota,
-    rateLimits: status.rateLimits,
-    connection: status.connection,
-    liveProbe,
-    recentErrors: status.recentErrors,
-    encryption: status.encryption,
-    serverTime: status.serverTime,
-  };
+  // Re-read AFTER the request so quota, badge, last test and errors agree.
+  const status = await getStatus();
+  return { quota: status.quota, rateLimits: status.rateLimits, connection: status.connection,
+    liveProbe, recentErrors: status.recentErrors, encryption: status.encryption, serverTime: status.serverTime, status };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -543,13 +548,7 @@ async function recordEvent({ provider, event, outcome, httpStatus = null, endpoi
 async function saveCredential({ provider: providerId, key, host }, { adminId = null, req = null } = {}) {
   const provider = providers.requireProvider(providerId);
   const hostEntry = providers.requireHost(provider, host);
-  const apiKey = String(key || '').trim();
-  if (!apiKey) throw AppError.badRequest('An API key is required', 'API_KEY_REQUIRED');
-  if (apiKey.length < 8) throw AppError.badRequest('That API key is too short to be valid', 'API_KEY_TOO_SHORT');
-  if (apiKey.length > 256) throw AppError.badRequest('That API key is too long', 'API_KEY_TOO_LONG');
-  if (/[\s\r\n]/.test(apiKey)) {
-    throw AppError.badRequest('The API key must not contain spaces or line breaks', 'API_KEY_MALFORMED');
-  }
+  const apiKey = normalizeApiKey(key);
 
   // With no usable master key this throws ENCRYPTION_KEY_MISSING:
   // nothing is written and the plaintext key is never persisted.
@@ -609,146 +608,80 @@ async function saveCredential({ provider: providerId, key, host }, { adminId = n
  */
 async function testConnection({ provider: providerId, key, host }, { adminId = null, req = null } = {}) {
   const provider = providers.requireProvider(providerId);
-  const hostEntry = providers.requireHost(provider, host);
-
-  const providedKey = key === undefined || key === null ? '' : String(key).trim();
-  let apiKey = providedKey;
-  let keyOrigin = 'supplied';
-
-  if (!apiKey) {
-    const existing = await db.getApiCredential(provider.id).catch(() => null);
-    if (existing) {
-      apiKey = vault.decryptSecret(existing, { provider: provider.id });
-      keyOrigin = 'stored';
-    } else if (config.apiFootball.key) {
-      apiKey = config.apiFootball.key;
-      keyOrigin = 'environment';
-    }
-  }
-
-  if (!apiKey) {
-    const result = {
-      ok: false,
-      state: CONNECTION_STATES.CONFIG_INCOMPLETE,
-      label: CONNECTION_LABELS.CONFIG_INCOMPLETE,
-      message: 'No API key to test: enter one, save it, or configure API_FOOTBALL_KEY on the server.',
-      provider: provider.id,
-      host: hostEntry.id,
-      keyOrigin: null,
-      endpoint: provider.testEndpoint,
-      httpStatus: null,
-      latencyMs: 0,
-      quota: null,
-      plan: null,
-      testedAt: new Date().toISOString(),
-      reused: false,
-    };
-    await recordEvent({
-      provider: provider.id,
-      event: 'TEST_FAILED',
-      outcome: result.state,
-      endpoint: provider.testEndpoint,
-      message: result.message,
-      adminId,
-      req,
-    });
-    return result;
-  }
-
-  const fingerprint = vault.fingerprint(apiKey);
-  const now = Date.now();
-
-  // 1. Do not repeat the very same test microseconds later (double click,
-  //    two open tabs): report the cached verdict instead of a second call.
-  if (
-    lastTest.result &&
-    lastTest.provider === provider.id &&
-    lastTest.host === hostEntry.id &&
-    lastTest.keyFingerprint === fingerprint &&
-    now - lastTest.at < testWindows.reuseMs
-  ) {
-    return { ...lastTest.result, reused: true, testedAt: new Date(lastTest.at).toISOString() };
-  }
-
-  // 2. Hard floor between two real provider tests from this process.
-  if (now - lastTest.at < testWindows.minIntervalMs && lastTest.result) {
-    throw AppError.tooMany(
-      `Please wait ${Math.ceil((testWindows.minIntervalMs - (now - lastTest.at)) / 1000)}s before testing the connection again.`,
-      'TEST_THROTTLED'
-    );
-  }
-
-  const client = clientFactory({
-    key: apiKey,
-    host: hostEntry.id,
-    baseUrl: hostEntry.baseUrl,
-    timeoutMs: config.apiCredentials.testTimeoutMs,
-    maxRetries: 0,
-    ratePerMinute: providers.ratePerMinute(provider, null),
-    credentialSource: keyOrigin,
-    providerId: provider.id,
-    // candidate credential: never let the live-credential resolver replace it
-    manageCredential: false,
-  });
-
-  const probe = await client.probeCredentials({ endpoint: provider.testEndpoint });
-  const result = {
-    ok: probe.ok,
-    state: probe.state,
-    label: probe.label,
-    message: probe.message,
-    provider: provider.id,
-    host: hostEntry.id,
-    keyOrigin,
-    endpoint: provider.testEndpoint,
-    httpStatus: probe.httpStatus,
-    latencyMs: probe.latencyMs,
-    quota: probe.quota,
-    plan: probe.plan,
-    testedAt: new Date().toISOString(),
-    reused: false,
-  };
-
-  lastTest = { at: Date.now(), keyFingerprint: fingerprint, host: hostEntry.id, provider: provider.id, result };
-
-  // Persist the verdict for the provider whose credential this is: a test with
-  // a typed-but-unsaved key must not overwrite the diagnostics of a stored one.
   const stored = await db.getApiCredential(provider.id).catch(() => null);
-  if (stored) {
-    await db
-      .updateApiCredentialState(provider.id, {
-        connectionState: result.state,
-        connectionMessage: result.message,
-        lastTestAt: new Date(),
-        lastTestLatencyMs: result.latencyMs,
-        lastSuccessAt: probe.ok ? new Date() : undefined,
-        lastRequestAt: new Date(),
-        lastErrorAt: probe.ok ? undefined : new Date(),
-        lastErrorCode: probe.ok ? undefined : result.state,
-        lastErrorMessage: probe.ok ? undefined : result.message,
-        quotaUsedToday: probe.quota ? probe.quota.current : undefined,
-        quotaLimitDay: probe.quota ? probe.quota.limitDay : undefined,
-        quotaCheckedAt: probe.quota ? new Date() : undefined,
-        planName: probe.plan && probe.plan.name ? probe.plan.name : undefined,
-      })
-      .catch((err) => log.warn('unable to persist the connection test result', { message: err.message }));
+  const supplied = key !== undefined && key !== null && String(key).trim() !== '';
+  const keyOrigin = supplied ? 'supplied' : stored ? 'stored' : 'environment';
+  const rawKey = supplied ? key : stored ? vault.decryptSecret(stored, { provider: provider.id }) : config.apiFootball.key;
+  // No host supplied means the host associated with that credential, not an
+  // arbitrary direct-host default for a RapidAPI key.
+  const hostEntry = providers.requireHost(provider, host || (stored ? stored.host : config.apiFootball.host));
+  if (!rawKey) {
+    return { ok: false, state: CONNECTION_STATES.CONFIG_INCOMPLETE, label: CONNECTION_LABELS.CONFIG_INCOMPLETE,
+      reason: 'NO_API_KEY', message: 'No API key to test: enter one, save it, or configure API_FOOTBALL_KEY on the server.',
+      provider: provider.id, host: hostEntry.id, keyOrigin: null, endpoint: provider.testEndpoint,
+      httpStatus: null, latencyMs: 0, quota: null, plan: null, testedAt: new Date().toISOString(), reused: false };
+  }
+  const apiKey = normalizeApiKey(rawKey);
+  const fingerprint = vault.fingerprint(apiKey);
+  const identity = { providerId: provider.id, host: hostEntry.id, fingerprint };
+  const result = await runProbe({ provider, hostEntry, apiKey, keyOrigin, fingerprint });
+  // Compare both the key and host. Testing an UNSAVED candidate (or a wrong
+  // host) must never overwrite the saved credential's diagnostics. The SQL
+  // condition also protects against rotation while the provider is answering.
+  if (stored && stored.key_fingerprint === fingerprint && providers.normalizeHost(stored.host) === hostEntry.id) {
+    await db.updateApiCredentialState(provider.id, {
+      connectionState: result.state, connectionMessage: result.message,
+      lastTestAt: new Date(result.testedAt), lastTestLatencyMs: result.latencyMs,
+      lastSuccessAt: result.ok ? new Date(result.testedAt) : undefined,
+      lastRequestAt: new Date(result.testedAt), lastErrorAt: result.ok ? null : new Date(result.testedAt),
+      lastErrorCode: result.ok ? null : result.state, lastErrorMessage: result.ok ? null : result.message,
+      quotaUsedToday: result.quota ? result.quota.current : undefined,
+      quotaLimitDay: result.quota ? result.quota.limitDay : undefined,
+      quotaCheckedAt: result.quota ? new Date(result.testedAt) : undefined,
+      planName: result.plan ? result.plan.name : undefined,
+    }, { fingerprint, host: stored.host }).catch((err) => log.warn('unable to persist the connection test result', { message: err.message }));
     invalidate();
   }
-
-  await recordEvent({
-    provider: provider.id,
-    event: probe.ok ? 'TEST_OK' : 'TEST_FAILED',
-    outcome: result.state,
-    httpStatus: result.httpStatus,
-    endpoint: result.endpoint,
-    latencyMs: result.latencyMs,
-    message: result.message,
-    context: { host: result.host, keyOrigin, quota: result.quota || null },
-    adminId,
-    req,
+  await applyLiveProbe(result, identity);
+  if (!result.reused) await recordEvent({
+    provider: provider.id, event: result.ok ? 'TEST_OK' : 'TEST_FAILED', outcome: result.state,
+    httpStatus: result.httpStatus, endpoint: result.endpoint, latencyMs: result.latencyMs, message: result.message,
+    context: { host: result.host, keyOrigin, reason: result.reason, networkCode: result.networkCode, quota: result.quota }, adminId, req,
   });
-
   return result;
+}
+
+async function runProbe({ provider, hostEntry, apiKey, keyOrigin, fingerprint }) {
+  const identity = `${provider.id}:${hostEntry.id}:${fingerprint}`;
+  const cached = latestProbe(provider.id, hostEntry.id, fingerprint);
+  if (cached && Date.now() - cached.at < testWindows.reuseMs) return { ...cached.result, keyOrigin, reused: true };
+  if (probeInFlight) {
+    if (probeInFlight.identity === identity) return { ...await probeInFlight.promise, keyOrigin, reused: true };
+    throw AppError.tooMany('A connection test is already running. Please wait for its result.', 'TEST_THROTTLED');
+  }
+  if (lastProbeStartedAt && Date.now() - lastProbeStartedAt < testWindows.minIntervalMs) {
+    throw AppError.tooMany('Please wait a few seconds before testing another credential.', 'TEST_THROTTLED');
+  }
+  lastProbeStartedAt = Date.now();
+  const promise = (async () => {
+    const client = clientFactory({ key: apiKey, host: hostEntry.id, baseUrl: hostEntry.baseUrl,
+      timeoutMs: config.apiCredentials.testTimeoutMs, maxRetries: 0,
+      ratePerMinute: providers.ratePerMinute(provider, null), credentialSource: keyOrigin,
+      providerId: provider.id, manageCredential: false });
+    const probe = await client.probeCredentials({ endpoint: provider.testEndpoint });
+    const result = {
+      ok: probe.ok, state: probe.state, label: probe.label,
+      message: redactSecret(probe.message, apiKey), reason: probe.reason || null,
+      hint: probe.hint ? redactSecret(probe.hint, apiKey) : null, networkCode: probe.networkCode || null,
+      resetAt: probe.resetAt || null, provider: provider.id, host: hostEntry.id, keyOrigin,
+      endpoint: provider.testEndpoint, httpStatus: probe.httpStatus, latencyMs: probe.latencyMs,
+      quota: probe.quota, plan: probe.plan, rateLimitPerMinute: probe.rateLimitPerMinute || null, testedAt: new Date().toISOString(), reused: false,
+    };
+    lastTest = { at: new Date(result.testedAt).getTime(), keyFingerprint: fingerprint, host: hostEntry.id, provider: provider.id, result };
+    return result;
+  })();
+  probeInFlight = { identity, promise };
+  try { return await promise; } finally { if (probeInFlight && probeInFlight.promise === promise) probeInFlight = null; }
 }
 
 /**
@@ -822,6 +755,8 @@ function __resetForTests() {
   lastTest = { at: 0, keyFingerprint: null, host: null, provider: null, result: null };
   lastProbe = { at: 0, keyFingerprint: null, host: null, provider: null, result: null };
   lastTouchAt = 0;
+  lastProbeStartedAt = 0;
+  probeInFlight = null;
   testWindows = { ...TEST_WINDOW_DEFAULTS };
 }
 

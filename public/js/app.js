@@ -1,7 +1,7 @@
 /* GoalPredict — public landing page
  *
  * DATA RULE (the reason this file is small): the homepage is a MARKETING page.
- * It fetches nothing but the shared session check in api.js — no predictions,
+ * It uses only the shared session check and public branding in api.js — no predictions,
  * no ticket, no analytics. Those are member-only surfaces, and the server
  * refuses them with 401 Unauthorized unless a verified, active session asks
  * for them, so the page would only be painting error states anyway.

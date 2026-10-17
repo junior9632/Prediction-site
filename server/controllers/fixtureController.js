@@ -9,6 +9,8 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { AppError } = require('../utils/errors');
 const oddsService = require('../services/oddsService');
 const fixtureStatus = require('../utils/fixtureStatus');
+const settingsService = require('../services/settingsService');
+const decimal = require('../utils/decimal');
 
 const listSchema = {
   date: { type: 'date', required: false },
@@ -17,7 +19,7 @@ const listSchema = {
   playable: { type: 'boolean', default: false },
 };
 
-function formatFixture(row, oddsByFixture = new Map()) {
+function formatFixture(row, oddsByFixture = new Map(), now = new Date()) {
   const odds = oddsByFixture.get(Number(row.id)) || null;
   return {
     id: Number(row.id),
@@ -26,8 +28,8 @@ function formatFixture(row, oddsByFixture = new Map()) {
       short: row.status_short,
       long: row.status_long,
       label: fixtureStatus.label(row.status_short),
-      playable: Number(row.is_playable) === 1,
-      finished: Number(row.is_finished) === 1,
+      playable: fixtureStatus.isPlayable({ statusShort: row.status_short, kickoffAt: row.kickoff_at }, now),
+      finished: fixtureStatus.isFinished(row.status_short),
     },
     league: {
       id: row.league_id === null ? null : Number(row.league_id),
@@ -58,6 +60,17 @@ function formatFixture(row, oddsByFixture = new Map()) {
   };
 }
 
+function formatPrices(selected) {
+  return new Map([...selected].map(([id, price]) => [id, {
+    display: decimal.format(price.oddScaled, 2),
+    raw: price.oddRaw,
+    bookmaker: price.bookmakerName,
+    bookmakers: price.bookmakersOffering,
+    verifiedAt: time.toIso(price.fetchedAt),
+    oddsUpdatedAt: time.toIso(price.oddsUpdatedAt),
+  }]));
+}
+
 /** GET /api/fixtures?date=YYYY-MM-DD&page=&limit=&playable= */
 const list = asyncHandler(async (req, res) => {
   const params = assertValid(listSchema, req.query);
@@ -65,27 +78,20 @@ const list = asyncHandler(async (req, res) => {
   const start = time.startOfUtcDay(date);
   const end = time.addDays(start, 1);
 
+  const now = new Date();
+  const settings = await settingsService.getEngineSettings();
+  const stored = await db.getFixturesBetween(start, end);
   const rows = params.playable
-    ? await db.getPlayableFixturesBetween(start, end)
-    : await db.getFixturesBetween(start, end);
+    ? stored.filter((row) => fixtureStatus.isPlayable({ statusShort: row.status_short, kickoffAt: row.kickoff_at }, now))
+    : stored;
 
   const page = params.page;
   const limit = params.limit;
   const paged = rows.slice((page - 1) * limit, page * limit);
 
   // verified Over 1.5 prices (already validated, freshness re-checked)
-  const loaded = await oddsService.loadVerifiedPricesFromDb(paged, { now: new Date() });
-  const oddsByFixture = new Map();
-  for (const [fixtureId, price] of loaded.selected.entries()) {
-    oddsByFixture.set(fixtureId, {
-      display: require('../utils/decimal').format(price.oddScaled, 2),
-      raw: price.oddRaw,
-      bookmaker: price.bookmakerName,
-      bookmakers: price.bookmakersOffering,
-      verifiedAt: time.toIso(price.fetchedAt),
-      oddsUpdatedAt: time.toIso(price.oddsUpdatedAt),
-    });
-  }
+  const loaded = await oddsService.loadVerifiedPricesFromDb(paged, { settings, now });
+  const oddsByFixture = formatPrices(loaded.selected);
 
   res.json({
     ok: true,
@@ -96,7 +102,7 @@ const list = asyncHandler(async (req, res) => {
       total: rows.length,
       pages: Math.max(1, Math.ceil(rows.length / limit)),
       market: { key: 'over_1_5', label: 'Over 1.5 Goals' },
-      items: paged.map((row) => formatFixture(row, oddsByFixture)),
+      items: paged.map((row) => formatFixture(row, oddsByFixture, now)),
     },
   });
 });
@@ -107,25 +113,25 @@ const detail = asyncHandler(async (req, res) => {
   const row = await db.getFixtureById(id);
   if (!row) throw AppError.notFound('Fixture not found', 'FIXTURE_NOT_FOUND');
 
-  const oddsRows = await db.getOddsForFixture(id);
-  const verified = oddsRows.filter(
-    (o) => o.market_key === 'over_1_5' && Number(o.is_verified) === 1 && Number(o.goal_line) === 1.5
-  );
+  const settings = await settingsService.getEngineSettings();
+  const now = new Date();
+  const loaded = await oddsService.loadVerifiedPricesFromDb([row], { settings, now });
+  const verified = loaded.grouped.get(id) || [];
   const prediction = await db.getPredictionsForFixtures([id]);
   const result = await db.getResultsByFixtureIds([id]);
 
   res.json({
     ok: true,
     data: {
-      fixture: formatFixture(row),
+      fixture: formatFixture(row, formatPrices(loaded.selected), now),
       over15Odds: verified.map((o) => ({
-        bookmakerId: Number(o.bookmaker_id),
-        bookmaker: o.bookmaker_name,
-        odds: String(o.odd_raw),
-        betName: o.bet_name,
-        valueName: o.value_name,
-        verifiedAt: time.toIso(o.fetched_at),
-        oddsUpdatedAt: time.toIso(o.odds_updated_at),
+        bookmakerId: o.bookmakerId,
+        bookmaker: o.bookmakerName,
+        odds: o.oddRaw,
+        betName: o.betName,
+        valueName: o.valueName,
+        verifiedAt: time.toIso(o.fetchedAt),
+        oddsUpdatedAt: time.toIso(o.oddsUpdatedAt),
       })),
       prediction: prediction[0]
         ? {

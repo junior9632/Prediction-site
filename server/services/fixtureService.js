@@ -21,7 +21,7 @@ const log = logger.child('fixtures');
  * goals market settles on, so extra time / penalties are kept separately.
  */
 function normalizeFixture(item, now = new Date()) {
-  if (!item || !item.fixture || item.fixture.id === undefined) return null;
+  if (!item || !item.fixture || !positiveId(item.fixture.id)) return null;
 
   const f = item.fixture;
   const league = item.league || {};
@@ -32,24 +32,29 @@ function normalizeFixture(item, now = new Date()) {
   const score = item.score || {};
   const fulltime = score.fulltime || {};
 
-  const kickoffAt = time.toDate(f.date || f.timestamp);
+  // API-Football's timestamp is UNIX SECONDS, not JavaScript milliseconds.
+  const apiTimestamp = unixTimestamp(f.timestamp);
+  const kickoffAt = time.toDate(f.date) || apiTimestamp;
+  if (!kickoffAt) return null;
   const statusShort = fixtureStatus.normalize(f.status && f.status.short);
   const statusLong = f.status && f.status.long ? String(f.status.long) : null;
   const isFinished = fixtureStatus.isFinished(statusShort);
 
-  const goalsHome = pickGoal(goals.home, fulltime.home);
-  const goalsAway = pickGoal(goals.away, fulltime.away);
+  // `goals` includes extra time for AET/PEN. Never use it to settle the
+  // 90-minute market: absent full-time evidence must remain unavailable.
+  const goalsHome = pickGoal(fulltime.home, statusShort === 'FT' ? goals.home : null);
+  const goalsAway = pickGoal(fulltime.away, statusShort === 'FT' ? goals.away : null);
 
   return {
     id: Number(f.id),
-    leagueId: league.id !== undefined && league.id !== null ? Number(league.id) : null,
-    leagueSeason: league.season !== undefined && league.season !== null ? Number(league.season) : null,
+    leagueId: positiveId(league.id),
+    leagueSeason: positiveId(league.season),
     leagueRound: league.round || null,
     leagueName: league.name || null,
     leagueCountry: league.country || null,
     leagueLogo: league.logo || null,
-    homeTeamId: home.id !== undefined && home.id !== null ? Number(home.id) : null,
-    awayTeamId: away.id !== undefined && away.id !== null ? Number(away.id) : null,
+    homeTeamId: positiveId(home.id),
+    awayTeamId: positiveId(away.id),
     homeTeamName: home.name || null,
     awayTeamName: away.name || null,
     homeTeamLogo: home.logo || null,
@@ -72,14 +77,28 @@ function normalizeFixture(item, now = new Date()) {
     extraAway: pickGoal(score.extratime && score.extratime.away),
     penaltyHome: pickGoal(score.penalty && score.penalty.home),
     penaltyAway: pickGoal(score.penalty && score.penalty.away),
-    apiTimestamp: time.toDate(f.timestamp) || kickoffAt,
+    apiTimestamp: apiTimestamp || kickoffAt,
     fetchedAt: now,
   };
 }
 
+function positiveId(value) {
+  if (!['number', 'string'].includes(typeof value)) return null;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+function unixTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (!['number', 'string'].includes(typeof value)) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return seconds > 0 ? time.toDate(seconds * 1000) : null;
+  return time.toDate(value);
+}
+
 function pickGoal(...values) {
   for (const v of values) {
-    if (v === null || v === undefined || v === '') continue;
+    if (!['number', 'string'].includes(typeof v) || String(v).trim() === '') continue;
     const n = Number(v);
     if (Number.isInteger(n) && n >= 0 && n < 100) return n;
   }
@@ -127,19 +146,21 @@ async function syncDate(date, options = {}) {
   if (!api) throw new Error('fixtureService.syncDate requires an api client');
 
   const dateStr = time.toMysqlDate(date);
+  if (options.beforeRequest && !(await options.beforeRequest())) return { date: dateStr, apiResults: 0, rowsWritten: 0, endpointCalls: 0, skippedQuota: true };
   const data = await api.getFixturesByDate(dateStr);
   const items = data.response || [];
   let written = 0;
+  let skippedInvalid = 0;
   for (const item of items) {
     const normalized = normalizeFixture(item, now);
-    if (!normalized) continue;
+    if (!normalized) { skippedInvalid += 1; continue; }
     if (options.leagueIds && options.leagueIds.length && !options.leagueIds.includes(normalized.leagueId)) continue;
     // eslint-disable-next-line no-await-in-loop
     await persistFixture(normalized, now);
     written += 1;
   }
-  log.info('fixtures synced', { date: dateStr, items: items.length, written });
-  return { date: dateStr, apiResults: items.length, rowsWritten: written, endpointCalls: 1 };
+  log.info('fixtures synced', { date: dateStr, items: items.length, written, skippedInvalid });
+  return { date: dateStr, apiResults: items.length, rowsWritten: written, skippedInvalid, endpointCalls: 1 };
 }
 
 /** Sync a range of UTC dates (inclusive). */
@@ -151,6 +172,7 @@ async function syncRange(fromDate, toDate, options = {}) {
   while (cursor.getTime() <= end.getTime()) {
     // eslint-disable-next-line no-await-in-loop
     const res = await syncDate(cursor, { ...options, now });
+    if (res.skippedQuota) break;
     results.push(res);
     cursor = time.addDays(cursor, 1);
   }
@@ -165,7 +187,8 @@ async function syncRange(fromDate, toDate, options = {}) {
 async function syncUpcoming(options = {}) {
   const now = options.now ? time.toDate(options.now) || new Date() : new Date();
   const daysAhead = Number.isInteger(options.daysAhead) ? options.daysAhead : 2;
-  return syncRange(now, time.addDays(now, daysAhead), options);
+  const anchor = time.toDate(options.dateAnchor) || now;
+  return syncRange(anchor, time.addDays(anchor, daysAhead), { ...options, now });
 }
 
 /** Every UTC day from `from` to `to` inclusive. */
@@ -195,7 +218,7 @@ async function freshHistoryDays(days, options = {}) {
   const rows = await db.getFixtureFetchTimes(days[0], time.addDays(days[days.length - 1], 1));
   const fresh = new Set();
   for (const row of Array.isArray(rows) ? rows : []) {
-    const last = row.last_fetched_at ? new Date(row.last_fetched_at) : null;
+    const last = time.toDate(row.last_fetched_at);
     if (!last || Number.isNaN(last.getTime())) continue;
     if (last.getTime() >= cutoff.getTime()) fresh.add(String(row.day));
   }
@@ -213,12 +236,13 @@ async function freshHistoryDays(days, options = {}) {
 async function syncHistory(options = {}) {
   const now = options.now ? time.toDate(options.now) || new Date() : new Date();
   const days = Number.isInteger(options.days) ? options.days : 21;
-  const dates = daysBetween(time.addDays(now, -days), time.addDays(now, -1));
+  const anchor = time.toDate(options.dateAnchor) || now;
+  const dates = daysBetween(time.addDays(anchor, -days), time.addDays(anchor, -1));
   if (!dates.length) return { results: [], rowsWritten: 0, endpointCalls: 0, skippedFresh: 0 };
 
   const fresh = await freshHistoryDays(dates, {
     refreshMinutes: options.refreshMinutes,
-    nowReference: options.nowReference,
+    nowReference: options.nowReference || now,
   });
   const wanted = dates.filter((date) => !fresh.has(time.toMysqlDate(date)));
   if (!wanted.length) {
@@ -229,7 +253,9 @@ async function syncHistory(options = {}) {
   const results = [];
   for (const date of wanted) {
     // eslint-disable-next-line no-await-in-loop
-    results.push(await syncDate(date, { ...options, now }));
+    const result = await syncDate(date, { ...options, now });
+    if (result.skippedQuota) break;
+    results.push(result);
   }
   return {
     results,
@@ -244,16 +270,19 @@ async function syncFixturesByIds(fixtureIds, options = {}) {
   const api = options.api;
   const now = options.now ? time.toDate(options.now) || new Date() : new Date();
   if (!api) throw new Error('fixtureService.syncFixturesByIds requires an api client');
-  const ids = (fixtureIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id));
+  const ids = [...new Set((fixtureIds || []).map(positiveId).filter(Boolean))];
   if (!ids.length) return { rowsWritten: 0, endpointCalls: 0 };
 
   const chunks = [];
   for (let i = 0; i < ids.length; i += 15) chunks.push(ids.slice(i, i + 15));
 
   let written = 0;
+  let endpointCalls = 0;
   for (const chunk of chunks) {
+    if (options.beforeRequest && !(await options.beforeRequest())) break;
     // eslint-disable-next-line no-await-in-loop
     const data = await api.getFixturesByIds(chunk);
+    endpointCalls += 1;
     for (const item of data.response || []) {
       const normalized = normalizeFixture(item, now);
       if (!normalized) continue;
@@ -262,7 +291,7 @@ async function syncFixturesByIds(fixtureIds, options = {}) {
       written += 1;
     }
   }
-  return { rowsWritten: written, endpointCalls: chunks.length };
+  return { rowsWritten: written, endpointCalls };
 }
 
 /**

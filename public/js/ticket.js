@@ -17,6 +17,7 @@
   }
 
   async function load() {
+    await App.site.load();
     App.session.bindHeader();
     const params = new URLSearchParams(window.location.search);
     const date = params.get('date');

@@ -29,6 +29,7 @@ const App = (() => {
         credentials: 'same-origin',
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         cache: options.cache || 'no-store',
+        signal: options.signal,
       });
 
       let payload = null;
@@ -52,8 +53,8 @@ const App = (() => {
       }
       return payload ? payload.data : null;
     },
-    get(path) {
-      return API.request(path);
+    get(path, options = {}) {
+      return API.request(path, options);
     },
     post(path, body) {
       return API.request(path, { method: 'POST', body });
@@ -75,34 +76,87 @@ const App = (() => {
     return Number.isNaN(d.getTime()) ? null : d;
   }
 
+  let displayZone = 'auto';
+  let displayFormatter = null;
+  const brandingOriginals = new WeakMap();
+  const initialTitle = document.title || '';
+  const site = {
+    settings: { siteName: 'GoalPredict', tagline: 'Smarter Football Picks', displayTimezone: 'auto' },
+    pending: null,
+    apply(data = {}) {
+      ['siteName', 'tagline', 'displayTimezone'].forEach((key) => {
+        if (typeof data[key] === 'string') site.settings[key] = data[key];
+      });
+      displayZone = site.settings.displayTimezone || 'auto';
+      try {
+        displayFormatter = displayZone === 'auto' ? null : new Intl.DateTimeFormat('en-GB', {
+          timeZone: displayZone, year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+        });
+      } catch (_) { displayZone = 'auto'; displayFormatter = null; }
+      document.querySelectorAll('.brand-name, [data-site-name]').forEach((node) => {
+        if (!brandingOriginals.has(node)) brandingOriginals.set(node, node.innerHTML);
+        if (site.settings.siteName === 'GoalPredict') node.innerHTML = brandingOriginals.get(node);
+        else node.textContent = site.settings.siteName;
+      });
+      document.querySelectorAll('.brand-tag:not([data-fixed-tagline]), [data-site-tagline]').forEach((node) => {
+        node.textContent = site.settings.tagline;
+      });
+      document.querySelectorAll('[data-display-timezone]').forEach((node) => { node.textContent = fmt.zoneLabel(); });
+      document.title = initialTitle.replace(/GoalPredict/g, () => site.settings.siteName);
+      return site.settings;
+    },
+    load() {
+      if (site.pending) return site.pending;
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), 5000) : null;
+      site.pending = API.get('/meta', { anonymous: true, signal: controller ? controller.signal : undefined })
+        .then((data) => site.apply(data || {}))
+        .catch(() => site.settings) // branding failure must not break sign-in or data views
+        .finally(() => { if (timer !== null) clearTimeout(timer); });
+      return site.pending;
+    },
+  };
+
+  function dateParts(value) {
+    const d = toDate(value);
+    if (!d) return null;
+    // A ticket/calendar date is not an instant. Never move YYYY-MM-DD into
+    // yesterday just because a visitor is west of UTC.
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(), hour: 0, minute: 0 };
+    }
+    if (!displayFormatter) return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours(), minute: d.getMinutes() };
+    const parts = displayFormatter.formatToParts(d);
+    const part = (type) => Number(parts.find((entry) => entry.type === type).value);
+    return { year: part('year'), month: part('month'), day: part('day'), hour: part('hour'), minute: part('minute') };
+  }
+
   const fmt = {
+    zoneLabel() {
+      return displayZone === 'auto' ? Intl.DateTimeFormat().resolvedOptions().timeZone : displayZone;
+    },
     dayLabel(value) {
-      const d = toDate(value);
-      if (!d) return '—';
-      return `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+      const d = dateParts(value);
+      return d ? `${String(d.day).padStart(2, '0')} ${MONTHS[d.month - 1]} ${d.year}` : '—';
     },
     timeLabel(value) {
-      const d = toDate(value);
-      if (!d) return '—';
-      return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      const d = dateParts(value);
+      return d ? `${String(d.hour).padStart(2, '0')}:${String(d.minute).padStart(2, '0')}` : '—';
     },
     dateTimeLabel(value) {
-      const d = toDate(value);
-      if (!d) return '—';
-      return `${fmt.dayLabel(d)} · ${fmt.timeLabel(d)}`;
+      return toDate(value) ? `${fmt.dayLabel(value)} · ${fmt.timeLabel(value)}` : '—';
     },
     kickoffLabel(value) {
-      const d = toDate(value);
+      const d = dateParts(value);
       if (!d) return '—';
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-      const diff = Math.round((day - today) / 86400000);
-      const time = fmt.timeLabel(d);
+      const now = dateParts(new Date());
+      const diff = Math.round((Date.UTC(d.year, d.month - 1, d.day) - Date.UTC(now.year, now.month - 1, now.day)) / 86400000);
+      const time = fmt.timeLabel(value);
       if (diff === 0) return `Today ${time}`;
       if (diff === 1) return `Tomorrow ${time}`;
       if (diff === -1) return `Yesterday ${time}`;
-      return `${fmt.dayLabel(d)} ${time}`;
+      return `${fmt.dayLabel(value)} ${time}`;
     },
     ago(value) {
       const d = toDate(value);
@@ -328,7 +382,7 @@ const App = (() => {
     onUnauthorized() {
       if (session.unauthorizedHandled) return;
       session.unauthorizedHandled = true;
-      const here = `${window.location.pathname}${window.location.search}`;
+      const here = `${window.location.pathname}${window.location.search}${window.location.hash || ''}`;
       window.location.replace(`/login?next=${encodeURIComponent(here)}`);
     },
     /**
@@ -388,7 +442,9 @@ const App = (() => {
     },
   };
 
-  return { API, fmt, el, clear, setText, show, escapeHtml, icons, statusBadge, verifiedChip, pickRow, pickEvidence, emptyState, skeletonRows, session, readCookie };
+  document.addEventListener('DOMContentLoaded', () => site.load());
+
+  return { API, fmt, site, el, clear, setText, show, escapeHtml, icons, statusBadge, verifiedChip, pickRow, pickEvidence, emptyState, skeletonRows, session, readCookie };
 })();
 
 window.App = App;

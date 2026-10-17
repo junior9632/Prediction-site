@@ -12,7 +12,7 @@
  *  - Page navigations are network-first with a branded offline fallback.
  */
 
-const VERSION = 'v3';
+const VERSION = 'v4';
 const STATIC_CACHE = `goalpredict-static-${VERSION}`;
 const OFFLINE_URL = '/offline.html';
 

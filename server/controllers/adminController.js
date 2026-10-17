@@ -11,6 +11,7 @@
 
 const db = require('../database/queries');
 const time = require('../utils/time');
+const fixtureStatus = require('../utils/fixtureStatus');
 const decimal = require('../utils/decimal');
 const config = require('../config');
 const { assertValid } = require('../utils/validate');
@@ -225,7 +226,7 @@ const generations = asyncHandler(async (req, res) => {
 
 /** GET /api/admin/settings */
 const getSettings = asyncHandler(async (_req, res) => {
-  const [items, effective] = await Promise.all([settingsService.listSettingsForAdmin(), settingsService.getEngineSettings()]);
+  const [items, effective] = await Promise.all([settingsService.listSettingsForAdmin(), settingsService.getEngineSettings(true)]);
   res.json({
     ok: true,
     data: {
@@ -239,9 +240,7 @@ const getSettings = asyncHandler(async (_req, res) => {
 
 /** PUT /api/admin/settings */
 const updateSettings = asyncHandler(async (req, res) => {
-  const patch = req.body && typeof req.body === 'object' ? req.body : {};
-  if (!Object.keys(patch).length) throw AppError.badRequest('No settings supplied', 'EMPTY_PATCH');
-  const result = await settingsService.updateSettings(patch, req.admin.id);
+  const result = await settingsService.updateSettings(req.body, req.admin.id);
   await logService.audit(req, 'SETTINGS_UPDATED', { applied: result.applied, rejected: result.rejected }, result.rejected.length ? 'warn' : 'info');
   res.json({ ok: true, data: result });
 });
@@ -270,8 +269,10 @@ const fixtures = asyncHandler(async (req, res) => {
         home: r.home_team_name,
         away: r.away_team_name,
         status: r.status_short,
-        playable: Number(r.is_playable) === 1,
-        finished: Number(r.is_finished) === 1,
+        statusLabel: fixtureStatus.label(r.status_short),
+        playable: fixtureStatus.isPlayable({ statusShort: r.status_short, kickoffAt: r.kickoff_at }),
+        live: fixtureStatus.isLive(r.status_short),
+        finished: fixtureStatus.isFinished(r.status_short),
         score: r.goals_home === null || r.goals_away === null ? null : `${Number(r.goals_home)}-${Number(r.goals_away)}`,
         fetchedAt: time.toIso(r.fetched_at),
       })),
@@ -365,17 +366,19 @@ const ticketsHistory = asyncHandler(async (req, res) => {
 
 /** POST /api/admin/sync {job: fixtures|odds|results|all} */
 const sync = asyncHandler(async (req, res) => {
-  const { job } = assertValid(
-    { job: { type: 'enum', values: ['fixtures', 'odds', 'results', 'all'], default: 'all' } },
+  const { job, date } = assertValid(
+    { job: { type: 'enum', values: ['fixtures', 'odds', 'results', 'all'], default: 'all' }, date: { type: 'date' } },
     req.body || {}
   );
-  await logService.audit(req, 'SYNC_TRIGGERED', { job });
+  if (date && job !== 'fixtures') throw AppError.badRequest('A selected date is supported only for fixture sync.', 'SYNC_DATE_UNSUPPORTED');
+  await logService.audit(req, 'SYNC_TRIGGERED', { job, date: date || null });
 
+  await apiFootball._refreshCredential();
   if (!apiFootball.configured) {
     throw AppError.upstream('API-Football key is not configured on the server', 'NO_API_KEY');
   }
 
-  const result = job === 'all' ? await syncService.syncAll({ trigger: 'manual' }) : await syncService[`sync${job[0].toUpperCase()}${job.slice(1)}`]({ trigger: 'manual' });
+  const result = job === 'all' ? await syncService.syncAll({ trigger: 'manual' }) : await syncService[`sync${job[0].toUpperCase()}${job.slice(1)}`]({ trigger: 'manual', date });
   res.json({ ok: true, data: { job, result } });
 });
 

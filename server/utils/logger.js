@@ -72,5 +72,6 @@ module.exports = {
     info: (msg, meta) => write('info', msg, { channel, ...scrub(meta || {}) }),
     warn: (msg, meta) => write('warn', msg, { channel, ...scrub(meta || {}) }),
     error: (msg, meta) => write('error', msg, { channel, ...scrub(meta || {}) }),
+    critical: (msg, meta) => write('critical', msg, { channel, ...scrub(meta || {}) }),
   }),
 };

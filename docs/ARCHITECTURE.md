@@ -93,7 +93,7 @@ Two design decisions worth calling out:
 | --- | --- | --- |
 | `fixtures` | `/fixtures?date=`, `/fixtures?last=` (form), `/fixtures/headtohead` | `fixtures`, `teams`, `leagues`, `team_form`, league environment |
 | `odds` | `/odds?date=&page=` | `bookmakers`, `odds` (validated) |
-| `results` | `/fixtures?id=` | `fixtures` (final score), `results`, settled legs + recomputed ticket result |
+| `results` | `/fixtures?ids=` (maximum 20 IDs) | `fixtures` (final score), `results`, settled legs + recomputed ticket result |
 
 Guards around ingestion:
 
@@ -115,10 +115,12 @@ a stable reason code with a label **and the fix**:
 | Reason | Meaning | Fix shown to the operator |
 | --- | --- | --- |
 | `NO_API_KEY` | no credential resolved (no active `api_credentials` row, no `API_FOOTBALL_KEY`) | set the env var, or save + activate a key in Admin → API Management |
+| `CONFIG_INVALID` | malformed/unapproved host or malformed key | fix the API Management/environment configuration before retrying |
+| `SUBSCRIPTION_INACTIVE` | provider reports an inactive subscription | renew/activate it in the provider dashboard |
 | `CREDENTIAL_UNREADABLE` | the stored key cannot be decrypted | re-enter and save the key (the encryption key changed) |
 | `QUOTA_EXCEEDED` | the plan's **daily** request budget is spent | raise the plan, lower `sync_days_ahead`/`sync_history_days`, space the cron jobs; requests resume after 00:00 UTC |
 | `RATE_LIMITED` | the **per-minute** limit was hit (Free = 10/min) | lower `API_FOOTBALL_RATE_PER_MINUTE` (the client also adopts the limit the provider advertises) |
-| `AUTH_REJECTED` / `REQUEST_REJECTED` | HTTP 401/403/4xx with the provider's own message | check key ↔ host pairing, plan coverage of the endpoint |
+| `AUTH_REJECTED` / `REQUEST_REJECTED` | HTTP failures or HTTP 200 with nonempty `errors`, retaining the provider's safe message | check key ↔ host pairing, plan coverage of the endpoint |
 | `PROVIDER_UNAVAILABLE` / `NETWORK_ERROR` / `TIMEOUT` | 5xx, outbound network failure, timeout | nothing to change (retried) / check outbound HTTPS and `npm run api:check` |
 | `CIRCUIT_OPEN` | the breaker opened after repeated upstream failures | read the earlier failure, it half-opens by itself |
 | `QUOTA_RESERVED` | background sync paused to keep `api_quota_reserve` requests for a manual generation | nothing — it is the guard doing its job |
@@ -126,6 +128,12 @@ a stable reason code with a label **and the fix**:
 `describeUnavailable(err)` / `unavailableMessage(err)` in `services/apiFootball.js` are the single
 source for those labels, hints and reset times; the sync log, `/api/health`, the admin console and
 `npm run api:check` all render them.
+
+The v3 `/status` payload is an **object**, while fixture/odds payloads are arrays. The client
+preserves both shapes, rejects nonempty `errors`, and never caches a rejected response. A private
+Undici dispatcher handles IPv6/IPv4 fallback without changing global DNS or disabling TLS.
+Manual probes bypass cached responses/circuit state; ordinary calls retain the circuit guard.
+See [API-Football repair](API-FOOTBALL-REPAIR.md) for operator recovery and verification.
 
 ### 3.2 Daily request budget (quota) protection
 
@@ -322,7 +330,7 @@ a mix of won and void legs ⇒ `PARTIAL_VOID`. Settled odds are the exact produc
 
 ## 8. Settings and locked rules
 
-`settingsService` is the single source of truth. 51 settings in 8 groups (`market`,
+`settingsService` is the single source of truth. 54 settings in 8 groups (50 editable) (`market`,
 `odds_window`, `filters`, `model`, `scoring`, `correlation`, `sync`, `site`), each typed with
 min/max or enum options, cached for 30 seconds and invalidated on write.
 
@@ -331,9 +339,11 @@ min/max or enum options, cached for 30 seconds and invalidated on write.
   from the table, are refused by `PUT /api/admin/settings`, are re-pinned by `ensureDefaults()`
   and are re-asserted by `assertLockedRules()` on every run.
 * **Bounded by the product rule**: `min_total_odds` ∈ [2.00, 3.99], `max_total_odds` ∈ [2.01, 4.00].
-* **Two-phase updates**: each key is validated individually, then cross-field rules
-  (odds window, selection range, single-leg range) are checked against the merged values *before*
-  anything is written, so a contradictory patch cannot half-apply.
+* **Transactional updates**: current rows are locked with `FOR UPDATE`, then individual types,
+  weights, timezones, league IDs and cross-field rules are validated. Related ranges, candidate
+  capacity, form windows and model weights must agree. The accepted subset is upserted in one
+  transaction, so missing settings persist and database failures cannot half-save a range. Invalid
+  legacy rows use safe defaults and are explicitly flagged for repair in the editor.
 * Administrators may tighten thresholds (raise `min_confidence`, lower `max_risk`, shorten odds
   freshness, reduce `max_selections`, tighten correlation caps). Nothing in the code weakens a
   threshold automatically.
@@ -346,9 +356,10 @@ Static files only, mobile-first, no build step and no framework:
 
 * `public/js/api.js` exposes one helper (`window.App`) with the fetch wrapper (relative `/api`
   URLs, JSON envelope handling, automatic `X-CSRF-Token` from the `fp_csrf` cookie on mutations),
-  formatters (odds to 2 dp, percentages, relative times), icons, and shared renderers for pick
+  public branding via `/api/meta`, timezone-aware formatters (calendar dates stay date-only,
+  odds to 2 dp, percentages, relative times), icons, and shared renderers for pick
   rows, status badges, "verified X ago" chips, evidence lists, empty states and skeletons.
-* Each page has exactly one controller script; the CSP allows only `script-src 'self'`, so there
+* Page controllers and guarded admin modules use external scripts; the CSP allows only `script-src 'self'`, so there
   is no inline JavaScript anywhere.
 * The UI never computes odds, confidence, totals or results: it renders the server payload and
   links to the date-specific views. Diagnostics grids are populated from the server's counters

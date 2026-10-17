@@ -383,7 +383,6 @@ const PREVIEW_CSP = [
   "connect-src 'self'",
   "font-src 'self' data:",
   "object-src 'none'",
-  "frame-ancestors 'self'",
   "base-uri 'self'",
   "form-action 'self'",
 ].join('; ');
@@ -397,7 +396,6 @@ function sendHtml(res, file) {
   res.set({
     'Content-Security-Policy': PREVIEW_CSP,
     'X-Content-Type-Options': 'nosniff',
-    'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
   });
   let html = fs.readFileSync(full, 'utf8');
@@ -572,7 +570,7 @@ async function main() {
     }
   }
 
-  const app = createApp();
+  const app = createApp({ preview: true });
   const wrapper = express();
   wrapper.disable('x-powered-by');
   wrapper.get('/preview-banner.js', (_req, res) => res.type('application/javascript').send(BANNER_JS));

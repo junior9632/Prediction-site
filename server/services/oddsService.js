@@ -573,6 +573,7 @@ async function syncOddsForDate(date, options = {}) {
   const rejectionCounts = {};
 
   for (let page = 1; page <= maxPages; page += 1) {
+    if (options.beforeRequest && !(await options.beforeRequest())) break;
     let data;
     try {
       data = await api.getOddsByDate(time.toMysqlDate(date), page);
@@ -582,7 +583,8 @@ async function syncOddsForDate(date, options = {}) {
       // failing the whole date, but only after the first page has succeeded.
       if (page > 1 && err instanceof ApiFootballUnavailable) {
         const st = Number((err.details || {}).status);
-        if (!Number.isFinite(st) || (st >= 400 && st < 500)) {
+        const reason = (err.details || {}).reason;
+        if (st >= 400 && st < 500 && ![401, 403, 429].includes(st) && !['QUOTA_EXCEEDED', 'RATE_LIMITED'].includes(reason)) {
           log.warn('odds sync stopped at an unavailable page', { date: time.toMysqlDate(date), page, message: err.message });
           break;
         }

@@ -7,6 +7,7 @@
 
   let currentView = 'dashboard';
   let pollTimer = null;
+  let viewVersion = 0;
 
   /* ------------------------------ helpers ------------------------------ */
   function render(html) {
@@ -40,7 +41,7 @@
     if (q && q.current !== null && q.current !== undefined) {
       return `quota ${q.current}${q.limit_day ? `/${q.limit_day}` : ''}`;
     }
-    return 'quota n/a';
+    return ds.verified === false ? 'no successful provider check yet' : 'quota not reported';
   }
 
   /**
@@ -98,10 +99,12 @@
   }
 
   function startPolling(runId) {
+    const version = viewVersion;
     clearInterval(pollTimer);
     pollTimer = setInterval(async () => {
       try {
         const progress = await API.get(`/admin/generation-progress?run_id=${runId}`);
+        if (version !== viewVersion) return;
         const box = $('#progressBox');
         if (box) {
           box.innerHTML = progressHtml(progress);
@@ -123,7 +126,7 @@
           } else if (box2) {
             box2.insertAdjacentHTML('beforeend', `<div class="alert error" style="margin-top:10px;">${icons.alert}<div>${escapeHtml(progress.error || 'Generation failed')}</div></div>`);
           }
-          setTimeout(() => VIEWS[currentView].load(), 1500);
+          setTimeout(() => { if (version === viewVersion) setView(currentView, false); }, 1500);
         }
       } catch (_) {
         clearInterval(pollTimer);
@@ -148,12 +151,14 @@
     if (!btn) return;
     btn.addEventListener('click', async () => {
       if (!window.confirm("Generate today's Over 1.5 ticket? Every price is re-verified with API-Football before publication.")) return;
+      const version = viewVersion;
       btn.disabled = true;
       const box = $('#progressBox');
       box.style.display = 'block';
       box.innerHTML = `<div class="progress-line current"><span class="dot"></span><span>Starting generation…</span></div>`;
       try {
         const started = await API.post('/admin/generate-ticket', {});
+        if (version !== viewVersion) return;
         startPolling(started.runId);
       } catch (err) {
         box.innerHTML = `<div class="alert error">${icons.alert}<div>${escapeHtml(err.message)}</div></div>`;
@@ -164,8 +169,10 @@
 
   /* ------------------------------- views ------------------------------- */
   async function loadDashboard() {
+    const version = viewVersion;
     render(`<div class="skeleton block"></div>`);
     const o = await API.get('/admin/overview');
+    if (version !== viewVersion) return;
     $('#serverTime').textContent = `server ${fmt.dateTimeLabel(o.serverTime)}`;
     const t = o.today || {};
     const ds = o.dataSource || {};
@@ -213,8 +220,10 @@
   }
 
   async function loadToday() {
+    const version = viewVersion;
     render(`<div class="skeleton block"></div>`);
     const [t, report] = await Promise.all([API.get('/ticket/today'), API.get('/admin/generation-report').catch(() => null)]);
+    if (version !== viewVersion) return;
     const c = report ? report.counters : null;
     render(`${card(
       `Ticket for ${fmt.dayLabel(t.date)}`,
@@ -233,32 +242,19 @@
     <section class="section">${card('Latest generation report', `<div class="card-body">${report ? diagGrid(c) + `<p class="small muted" style="margin-top:10px;">${escapeHtml((report.report && report.report.message) || '')}</p>` + generationFailureNote({ status: report.status, reason: (report.report || {}).reason, reasonLabel: (report.report || {}).label, reasonHint: (report.report || {}).hint, resetsAt: (report.report || {}).resetAt, errorDetail: report.error }) : emptyState('history', 'No generation yet', 'Use the Dashboard to generate the first ticket.')}</div>`)}</section>`);
   }
 
-  async function loadFixtures(date) {
-    const day = date || new Date().toISOString().slice(0, 10);
-    render(`<div class="row" style="margin-bottom:12px;"><input type="date" class="input" id="fxDate" value="${day}" style="width:auto;"><button class="btn btn-ghost" id="fxGo">Load</button></div><div id="fxBody">${skeletonRows(3)}</div>`);
-    $('#fxGo').onclick = () => loadFixtures($('#fxDate').value);
-    $('#fxDate').onchange = () => loadFixtures($('#fxDate').value);
-    const data = await API.get(`/admin/fixtures?date=${encodeURIComponent(day)}`);
-    $('#fxBody').innerHTML = card(
-      `${data.total} fixtures synced`,
-      table(
-        ['Kickoff (local)', 'League', 'Match', 'Status', 'Playable', 'Score'],
-        data.items
-          .map(
-            (f) =>
-              `<tr><td>${escapeHtml(fmt.dateTimeLabel(f.kickoffAt))}</td><td>${escapeHtml(f.league || '—')}<div class="tiny muted">${escapeHtml(f.country || '')}</div></td><td><b>${escapeHtml(f.home)}</b> vs <b>${escapeHtml(f.away)}</b></td><td>${escapeHtml(f.status || '—')}</td><td>${f.playable ? '<span class="badge badge-green">yes</span>' : '<span class="badge badge-slate">no</span>'}</td><td>${escapeHtml(f.score || '—')}</td></tr>`
-          )
-          .join('')
-      )
-    );
+  async function loadFixtures() {
+    const version = viewVersion;
+    return window.AdminFixtures.load({ API, fmt, icons, escapeHtml, card, table, render, emptyState, skeletonRows, isCurrent: () => currentView === 'fixtures' && version === viewVersion });
   }
 
   async function loadOdds(date) {
+    const version = viewVersion;
     const day = date || new Date().toISOString().slice(0, 10);
     render(`<div class="row" style="margin-bottom:12px;"><input type="date" class="input" id="odDate" value="${day}" style="width:auto;"><button class="btn btn-ghost" id="odGo">Load</button><span class="tiny muted">Only Over 1.5 goal lines are stored. Rejected rows show why a price was refused.</span></div><div id="odBody">${skeletonRows(3)}</div>`);
     $('#odGo').onclick = () => loadOdds($('#odDate').value);
     $('#odDate').onchange = () => loadOdds($('#odDate').value);
     const data = await API.get(`/admin/odds?date=${encodeURIComponent(day)}`);
+    if (version !== viewVersion) return;
     $('#odBody').innerHTML = card(
       `${data.verified} verified of ${data.total} stored Over 1.5 rows`,
       table(
@@ -284,7 +280,9 @@
   }
 
   async function loadPredictionsDone(day, eligible) {
+    const version = viewVersion;
     const data = await API.get(`/admin/predictions?date=${encodeURIComponent(day)}&eligible=${eligible ? 1 : 0}&limit=200`);
+    if (version !== viewVersion) return;
     $('#prBody').innerHTML = card(
       `${data.total} predictions`,
       table(
@@ -300,8 +298,10 @@
   }
 
   async function loadHistory() {
+    const version = viewVersion;
     render(`<div id="hsBody">${skeletonRows(4)}</div>`);
     const data = await API.get('/admin/tickets/history?limit=60');
+    if (version !== viewVersion) return;
     $('#hsBody').innerHTML = card(
       `${data.total} ticket days`,
       table(
@@ -317,8 +317,10 @@
   }
 
   async function loadAnalytics() {
+    const version = viewVersion;
     render(`<div class="skeleton block"></div>`);
     const a = await API.get('/admin/analytics');
+    if (version !== viewVersion) return;
     render(`<div class="stat-cards">
         ${mini('Total tickets', a.tickets.total, `${a.tickets.noTicketDays} no-ticket days`)}
         ${mini('Win rate', a.tickets.winRate === null ? '—' : a.tickets.winRate + '%', `${a.tickets.won}W / ${a.tickets.lost}L / ${a.tickets.void}V`, 'green')}
@@ -333,64 +335,15 @@
   }
 
   async function loadSettings() {
-    render(`<div class="skeleton block"></div>`);
-    const data = await API.get('/admin/settings');
-    const groups = {};
-    data.items.forEach((item) => {
-      (groups[item.group] = groups[item.group] || []).push(item);
-    });
-    const groupOrder = ['market', 'odds_window', 'filters', 'correlation', 'model', 'scoring', 'sync', 'site'];
-    const html = groupOrder
-      .filter((g) => groups[g])
-      .map(
-        (g) =>
-          `<section class="section">${card(g.replace('_', ' '), `<div class="card-body"><div class="field-grid">${groups[g]
-            .map((item) => fieldHtml(item))
-            .join('')}</div></div>`)}</section>`
-      )
-      .join('');
-    render(`${html}<div class="row" style="margin-top:14px;"><button class="btn btn-primary btn-lg" id="saveSettings">${icons.check} Save settings</button><span class="tiny muted" id="settingsMsg"></span></div>`);
-    $('#saveSettings').onclick = async () => {
-      const patch = {};
-      document.querySelectorAll('[data-setting]').forEach((node) => {
-        const key = node.dataset.setting;
-        if (node.type === 'checkbox') patch[key] = node.checked ? '1' : '0';
-        else patch[key] = node.value;
-      });
-      const msg = $('#settingsMsg');
-      try {
-        const result = await API.put('/admin/settings', patch);
-        msg.textContent = `Saved ${result.applied.length} setting(s).${result.rejected.length ? ` Rejected: ${result.rejected.map((r) => `${r.key} (${r.reason})`).join(', ')}` : ''}`;
-        msg.style.color = result.rejected.length ? '#fcd34d' : '#86efac';
-      } catch (err) {
-        msg.textContent = err.message;
-        msg.style.color = '#fca5a5';
-      }
-    };
-  }
-
-  function fieldHtml(item) {
-    const id = `set_${item.key}`;
-    const label = `<label for="${id}">${escapeHtml(item.label)}${item.locked ? ' <span class="badge badge-slate">locked</span>' : ''}</label>`;
-    const hint = item.description ? `<div class="hint">${escapeHtml(item.description)}</div>` : '';
-    const disabled = item.locked ? 'disabled' : '';
-    if (item.type === 'boolean') {
-      return `<div class="field"><div class="toggle"><div><div class="t-label">${escapeHtml(item.label)}</div><div class="t-hint">${escapeHtml(item.description || '')}</div></div>
-        <span class="switch"><input type="checkbox" id="${id}" data-setting="${escapeHtml(item.key)}" ${String(item.value) === '1' ? 'checked' : ''} ${disabled}><span class="track"></span></span></div></div>`;
-    }
-    if (item.type === 'json') {
-      return `<div class="field" style="grid-column:1/-1;">${label}<textarea class="input" id="${id}" data-setting="${escapeHtml(item.key)}" rows="4" ${disabled}>${escapeHtml(item.value)}</textarea>${hint}</div>`;
-    }
-    if (item.type === 'enum') {
-      return `<div class="field">${label}<select class="input" id="${id}" data-setting="${escapeHtml(item.key)}" ${disabled}>${item.options.map((o) => `<option value="${escapeHtml(o)}" ${o === item.value ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select>${hint}</div>`;
-    }
-    const attrs = item.type === 'number' ? `type="number" step="any" ${item.min !== null ? `min="${item.min}"` : ''} ${item.max !== null ? `max="${item.max}"` : ''}` : `type="text" maxlength="200"`;
-    return `<div class="field">${label}<input class="input" id="${id}" data-setting="${escapeHtml(item.key)}" ${attrs} value="${escapeHtml(item.value)}" ${disabled}>${hint}</div>`;
+    const version = viewVersion;
+    return window.AdminSettings.load({ API, icons, escapeHtml, card, render, isCurrent: () => currentView === 'settings' && version === viewVersion });
   }
 
   async function loadApi() {
+    const version = viewVersion;
     render(`<div class="skeleton block"></div>`);
     const [status, syncs] = await Promise.all([API.get('/admin/api-status'), API.get('/admin/sync-logs?limit=25')]);
+    if (version !== viewVersion) return;
     render(`<div class="stat-cards">
         ${mini('Provider', status.configured ? 'API-Football Pro' : 'NOT CONFIGURED', status.baseUrl, status.configured ? 'cyan' : 'red')}
         ${mini('Circuit breaker', status.state, status.available ? 'requests allowed' : `retry in ${Math.round((status.retryInMs || 0) / 1000)}s`, status.available ? 'green' : 'red')}
@@ -408,25 +361,33 @@
         <div class="progress-box section hidden" id="syncBox"></div>
       </div>`)}</section>
       <section class="section">${card('Recent sync logs', table(['Job', 'Trigger', 'Status', 'Rows', 'Calls', 'Duration', 'Started', 'Message'], syncs.map((s) => `<tr><td><b>${escapeHtml(s.job)}</b></td><td>${escapeHtml(s.trigger)}</td><td><span class="badge ${s.status === 'SUCCESS' ? 'badge-green' : s.status === 'FAILED' ? 'badge-red' : 'badge-amber'}">${escapeHtml(s.status)}</span></td><td>${s.rowsWritten}</td><td>${s.endpointCalls}</td><td>${s.durationMs === null ? '—' : s.durationMs + ' ms'}</td><td class="tiny">${escapeHtml(fmt.dateTimeLabel(s.startedAt))}</td><td class="tiny muted">${escapeHtml(s.message || s.error || '')}</td></tr>`).join('')))}</section>`);
-    document.querySelectorAll('[data-sync]').forEach((btn) => {
+    let syncing = false;
+    const syncButtons = Array.from(document.querySelectorAll('[data-sync]'));
+    syncButtons.forEach((btn) => {
       btn.onclick = async () => {
+        if (syncing) return;
+        syncing = true;
         const box = $('#syncBox');
         box.classList.remove('hidden');
         box.innerHTML = `<div class="progress-line current"><span class="dot"></span><span class="spinner"></span>&nbsp;running ${escapeHtml(btn.dataset.sync)} sync…</div>`;
-        btn.disabled = true;
+        syncButtons.forEach((button) => { button.disabled = true; });
         try {
           const result = await API.post('/admin/sync', { job: btn.dataset.sync });
-          box.innerHTML = `<div class="alert ok">${icons.checkCircle}<div><pre style="margin:0;white-space:pre-wrap;">${escapeHtml(JSON.stringify(result.result, null, 2))}</pre></div></div>`;
+          if (version !== viewVersion) return;
+          const tone = window.AdminFixtures.syncState(result.result);
+          box.innerHTML = `<div class="alert ${tone}">${tone === 'ok' ? icons.checkCircle : icons.alert}<div><b>${tone === 'ok' ? 'Sync completed' : tone === 'warn' ? 'Sync paused or partially completed' : 'Sync unavailable'}</b><pre style="margin:0;white-space:pre-wrap;">${escapeHtml(JSON.stringify(result.result, null, 2))}</pre></div></div>`;
         } catch (err) {
           box.innerHTML = `<div class="alert error">${icons.alert}<div>${escapeHtml(err.message)}</div></div>`;
         } finally {
-          btn.disabled = false;
+          syncing = false;
+          syncButtons.forEach((button) => { button.disabled = false; });
         }
       };
     });
   }
 
   async function loadLogs() {
+    const version = viewVersion;
     render(`<div class="row wrap" style="margin-bottom:12px;">
       <select class="input" id="logLevel" style="width:auto;"><option value="">All levels</option><option>debug</option><option>info</option><option>warn</option><option>error</option><option>critical</option></select>
       <select class="input" id="logChannel" style="width:auto;"><option value="">All channels</option><option>audit</option><option>tickets</option><option>auth</option><option>sync</option><option>app</option></select>
@@ -436,6 +397,7 @@
       const level = $('#logLevel').value;
       const channel = $('#logChannel').value;
       const data = await API.get(`/admin/system-logs?limit=100${level ? `&level=${level}` : ''}${channel ? `&channel=${channel}` : ''}`);
+      if (version !== viewVersion) return;
       $('#logBody').innerHTML = card(
         `${data.total} log entries`,
         `<div class="card-body" style="max-height:520px;overflow-y:auto;">${data.items
@@ -465,8 +427,10 @@
     // functions below are handed over explicitly, no globals are invented.
     'api-management': {
       title: 'API Management',
-      load: () =>
-        window.AdminApiManagement.load({ API, fmt, icons, escapeHtml, card, mini, table, render, emptyState }),
+      load: () => {
+        const version = viewVersion;
+        return window.AdminApiManagement.load({ API, fmt, icons, escapeHtml, card, mini, table, render: (html) => { if (version === viewVersion) render(html); }, isCurrent: () => currentView === 'api-management' && version === viewVersion, emptyState });
+      },
     },
     logs: { title: 'System Logs', load: loadLogs },
   };
@@ -498,20 +462,36 @@
     });
   }
 
-  function setView(name) {
-    currentView = VIEWS[name] ? name : 'dashboard';
+  function setView(name, push = true) {
+    const nextView = Object.prototype.hasOwnProperty.call(VIEWS, name) ? name : 'dashboard';
+    if (window.AdminSettings.hasUnsavedChanges() && !window.confirm('Leave Settings and discard unsaved changes?')) {
+      history.replaceState(null, '', `#${currentView}`);
+      return;
+    }
+    if (currentView === 'api-management' && (window.AdminApiManagement.hasUnsavedChanges() || window.AdminApiManagement.isBusy()) && !window.confirm('Leave API Management? Unsaved key/host changes will be discarded. Any request already submitted may still finish on the server.')) {
+      history.replaceState(null, '', `#${currentView}`);
+      return;
+    }
+    currentView = nextView;
+    const version = ++viewVersion;
     closeSideNav();
-    document.querySelectorAll('.side-link').forEach((b) => b.classList.toggle('active', b.dataset.view === currentView));
+    document.querySelectorAll('.side-link[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === currentView));
     $('#viewTitle').textContent = VIEWS[currentView].title;
-    if (location.hash !== `#${currentView}`) history.replaceState(null, '', `#${currentView}`);
+    if (location.hash !== `#${currentView}`) history[push ? 'pushState' : 'replaceState'](null, '', `#${currentView}`);
     clearInterval(pollTimer);
     VIEWS[currentView].load().catch((err) => {
-      render(`<div class="alert error">${icons.alert}<div>${escapeHtml(err.message)}</div></div>`);
+      if (version === viewVersion) render(`<div class="alert error">${icons.alert}<div>${escapeHtml(err.message)}</div></div>`);
     });
   }
 
   async function boot() {
-    const me = await App.session.me();
+    App.session.onUnauthorized = () => {
+      if (App.session.unauthorizedHandled) return;
+      App.session.unauthorizedHandled = true;
+      const here = `${window.location.pathname}${window.location.search}${window.location.hash || ''}`;
+      window.location.replace(`/admin/login?next=${encodeURIComponent(here)}`);
+    };
+    const [me] = await Promise.all([App.session.me(), App.site.load()]);
     if (!me || me.type !== 'admin') {
       window.location.replace('/admin/login');
       return;
@@ -522,9 +502,10 @@
       App.session.reset();
       window.location.replace('/admin/login');
     };
-    document.querySelectorAll('.side-link').forEach((btn) => btn.addEventListener('click', () => setView(btn.dataset.view)));
+    document.querySelectorAll('.side-link[data-view]').forEach((btn) => btn.addEventListener('click', () => setView(btn.dataset.view)));
+    window.addEventListener('hashchange', () => setView(location.hash.slice(1), false));
     bindSideNav();
-    setView((location.hash || '#dashboard').replace('#', ''));
+    setView((location.hash || '#dashboard').replace('#', ''), false);
   }
 
   document.addEventListener('DOMContentLoaded', boot);
