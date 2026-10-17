@@ -1,0 +1,538 @@
+# GoalPredict — Daily Over 1.5 Goals predictions
+
+**Smarter Football Picks.** A production-ready football prediction platform built for
+cPanel Node.js hosting. One market only — **Over 1.5 Goals** — one honestly built
+ticket per day, with combined odds between **2.00 and 4.00**, generated **manually by an
+administrator** and settled from real full-time scores.
+
+> ### The rules this codebase is built around
+> 1. **Over 1.5 Goals only.** No other market is predicted, stored, displayed or settled.
+> 2. **Combined daily odds must land inside 2.00–4.00.** There is no fixed number of picks.
+> 3. **Nothing is ever forced.** If no combination of verified candidates reaches 2.00, the
+>    day is published as **NO QUALIFYING TICKET**. Weak matches are never added to pad the odds.
+> 4. **Nothing is ever invented.** Fixtures, bookmakers, prices, statistics, confidence values
+>    and results all come from API-Football or the local database. Missing data means
+>    **DATA UNAVAILABLE** and the candidate is rejected.
+> 5. **If the data source is down, the site says so.** `DATA SOURCE TEMPORARILY UNAVAILABLE`
+>    is shown and no ticket is created — no cached guesses, no placeholder numbers.
+> 6. **Ticket generation is manual.** Only an authenticated administrator clicking
+>    **GENERATE TODAY'S TICKET** (or an operator running the CLI by hand) can create a ticket.
+>    Background sync of fixtures/odds/results may run automatically but can never publish one.
+> 7. **Displayed odds are the verified bookmaker odds.** Internal maths uses the exact values;
+>    only the display is rounded to 2 decimals.
+> 8. **The browser is never trusted.** Odds, confidence, totals and results sent by a client are
+>    ignored; every critical calculation happens on the server.
+> 9. **The API key never reaches the frontend.** It lives in the server environment
+>    (`API_FOOTBALL_KEY`) or, when an administrator saves one on the **API Management** screen,
+>    in the database as an **AES-256-GCM ciphertext** — never as plaintext, never in a response,
+>    never in a log line, never in the browser.
+
+---
+
+## Stack
+
+| Layer | Technology |
+| --- | --- |
+| Frontend | HTML5, CSS3, vanilla ES2019 JavaScript (no framework, no build step) |
+| Backend | Node.js ≥ 18.17, Express 4 |
+| Database | MySQL 5.7+/MariaDB 10.3+ (`mysql2` prepared statements only) |
+| Data & odds | API-Football **Pro** (`v3.football.api-sports.io`) |
+| Hosting | cPanel "Setup Node.js App" + MySQL + cron |
+| Tests | `node:test` (built in) — 225 tests, no test dependencies |
+
+No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python anywhere.
+`package.json` contains only what the application actually imports.
+
+---
+
+## Quick start (local)
+
+```bash
+npm install                 # 100% pure-JS dependencies, no native builds
+cp .env.example .env        # then edit DB_*, API_FOOTBALL_KEY, JWT_SECRET, ADMIN_*,
+                            # API_CREDENTIALS_ENCRYPTION_KEY (for the admin API Management screen)
+npm run db:setup            # creates the schema, seeds settings + the first administrator
+npm start                   # http://localhost:3000
+```
+
+Useful commands:
+
+```bash
+npm run dev                 # node --watch server.js
+npm run db:migrate -- --status   # applied vs pending migrations (read-only)
+npm test                    # 225 unit + service + HTTP acceptance tests (no DB needed)
+npm run test:sql            # static check: schema.sql vs every query in queries.js
+npm run ticket:generate -- --admin=admin --confirm
+npm run sync:all            # fixtures + odds + results (never creates a ticket)
+npm run health              # non-zero exit when the DB or the data source is down
+npm run build:zip           # rebuild GoalPredict-cPanel-deployment.zip from the tracked tree
+npm run doctor              # deployment diagnosis: env, MySQL, schema, seed, running site
+npm run verify:access -- --member=user:pw --admin=admin:pw   # prove the guest/member boundary on a live site
+npm run lint:secrets        # verifies no key/secret is shipped in public/
+npm run lint:js             # ESLint (correctness rules only, fetched via npx)
+npm run lint:syntax         # node --check over every JavaScript file in the repo
+```
+
+### Full local stack with Docker (optional)
+
+```bash
+docker compose up           # MySQL 8 + app on http://localhost:3000 (admin / local-dev-password)
+docker compose up db        # just MySQL; then run `npm run dev` on the host
+docker compose down -v      # stop and wipe the database volume
+```
+
+First boot applies the schema + migrations and seeds the admin automatically.
+Docker is for local development only — production stays on cPanel.
+
+### Look at the UI without MySQL or an API key
+
+```bash
+npm run preview:ui          # http://localhost:3000  — admin / preview123
+#                             member / preview123  →  /dashboard
+# or: node tools/uipreview.js
+```
+
+The preview harness boots the **real** Express app, controllers and prediction pipeline, but
+swaps MySQL for an in-memory double (`tests/fakeDb.js`) and API-Football for a fictional
+sample client (`tests/synthetic.js`). Every page is stamped with an orange
+**PREVIEW MODE — sample data only** banner. Teams such as *Northbridge FC* and leagues such as
+*Test Premier League* do not exist; no odds, results or statistics in the preview are real.
+It exists so the interface can be reviewed before deployment — production always runs
+`node server.js` against a real database and a real API-Football key.
+
+---
+
+## Access model — football data is login only
+
+| Tier | Routes |
+| --- | --- |
+| **Public** | `/`, `/about`, `/legal`, `/login`, `/account`, `GET /api/health`, `GET /api/meta` |
+| **Member** | `/predictions`, `/ticket`, `/today-ticket`, `/history`, `/analytics`, `/dashboard` and every `/api/predictions`, `/api/ticket`, `/api/tickets`, `/api/analytics`, `/api/fixtures`, `/api/odds`, `/api/dashboard` route |
+| **Admin** | `/admin` and every `/api/admin` route |
+
+The rule is enforced **server side**, before any controller, query or template runs — never by
+CSS, never by hiding a navigation link:
+
+| Principal | Prediction / ticket / analytics **API** | Prediction / ticket / history / analytics **page** |
+| --- | --- | --- |
+| Guest | `401 UNAUTHORIZED`, no `data` key, `no-store` | `401` + the "login required" page |
+| Expired / forged / `alg=none` token | `401 TOKEN_EXPIRED` / `TOKEN_INVALID` | `401` + the "login required" page |
+| Deleted account | `401 ACCOUNT_MISSING` | `401` + the "login required" page |
+| Disabled / locked account | `403 ACCOUNT_DISABLED` / `ACCOUNT_LOCKED` | `403` + the door, with the reason |
+| Member / admin | `200` | page served `no-store`, `noindex` |
+
+* The same guard the member dashboard already used — `requireAuth` → `requireActiveAccount`
+  (exported as `memberGuard`) — is mounted on every prediction router, so a deactivated account
+  loses access even while its JWT is still cryptographically valid.
+* The **authenticated user is always resolved from the session** and re-read from the database. A
+  `userId` in the query string, a `role` parameter or an `X-User-Id` header changes nothing.
+* The **homepage is marketing only**: it fetches the shared session check (`GET /api/auth/me`)
+  and public branding metadata (`GET /api/meta`), shows a locked preview behind **Unlock AI Football Predictions**, and
+  names no prediction endpoint. No team, price, confidence, selection or statistic is rendered.
+* Member-only navigation (`Dashboard · Predictions · Today's Ticket · Ticket History · Analytics`)
+  ships `hidden` and is revealed only after `/api/auth/me` confirms a session.
+* `tests/predictions-auth.test.js` pins the whole matrix; `tests/homepage-render.test.js` pins the
+  public side, and `node scripts/verify-access.js <url>` proves it against a running site.
+
+The dashboard keeps its existing behaviour: served `no-store` + `noindex`, guests redirected to
+`/account.html`, and `/api/dashboard/activity` answering a guest with **401 and no payload**,
+scoped to the session's own account.
+
+## Project layout
+
+```
+server.js                     startup entry point (cPanel "Application startup file")
+package.json                  scripts + the 9 runtime dependencies
+.env.example                  every environment variable, documented
+public/                       the entire frontend (static, no build step)
+  index.html                  public landing page: hero + locked preview, how the AI works,
+                              trust strip, process, CTA — no prediction data
+  about.html                  what GoalPredict is: one market, the rules, no guarantees
+  ticket.html                 full ticket page (member only, also accepts ?date=YYYY-MM-DD)
+  history.html                ticket history with result filters + pagination (member only)
+  analytics.html              performance analytics (win rate, streaks, monthly) (member only)
+  predictions.html            every analysed fixture with its evidence (member only)
+  login.html                  console sign-in door, unlisted: served at /admin/login and /login.html
+  account.html                member sign-in / register / profile / change password
+  dashboard.html              member workspace: profile, status, Dashboard Activity
+  admin.html                  admin console (10 views, sidebar layout, unlisted + guarded)
+  css/style.css               design system: dark navy panels, cyan accents
+  js/api.js                   fetch wrapper + CSRF + shared render helpers
+  js/{app,ticket,history,analytics,predictions,account,dashboard,login,admin}.js
+  img/{logo,favicon}.svg
+server/
+  config/index.js             typed environment configuration
+  app.js  server.js           Express app factory + HTTP bootstrap
+  routes/                     health, fixtures, odds, predictions, tickets,
+                              analytics, auth, dashboard, admin
+  controllers/                request validation + response shaping only
+  services/                   apiFootball (client + real credential probe), apiProviders
+                              (allowlisted provider registry), apiCredentialService
+                              (admin-managed encrypted credentials), fixtureService,
+                              oddsService, statsService, contextService, syncService,
+                              resultService, settingsService, logService, analyticsService,
+                              ticketService, notifyService, activityService (member Activity feed)
+  prediction/                 over15, confidence, risk, quality, correlation,
+                              ticketBuilder, pipeline
+  database/                   schema.sql (baseline), migrations/ (versioned, applied
+                              once + checksummed), migrate.js, connection.js (pool),
+                              queries.js (all SQL)
+  middleware/                 auth, adminAuth (+CSRF), account (active-account guard),
+                              rateLimit, requestLogger, errorHandler
+  utils/                      decimal (exact odds maths), credentialVault (AES-256-GCM
+                              credential encryption), numbers, time, logger, errors,
+                              asyncHandler, validate, fixtureStatus
+  jobs/scheduler.js           optional internal sync scheduler (never generates tickets)
+scripts/                      db-migrate, db-seed, cron-sync-*, cron-health-check,
+                              generate-ticket-cli, validate-sql, check-no-secrets,
+                              doctor (deployment diagnosis), verify-access (live boundary proof)
+tests/                        fakeDb.js, synthetic.js, engine/acceptance/http/dashboard tests
+tools/uipreview.js            preview harness (development only)
+docs/                         ARCHITECTURE.md, API.md, DEPLOYMENT-CPANEL.md
+```
+
+---
+
+## How a ticket is produced
+
+```
+fixtures (API-Football) ─┐
+verified Over 1.5 odds ──┼─► 14-point odds gate ─► model inputs (form, venue split,
+team + league statistics ┘                          recency, league environment, h2h)
+                                                        │
+                                    P(Over 1.5) ─► confidence 0–100
+                                                ─► risk 0–100
+                                                ─► data quality 0–100
+                                                        │
+                              filters: confidence ≥ 72 · risk ≤ 35 · quality ≥ 60
+                                                        │
+                              correlation protection (league / country / team / kickoff window)
+                                                        │
+                     combination search over the strongest 16 correlation-safe candidates,
+                     exact BigInt odds products (wider pools are a settings change, not a rule change)
+                                                        │
+                     ┌──────────────────────────────────┴─────────────────────────────┐
+       2.00 ≤ total ≤ 4.00                                            no combination in range
+                     │                                                              │
+             QUALIFIED ticket                                     NO QUALIFYING TICKET
+       (immutable odds snapshot per leg)                            (reason + diagnostics)
+```
+
+Full details, including the 14 validation points and the scoring maths, are in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+Settlement is equally strict: a finished match with **2 or more total goals is WON**, **0–1 goals
+is LOST**, and **postponed / cancelled / abandoned legs are VOID or POSTPONED** (void legs are
+removed from the accumulator instead of being counted as wins).
+
+---
+
+## Member area
+
+Members are optional readers — the site never requires an account. `/account` handles
+sign-in / registration / profile / password change, and `/dashboard` is the private workspace:
+profile, plan, today's ticket status and the **Dashboard Activity** feed.
+
+**Registration requires administrator approval.** A new account is created with
+`status = pending`: it cannot sign in and cannot reach the dashboard, predictions, tickets,
+history or analytics until an administrator approves it from **Admin → Users**. Rejected and
+suspended accounts are refused the same way, and a suspension blocks an existing session on
+the very next request (the account row is re-read from the database every time).
+
+The feed is not hidden with CSS. It is protected at the server boundary:
+
+| Principal | `/dashboard` | `GET /api/dashboard/activity` |
+| --- | --- | --- |
+| Guest / expired token | `302` → `/account.html` | `401 UNAUTHORIZED`, no payload |
+| Deleted account | `302` → `/account.html` | `401 ACCOUNT_MISSING` |
+| Pending approval | `302` → `/account.html` | `403 ACCOUNT_PENDING` |
+| Rejected application | `302` → `/account.html` | `403 ACCOUNT_REJECTED` |
+| Suspended account | `302` → `/account.html` | `403 ACCOUNT_SUSPENDED` |
+| Disabled or locked account | `302` → `/account.html` | `403 ACCOUNT_DISABLED` / `403 ACCOUNT_LOCKED` |
+| Approved member | page served `no-store` + `noindex` | `200`, own events only |
+| Administrator | `302` → `/admin.html` | `200`, admin-scoped feed |
+
+The actor type and id come from the account row re-read from the database on every request, so a
+query string can never widen the scope and one member can never read another's events. The card
+starts hidden in the markup and is only revealed by the authenticated payload; a restore from the
+back/forward cache wipes it and re-validates the session before painting it again.
+
+---
+
+## Admin console
+
+The console is **hidden from the public site**: no navigation, footer, sitemap or robots
+entry references it. Guests opening `/admin` or `/admin.html` are redirected to the console's
+own unlisted sign-in door `/admin/login` (a plain form — no admin data, no endpoint list, no
+console script), authenticated members receive a bare `403`, and the console shell + its script
+are served `no-store` / `noindex` to administrators only. Administrators reach it by going
+straight to `/admin`, which bounces to its own unlisted sign-in door `/admin/login`.
+
+`/admin.html` (superadmin sees everything, `admin` role sees the operational views):
+
+| View | What it does |
+| --- | --- |
+| Dashboard | today's ticket, live generation panel, latest report, data counters |
+| Today's Ticket | the published ticket plus the full diagnostic grid |
+| Fixtures / Odds / Predictions | date-filtered inspection of everything stored |
+| Ticket History | every generated day with its result |
+| Analytics | win rate, streaks, monthly table, flat-stake accounting |
+| **Users** (`/admin/users`) | registration approvals: summary cards, searchable/filterable/paginated user table, approve / reject / suspend / reactivate, per-user audit history |
+| Settings | thresholds, odds window, correlation caps, sync options, branding |
+| API Status | key presence, circuit-breaker state, quota, manual sync buttons, sync log |
+| System Logs | level/channel filtered audit + error trail |
+
+Every administrative account decision (approve / reject / suspend / reactivate) is applied in a
+database transaction together with an audit row (`user_audit_logs`: administrator, affected
+user, action, previous/new status, optional reason, timestamp) and mirrored into `system_logs`.
+
+Locked settings (`market_key`, `market_label`, `auto_ticket_generation`,
+`results_settle_mode`) are refused by the API and re-pinned from code on every read, so the
+product rules cannot be weakened from the dashboard. The odds window itself is bounded to
+2.00–4.00 by the setting definitions.
+
+---
+
+## API Management (admin console)
+
+See [API-Football repair and deployment verification](docs/API-FOOTBALL-REPAIR.md) for the v3
+contract fixes, network diagnosis and the safe Test → Save → Activate workflow.
+
+The admin console has an **API Management** screen (`/admin#api-management`) that makes the
+API-Football credential an admin task instead of a deployment edit:
+
+* enter / replace the API key, choose one of the **allowlisted** hosts (the official
+  `v3.football.api-sports.io` direct host or the RapidAPI host) and save it encrypted
+  (AES-256-GCM, key from `API_CREDENTIALS_ENCRYPTION_KEY`);
+* **Test connection** performs one real server-side request to the provider's `/status`
+  endpoint and reports exactly what came back — connected, invalid key, quota exceeded,
+  rate limited, network failure, timeout, provider unavailable or incomplete configuration.
+  A saved key is never reported as "connected" on its own;
+* **Activate / disable** switches the platform between the stored credential and the existing
+  environment configuration. While nothing is active the old `API_FOOTBALL_KEY` setup keeps
+  working untouched;
+* the screen shows the masked key (`********abcd`), connection state, last successful
+  connection, last API request, last successful fixtures/odds/results sync, the provider's
+  **real** quota when it reports one, rate limits and the recent API error history;
+* the whole screen can be reviewed without a real key: `npm run preview:ui` seeds a fictional,
+  encrypted sample credential and a sample `/status` verdict into the in-memory preview harness
+  (nothing leaves the sandbox and every value is labelled sample data);
+* **credential storage is reported separately from provider connectivity.** A successful
+  Test Connection proves the provider accepted a key; it does **not** prove that a key can be
+  stored. The screen shows a read-only storage panel backed by
+  `GET /api/admin/api-management/storage-diagnostics`, which distinguishes an unreachable
+  database, a missing migration (003), missing SELECT/INSERT/UPDATE grants, an unusable
+  encryption key, a credential-table read failure and a broken diagnostics history. The check
+  runs SELECT/SHOW only and returns no key, ciphertext, password, cookie or grant text.
+
+Encryption keys live outside the request path. `API_CREDENTIALS_ENCRYPTION_KEY` wins when set.
+Otherwise an **existing** `storage/api-credentials.key` is used first (upgrade compatibility);
+a new install creates a key file outside the application folder (normally
+`~/.goalpredict/api-credentials.key`, derived from the application root so Passenger and cron
+agree) on the first save. An existing key
+is never regenerated, moved or deleted automatically. See
+[API credential storage on cPanel](docs/API-CREDENTIAL-STORAGE.md) for the optional,
+reversible key-file migration and the full diagnosis/fix matrix.
+
+Saving, testing or switching a credential **never** generates, publishes or replaces a
+prediction ticket. The market stays Over 1.5 Goals, combined odds stay 2.00–4.00, generation
+stays manual, and the rules card reflects the current validated Settings. Replacing a credential
+that is already active takes effect immediately; a new inactive credential still needs activation.
+
+---
+
+## Configuration
+
+Every variable is documented in [`.env.example`](.env.example). The important ones:
+
+| Variable | Purpose |
+| --- | --- |
+| `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` | MySQL connection (cPanel "MySQL Databases") |
+| `API_FOOTBALL_KEY` | API-Football Pro key — **server side only** |
+| `API_FOOTBALL_HOST` | `v3.football.api-sports.io` (or the RapidAPI host) |
+| `API_CREDENTIALS_ENCRYPTION_KEY` | 64 hex characters — AES-256-GCM master key for credentials saved from the admin **API Management** screen. When empty, an existing `storage/api-credentials.key` is used first, otherwise the server creates a key file outside the application folder (normally `~/.goalpredict/api-credentials.key`) on the first save |
+| `API_CREDENTIALS_KEY_FILE`, `API_CREDENTIALS_AUTO_KEY` | optional explicit key-file path (relative paths resolve against the application root) and the switch that disables automatic key-file creation (`0`) so only the environment variable is accepted |
+| `API_CREDENTIALS_TEST_TIMEOUT_MS`, `API_CREDENTIALS_TEST_MIN_INTERVAL_MS`, `API_CREDENTIALS_TEST_REUSE_MS` | bounds for the *Test Connection* action (15s timeout, 3s floor between real tests, 60s verdict reuse) |
+| `JWT_SECRET` | 64+ random characters; signs admin sessions |
+| `APP_URL`, `CORS_ORIGINS` | public origin, used for CORS and secure cookies |
+| `TRUST_PROXY` | `1` on cPanel (the app sits behind a proxy) |
+| `ADMIN_USERNAME/ADMIN_EMAIL/ADMIN_PASSWORD` | first administrator, created by `npm run db:seed` |
+| `ENABLE_INTERNAL_SCHEDULER` | keep `0` on cPanel and use cron instead |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | optional: announce published tickets / NO QUALIFYING TICKET days and operational alerts via a Telegram bot (server side only) |
+| `NOTIFY_WEBHOOK_URL` | optional: POST the same events as JSON to any webhook |
+| `ODDS_FRESHNESS_MINUTES`, `MIN_TOTAL_ODDS`, `MAX_TOTAL_ODDS`, `MIN_CONFIDENCE`, `MAX_RISK`, `MIN_DATA_QUALITY`, `MAX_SELECTIONS` | fallback defaults; the `settings` table overrides them at runtime |
+
+Quota-aware settings live in the `settings` table (Admin → Settings): `api_quota_reserve` (requests
+kept for a manual generation, default 25), `history_refresh_minutes` (how long a stored history day
+counts as fresh and is not requested again, default 360), `h2h_sync_max_calls` (head-to-head
+requests per run, default 20), `sync_history_days` / `sync_days_ahead` (how much history and how
+many upcoming days each fixtures sync costs). See `docs/ARCHITECTURE.md` §3.2.
+
+Documentation:
+
+* [`docs/DEPLOYMENT-CPANEL.md`](docs/DEPLOYMENT-CPANEL.md) — cPanel walkthrough: Node.js app,
+  database import, environment, cron entries, SSL, verification and troubleshooting.
+* [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — layers, data model, the 14-point odds gate,
+  the prediction engine, generation, settlement and the failure contract.
+* [`docs/API.md`](docs/API.md) — every endpoint with request/response shapes and error codes.
+
+---
+
+## Admin settings & fixtures
+
+The settings editor validates every editable setting, saves only changes, and preserves rejected
+or unsaved drafts. Fixtures can be searched, filtered and refreshed for a selected UTC date without
+creating a ticket. Sync budgets (including zero H2H requests), live playability, actual fetch times,
+90-minute scores and configured display timezones are enforced end to end.
+
+See [the repair and post-deployment checklist](docs/SETTINGS-AND-FIXTURES.md) for the full scope,
+validation rules, production verification steps and sample-only preview limitations.
+
+---
+
+## Security
+
+* Helmet with a strict CSP — **no inline JavaScript anywhere**; `script-src 'self'`.
+* `bcryptjs` password hashing, JWT sessions in `httpOnly` + `SameSite=strict` cookies.
+* Double-submit CSRF token on every cookie-authenticated mutation (bearer/CLI clients exempt).
+* The admin console is unlisted (no public links, robots.txt/sitemap stay silent) **and**
+  server-side protected: guest → redirect to sign-in, non-admin session → `403`, admin
+  account re-read from the database on every privileged request, so a disabled or locked
+  account loses access immediately; repeated failures lock the login.
+* Layered rate limiting: global API, auth, admin and generation endpoints.
+* All SQL is written in `server/database/queries.js` with bound placeholders; `LIMIT/OFFSET`
+  are inlined only after integer validation.
+* `scripts/check-no-secrets.js` scans `public/` for keys, hosts and secrets (it also runs as
+  part of the test suite).
+* Audit trail: admin logins, generation runs, settings changes and sync jobs are written to
+  `system_logs` / `generation_logs` / `api_sync_logs`.
+
+---
+
+## Tests
+
+```bash
+npm test          # offline regression suite; no database or network required
+```
+
+| File | Covers |
+| --- | --- |
+| `tests/engine.test.js` | exact decimal odds maths, the 14-point odds gate, exact Over 1.5 goal-line matching, combination engine, correlation protection, settlement rules, locked settings |
+| `tests/acceptance.test.js` | manual-trigger guards, data-source-unavailable runs, a full qualified generation, regeneration, settlement end to end |
+| `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
+| `tests/deployment-zip.test.js` | `GoalPredict-cPanel-deployment.zip` is the build of the current tree, byte for byte: it contains every file the host needs and never `node_modules`, `.git`, logs, `.env*` (except `.env.example`), encryption keys, private certificates, database dumps or backups; the build is deterministic, refuses sensitive tracked files, and the committed archive matches the source |
+| `tests/credential-storage.test.js` | admin-only read-only storage diagnosis: database, migration/schema, permissions, encryption, credential read and history failures are distinguished; readiness is honest for pending, invalid, unreadable and unwritable key files; no key or grant text is returned |
+| `tests/api-management.test.js` | save/test/activate/disable over HTTP, AES-256-GCM at rest, masked-only responses, SSRF guards, authorization/CSRF, schema drift and the "no ticket was touched" contract |
+| `tests/settings-validation.test.js` | all 50 editable defaults round-trip, strict types/weights/timezones/leagues, locked values, cross-field rules, legacy repair warnings and transactional persistence |
+| `tests/fixture-settings.test.js` | UNIX timestamps, 90-minute AET/PEN scores, real sync clocks, selected-date sync, zero H2H budgets, per-request quota reserves and fixture/odds settings over HTTP |
+| `tests/admin-settings-client.test.js` · `tests/admin-fixtures-client.test.js` | executed editor/browser modules: changed-only saves, drafts/errors, touch controls, race safety, date sync, quota reporting, filtering and pagination |
+| `tests/site-settings-client.test.js` | public branding, display timezones/DST, date-only calendar labels and metadata failures |
+| `tests/settings-wiring.test.js` | every admin-editable setting reaches the code that claims to honour it: the combination weights/leg-penalty reach the builder, `results_settle_mode` is enforced (a tampered value stops settlement with `SETTLE_MODE_UNSUPPORTED`), `sync_timezone` anchors the sync's calendar day with UTC storage and a safe fallback, and no newly declared setting is inert |
+| `tests/dashboard-activity.test.js` | the member boundary: guest `401`/redirect with no payload, self-scoped feed (another member's rows and IPs never leak, query parameters cannot widen the scope), disabled/locked/deleted accounts refused, admin permissions preserved, and the page contract (`no-store`, `noindex`, hidden-until-authenticated card, bfcache re-validation) |
+| `tests/fakeDb.js` | in-memory double for `server/database/connection.js`; the SQL still comes from `queries.js` |
+| `tests/synthetic.js` | fictional fixtures, odds payloads, form rows and an API-Football double |
+| `tests/scripts.test.js` | runs `scripts/validate-sql.js` and `scripts/check-no-secrets.js` and fails when they do; also guards the `test` script itself (see below) |
+
+### Acceptance criteria → test map
+
+| # | Criterion | Test |
+| --- | --- | --- |
+| 1 | Qualified ticket with combined odds 2.00–4.00 | `acceptance 1: qualified ticket keeps combined odds inside 2.00 - 4.00` |
+| 2 | All candidates below the minimum → no ticket | `acceptance 2: every combination below the minimum -> NO QUALIFYING TICKET` (+ pipeline and service level variants) |
+| 3 | All candidates above the maximum → no ticket | `acceptance 3: every combination above the maximum -> NO QUALIFYING TICKET` (+ pipeline variant) |
+| 4 | Over 2.5 never substitutes for Over 1.5 | `acceptance 4: a fixture offering only Over 2.5 is rejected, never substituted` |
+| 5 | Published odds equal the verified bookmaker odds | `acceptance 5: Over 1.5 = 1.25 is used exactly, never inflated` |
+| 6 | Client-supplied odds/picks/results are ignored | `acceptance 6: forged odds, picks and totals in the request body are ignored` |
+| 7 | API unavailable → no ticket, honest message | `acceptance 7: no API key -> DATA SOURCE TEMPORARILY UNAVAILABLE and no ticket` (+ circuit breaker, HTTP) |
+| 8 | Generation is manual only | `acceptance 8: cron, scheduler and anonymous triggers are refused` (+ cron context, locked rules) |
+| 9 | An administrator generates the ticket | `acceptance 9: an administrator generates a qualified ticket from verified data` (+ HTTP variants) |
+| 10 | A started/finished match cannot be selected | `acceptance 10: a match that already started cannot be selected` |
+| 11 | 2+ total goals settles WON | `acceptance 11: total goals of 2 or more settles WON` (+ service level) |
+| 12 | 0–1 total goals settles LOST | `acceptance 12: total goals of 0 or 1 settles LOST` (+ service level, void/postponed) |
+| 13 | A later price move never rewrites a stored ticket | `acceptance 13: a later bookmaker price move never rewrites a stored ticket` |
+| 14 | The admin console stays usable on a phone | `responsive: the admin console stays navigable on small screens` |
+| 15 | The exact spec products behave (1.95 / 2.10 / 3.375) | `review 4`, `review 5`, `review 6`, `review 6b` in `tests/engine.test.js` |
+| 16 | A data-source outage names its cause, keeps the honest headline, and never spends the requests a manual generation needs | `tests/data-source-reasons.test.js` (quota / rate limit / auth / outage / network reasons, the free `/status` probe, `api_quota_reserve` → `SKIPPED`, incremental history, bounded head-to-head, `/api/health`) |
+
+### Continuous integration
+
+`.github/workflows/checks.yml` runs on every push and pull request to `main`, on Node 18, 20 and
+22 (`>=18.17` is the documented floor for native `fetch`; 22 is what cPanel currently ships). Each
+job runs, in order: `npm ci`, `lint:syntax`, `lint:js`, `test:sql`, `lint:secrets`, `npm test`.
+
+The workflow needs **no services and no secrets** — the suite is hermetic, so a green run is proof
+of the engine and HTTP contracts, not of a live MySQL or API-Football connection. Those still have
+to be verified on the host with `npm run db:setup` and `npm run sync:all` (see
+`docs/DEPLOYMENT-CPANEL.md`).
+
+> **Why `"test": "node --test"` has no file pattern.** Glob positionals were only added to
+> `node --test` in **Node 21**. On Node 18 and 20 a pattern such as `"tests/**/*.test.js"` is
+> treated as a *literal path*, so the runner prints `Could not find ...` and exits 1 without
+> running a single test — while looking perfectly fine on a developer's Node 22 machine. With no
+> path argument the runner applies its own default discovery, which has behaved the same since
+> Node 18 and does not depend on shell expansion (so it also works on Windows). Do not use the
+> directory form `node --test tests/` either: that executes every `.js` file in the directory,
+> including the `fakeDb.js` and `synthetic.js` fixtures. `tests/scripts.test.js` fails the build
+> if either mistake is reintroduced.
+
+---
+
+## Deployment package
+
+`GoalPredict-cPanel-deployment.zip` is the upload package for cPanel. It is built from the files
+**git tracks** — never `node_modules`, `.git`, `logs`, `.env` or a stray file on disk — sorted and
+stamped with a fixed timestamp, so the same tree always produces the same bytes:
+
+```bash
+npm run build:zip            # rewrite the archive
+node scripts/build-deployment-zip.js --check   # verify it is current (exit 1 when stale)
+```
+
+The archive has drifted before (a committed copy once shipped a stale homepage that still
+contained the admin controls), so `tests/deployment-zip.test.js` fails the build whenever the
+committed ZIP is not the build of the committed source. **When you change any shipped file, run
+`npm run build:zip` and commit the archive in the same commit.**
+
+---
+
+## Deployment diagnosis
+
+Two operator commands answer "why is the deployed site broken?" without guessing:
+
+| Command | What it proves |
+| --- | --- |
+| `npm run doctor` | Node version, `NODE_ENV`, every required environment variable (values masked), a real MySQL connection using the **same** credentials as the app — with the MySQL error code translated into the cause *and* the cPanel screen that fixes it — the schema (all 20 tables), the seed (settings + an active administrator), and the running site's own answers (`/api/health`, `/api/meta`, and the guest boundary on `/api/dashboard/activity`, which must be 401). `--json` for machines, `--skip-site` for the database half only. Exit code 1 on any problem, so it can gate a deploy. |
+| `npm run api:check` | **Only the data source**, in one command: which credential is in force (masked), one real request to API-Football's free `/status` endpoint, and the verdict — `CONNECTED`, `INVALID_KEY`, `QUOTA_EXCEEDED`, `RATE_LIMITED`, `NETWORK_ERROR`, `TIMEOUT`, `PROVIDER_UNAVAILABLE` or `CONFIG_INCOMPLETE` — with the daily budget the provider reports and the exact fix. Exit code 1 when the source cannot be used, so it can be monitored. `--json` for machines. |
+| `npm run verify:access -- --member=user:pw --admin=admin:pw` | The guest/member/admin boundary against a **live** site: guest `401` with no payload and a redirect on `/dashboard`, the member feed scoped to that account, the console still admin-only, and `/admin/login` skipping itself for a live session. Credentials are used only for the sign-in request — nothing is written to disk. Exit code 1 on any failure. |
+
+---
+
+## Background jobs (cron)
+
+| Schedule | Command | Purpose |
+| --- | --- | --- |
+| `0 * * * *` | `scripts/cron-sync-fixtures.js` | fixtures + team/league statistics |
+| `*/20 * * * *` | `scripts/cron-sync-odds.js` | verified Over 1.5 prices |
+| `*/30 * * * *` | `scripts/cron-sync-results.js` | final scores + settlement of pending legs |
+| `*/15 * * * *` | `scripts/cron-health-check.js` | alerts (non-zero exit) when DB or data source is down |
+
+Every cron script sets `CRON_CONTEXT=1`, and `ticketService.assertManualTrigger()` refuses to run
+in that context — a cron job physically cannot create or publish a ticket.
+
+**The plans these jobs run on are finite.** The client learns the daily request budget the provider
+advertises on every answer (`x-ratelimit-requests-remaining`), records it in `api_sync_logs`
+(`requests_used` / `requests_limit`) and stops calling the data endpoints once the day is spent —
+while leaving the free `/status` probe available for diagnosis. Background sync also pauses with
+status `SKIPPED` (reason `QUOTA_RESERVED`) as soon as fewer than `api_quota_reserve` requests are
+left, so the manual *Generate Today's Ticket* action still has room to run. Two settings keep the
+cost of a normal day low: `history_refresh_minutes` (a history day whose stored fixtures are still
+fresh is not requested again) and `h2h_sync_max_calls` (head-to-head enrichment only runs where the
+local sample is too small to score with). `scripts/cron-sync-all.js`
+exists for hosts that allow only one entry. **Never** put `scripts/generate-ticket-cli.js` in cron.
+
+---
+
+## Licence
+
+Private project. Football data and odds are provided by API-Football Pro under its own terms;
+nothing here may be repurposed to publish invented odds, fixtures or results.
