@@ -298,6 +298,14 @@ test('acceptance 9: an administrator generates a qualified ticket from verified 
     assert.equal(report.qualifiedCombinations, 1);
     assert.ok(Array.isArray(report.alternatives));
     assert.doesNotThrow(() => JSON.stringify(report.alternatives));
+    assert.ok(report.oddsSync, 'the stored report carries odds-sync metrics');
+    assert.equal(typeof report.oddsSync.endpointCalls, 'number');
+    assert.equal(typeof report.oddsSync.rowsWritten, 'number');
+    assert.equal(typeof report.oddsSync.fixturesScanned, 'number');
+    assert.ok(report.oddsSync.fixturesWithVerifiedOver15 >= 3);
+    assert.ok(report.oddsLoad);
+    assert.equal(report.oddsLoad.fixturesWithVerifiedOver15, 3);
+    assert.equal(/x-apisports-key|authorization/i.test(JSON.stringify(report)), false);
 
     /* --- the public payload is derived from the stored rows --- */
     const publicTicket = await ticketService.getTicketForDate(scn.ticketDate);

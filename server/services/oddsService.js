@@ -207,6 +207,88 @@ function isOver15Entry(entry) {
   );
 }
 
+/**
+ * An offer that was aiming at full-time Over 1.5 (even if validation then
+ * rejected it). Used to keep Over 1.5 offer-level rejection counts separate
+ * from the noise of every other market the provider returned.
+ */
+function isExactOver15Attempt(entry) {
+  return (
+    Boolean(entry) &&
+    !entry.periodOrScopeIssue &&
+    entry.direction === 'over' &&
+    typeof entry.goalLine === 'number' &&
+    Math.abs(entry.goalLine - GOAL_LINE) < 1e-9
+  );
+}
+
+function bumpCount(map, key) {
+  if (!key) return;
+  map[key] = (map[key] || 0) + 1;
+}
+
+/**
+ * A page/provider failure safe to persist on a generation report.
+ * Headers, raw payloads and credential material are never copied.
+ */
+function sanitizeProviderPageError(err, page) {
+  const details = err && typeof err.details === 'object' && err.details ? err.details : {};
+  const status = Number(details.status);
+  const reason = details.reason == null || details.reason === '' ? null : String(details.reason).slice(0, 80);
+  const message = err && err.message ? String(err.message).slice(0, 200) : 'provider error';
+  return {
+    page: Number.isFinite(Number(page)) ? Number(page) : null,
+    status: Number.isFinite(status) ? status : null,
+    reason,
+    message,
+  };
+}
+
+/**
+ * Compact, credential-free odds-sync metrics for the stored generation report.
+ * Fixture-level counts stay separate from offer-level rejection maps.
+ */
+function summarizeOddsSync(sync) {
+  if (!sync) return null;
+  const offerRejectionCounts = { ...(sync.offerRejectionCounts || sync.rejectionCounts || {}) };
+  const over15OfferRejectionCounts = { ...(sync.over15OfferRejectionCounts || sync.over15RejectionCounts || {}) };
+  const providerErrors = Array.isArray(sync.providerErrors)
+    ? sync.providerErrors.map((entry) => sanitizeProviderPageError(
+      { message: entry && entry.message, details: entry },
+      entry && entry.page
+    ))
+    : [];
+  const pagingTotal = sync.pagingTotal == null || sync.pagingTotal === '' ? null : Number(sync.pagingTotal);
+  return {
+    date: sync.date || null,
+    endpointCalls: Number(sync.endpointCalls) || 0,
+    rowsWritten: Number(sync.rowsWritten) || 0,
+    fixturesScanned: Number(sync.fixturesScanned) || 0,
+    fixturesWithAnyOffers: Number(sync.fixturesWithAnyOffers ?? sync.fixturesWithOdds) || 0,
+    fixturesWithRejectedOffers: Number(sync.fixturesWithRejectedOffers) || 0,
+    fixturesWithVerifiedOver15: Number(sync.fixturesWithVerifiedOver15) || 0,
+    unmatchedProviderItems: Number(sync.unmatchedProviderItems) || 0,
+    providerItemsSeen: Number(sync.providerItemsSeen) || 0,
+    pagesFetched: Number(sync.pagesFetched) || 0,
+    pagingTotal: Number.isFinite(pagingTotal) ? pagingTotal : null,
+    stoppedReason: sync.stoppedReason || null,
+    offerRejectionCounts,
+    over15OfferRejectionCounts,
+    providerErrors,
+  };
+}
+
+function summarizeOddsLoad(load) {
+  if (!load) return null;
+  const selectedSize = load.selected && typeof load.selected.size === 'number' ? load.selected.size : 0;
+  return {
+    fixturesQueried: Number(load.fixturesQueried) || 0,
+    verifiedRowsRead: Number(load.verifiedRowsRead) || 0,
+    fixturesWithVerifiedOver15: Number(load.fixturesWithVerifiedOver15 ?? selectedSize) || 0,
+    offerRejectionCounts: { ...(load.offerRejectionCounts || load.rejectionCounts || {}) },
+  };
+}
+
 /* ---------------------------------------------------------------------- */
 /* the 14 point validation gate                                            */
 /* ---------------------------------------------------------------------- */
@@ -469,12 +551,7 @@ async function persistValidatedOdds({ fixtureId, verified, rejected, oddsUpdated
 
   for (const r of rejected || []) {
     // keep only audit-worthy attempts on the correct market/line
-    const isRelevant =
-      !r.periodOrScopeIssue &&
-      r.direction === 'over' &&
-      typeof r.goalLine === 'number' &&
-      Math.abs(r.goalLine - GOAL_LINE) < 1e-9;
-    if (!isRelevant || !r.bookmakerId) continue;
+    if (!isExactOver15Attempt(r) || !r.bookmakerId) continue;
     await db.upsertBookmaker({ id: r.bookmakerId, name: r.bookmakerName });
     await db.upsertOdds({
       fixtureId,
@@ -554,8 +631,12 @@ async function fetchValidateAndStoreForFixture(fixture, options = {}) {
 }
 
 /**
- * Bulk odds sync for a date using /odds?date=...&page=N (cheap on quota),
- * falling back to per-fixture requests for fixtures that got nothing.
+ * Bulk odds sync for a date using /odds?date=...&page=N (cheap on quota).
+ *
+ * Only playable fixtures already stored for that UTC day are matched. Provider
+ * items whose fixture id is not in that set are counted as unmatched and not
+ * persisted. Pagination stops at `maxPages`, an empty page, a completed paging
+ * window, or a non-fatal later-page provider error — whichever comes first.
  */
 async function syncOddsForDate(date, options = {}) {
   const api = options.api || defaultApi;
@@ -569,15 +650,28 @@ async function syncOddsForDate(date, options = {}) {
 
   let endpointCalls = 0;
   let rowsWritten = 0;
-  const fixturesWithOdds = new Set();
-  const rejectionCounts = {};
+  let providerItemsSeen = 0;
+  let unmatchedProviderItems = 0;
+  let pagesFetched = 0;
+  let pagingTotal = null;
+  let stoppedReason = playable.length ? null : 'no_playable_fixtures';
+  const fixturesWithAnyOffers = new Set();
+  const fixturesWithRejectedOffers = new Set();
+  const fixturesWithVerifiedOver15 = new Set();
+  const offerRejectionCounts = {};
+  const over15OfferRejectionCounts = {};
+  const providerErrors = [];
 
   for (let page = 1; page <= maxPages; page += 1) {
-    if (options.beforeRequest && !(await options.beforeRequest())) break;
+    if (options.beforeRequest && !(await options.beforeRequest())) {
+      stoppedReason = 'quota_or_budget';
+      break;
+    }
     let data;
     try {
       data = await api.getOddsByDate(time.toMysqlDate(date), page);
     } catch (err) {
+      providerErrors.push(sanitizeProviderPageError(err, page));
       // A page beyond the last one may be rejected by the provider instead of
       // returning an empty page. Treat that as "no more pages" rather than
       // failing the whole date, but only after the first page has succeeded.
@@ -586,19 +680,28 @@ async function syncOddsForDate(date, options = {}) {
         const reason = (err.details || {}).reason;
         if (st >= 400 && st < 500 && ![401, 403, 429].includes(st) && !['QUOTA_EXCEEDED', 'RATE_LIMITED'].includes(reason)) {
           log.warn('odds sync stopped at an unavailable page', { date: time.toMysqlDate(date), page, message: err.message });
+          stoppedReason = 'provider_page_error';
           break;
         }
       }
       throw err;
     }
     endpointCalls += 1;
-    const items = data.response || [];
-    if (!items.length) break;
+    pagesFetched += 1;
+    const items = Array.isArray(data.response) ? data.response : [];
+    providerItemsSeen += items.length;
+    if (!items.length) {
+      stoppedReason = page === 1 ? 'empty' : 'complete';
+      break;
+    }
 
     for (const payload of items) {
       const fixtureId = Number(payload?.fixture?.id);
       const fixtureRow = byId.get(fixtureId);
-      if (!fixtureRow) continue; // not a fixture we track for this date
+      if (!fixtureRow) {
+        unmatchedProviderItems += 1;
+        continue; // not a playable fixture we track for this date
+      }
 
       const fixture = {
         id: fixtureId,
@@ -609,10 +712,15 @@ async function syncOddsForDate(date, options = {}) {
         leagueId: fixtureRow.league_id,
       };
       const validation = validateOddsPayload(payload, fixture, { now, settings });
-      for (const r of validation.rejected) rejectionCounts[r.reason] = (rejectionCounts[r.reason] || 0) + 1;
+      if (validation.stats.pricesSeen > 0) fixturesWithAnyOffers.add(fixtureId);
+      if (validation.rejected.length) fixturesWithRejectedOffers.add(fixtureId);
+      if (validation.verified.length) fixturesWithVerifiedOver15.add(fixtureId);
+      for (const r of validation.rejected) {
+        bumpCount(offerRejectionCounts, r.reason);
+        if (isExactOver15Attempt(r)) bumpCount(over15OfferRejectionCounts, r.reason);
+      }
       if (!validation.verified.length && !validation.rejected.length) continue;
 
-      fixturesWithOdds.add(fixtureId);
       rowsWritten += await persistValidatedOdds({
         fixtureId,
         verified: validation.verified,
@@ -623,16 +731,33 @@ async function syncOddsForDate(date, options = {}) {
     }
 
     const paging = data.paging || { current: page, total: page };
-    if (Number(paging.current) >= Number(paging.total)) break;
+    const total = Number(paging.total);
+    if (Number.isFinite(total) && total > 0) pagingTotal = total;
+    if (Number(paging.current) >= Number(paging.total)) {
+      stoppedReason = 'complete';
+      break;
+    }
+    if (page === maxPages) stoppedReason = 'max_pages';
   }
 
   return {
     date: time.toMysqlDate(date),
     fixturesScanned: playable.length,
-    fixturesWithOdds: fixturesWithOdds.size,
+    fixturesWithOdds: fixturesWithAnyOffers.size,
+    fixturesWithAnyOffers: fixturesWithAnyOffers.size,
+    fixturesWithRejectedOffers: fixturesWithRejectedOffers.size,
+    fixturesWithVerifiedOver15: fixturesWithVerifiedOver15.size,
+    unmatchedProviderItems,
+    providerItemsSeen,
+    pagesFetched,
+    pagingTotal,
+    stoppedReason,
     endpointCalls,
     rowsWritten,
-    rejectionCounts,
+    rejectionCounts: offerRejectionCounts,
+    offerRejectionCounts,
+    over15OfferRejectionCounts,
+    providerErrors,
   };
 }
 
@@ -733,7 +858,14 @@ async function loadVerifiedPricesFromDb(fixtures, options = {}) {
     const pick = selectPrice(list, settings);
     if (pick) selected.set(fixtureId, pick);
   }
-  return { selected, grouped, rejectionCounts };
+  return {
+    selected,
+    grouped,
+    rejectionCounts,
+    fixturesQueried: ids.length,
+    verifiedRowsRead: rows.length,
+    fixturesWithVerifiedOver15: selected.size,
+  };
 }
 
 module.exports = {
@@ -746,6 +878,7 @@ module.exports = {
   parseOddsValue,
   parseOddsPayload,
   isOver15Entry,
+  isExactOver15Attempt,
   validateOdd,
   validateOddsPayload,
   selectPrice,
@@ -754,4 +887,7 @@ module.exports = {
   syncOddsForDate,
   refreshVerifiedPrices,
   loadVerifiedPricesFromDb,
+  sanitizeProviderPageError,
+  summarizeOddsSync,
+  summarizeOddsLoad,
 };

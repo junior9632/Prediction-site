@@ -315,6 +315,8 @@ async function runGeneration(params = {}) {
     await step('LOADING_VERIFIED_ODDS', null, {
       fixturesWithVerifiedOdds: dbOdds.selected.size,
       oddsRows: bulkSync ? bulkSync.rowsWritten : 0,
+      oddsSync: oddsService.summarizeOddsSync(bulkSync),
+      oddsLoad: oddsService.summarizeOddsLoad(dbOdds),
     });
 
     /* -------- pass 1: full scan -------- */
@@ -409,7 +411,7 @@ async function runGeneration(params = {}) {
         now: new Date(),
       });
 
-      const report = buildReport({ ticketDate, counters, result: pass2, settings, reverify, bulkSync, ticketId: persisted.ticketId });
+      const report = buildReport({ ticketDate, counters, result: pass2, settings, reverify, bulkSync, oddsLoad: dbOdds, ticketId: persisted.ticketId });
       await logService.write({
         level: 'info',
         channel: 'tickets',
@@ -440,7 +442,7 @@ async function runGeneration(params = {}) {
       generationId: runId,
       now: new Date(),
     });
-    const report = buildReport({ ticketDate, counters, result: pass2, settings, reverify, bulkSync, ticketId: persisted.ticketId });
+    const report = buildReport({ ticketDate, counters, result: pass2, settings, reverify, bulkSync, oddsLoad: dbOdds, ticketId: persisted.ticketId });
     await logService.write({
       level: 'warn',
       channel: 'tickets',
@@ -750,7 +752,7 @@ async function persistNoTicket({ ticketDate, result, settings, adminId, generati
 /* reporting                                                               */
 /* ---------------------------------------------------------------------- */
 
-function buildReport({ ticketDate, counters, result, settings, reverify, bulkSync, ticketId }) {
+function buildReport({ ticketDate, counters, result, settings, reverify, bulkSync, oddsLoad, ticketId }) {
   const qualified = result.status === 'QUALIFIED';
   return {
     date: time.formatReportDate(ticketDate),
@@ -795,7 +797,8 @@ function buildReport({ ticketDate, counters, result, settings, reverify, bulkSyn
       ? 'TICKET QUALIFIED'
       : pipeline.describeNoTicket(result.report || {}),
     reverify: reverify || null,
-    oddsSync: bulkSync ? { rowsWritten: bulkSync.rowsWritten, endpointCalls: bulkSync.endpointCalls } : null,
+    oddsSync: oddsService.summarizeOddsSync(bulkSync),
+    oddsLoad: oddsService.summarizeOddsLoad(oddsLoad),
     alternatives: qualified ? serializableAlternatives(result.alternatives) : [],
     generatedAt: new Date().toISOString(),
   };
