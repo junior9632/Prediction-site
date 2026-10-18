@@ -30,10 +30,46 @@ const ROOT = path.join(__dirname, '..');
 const ARCHIVE_NAME = 'GoalPredict-cPanel-deployment.zip';
 const ARCHIVE_PATH = path.join(ROOT, ARCHIVE_NAME);
 
-/** Never include these, even if a future commit tracks them. */
-const EXCLUDED_PREFIXES = ['node_modules/', '.git/', 'logs/', 'coverage/'];
-const EXCLUDED_FILES = [ARCHIVE_NAME, '.env', '.env.local', '.DS_Store'];
-const EXCLUDED_EXTENSIONS = ['.log'];
+/**
+ * Never include these, even if a future commit tracks them.
+ *
+ * The application writes its server-managed encryption key to `storage/`
+ * (old releases) or outside the application folder (current default). A ZIP that carried
+ * that key, a real `.env`, a database dump or a private key would turn every
+ * download/upload into a credential leak, so the filter is explicit and the
+ * build refuses to run when a sensitive file is tracked at all.
+ */
+const EXCLUDED_PREFIXES = [
+  'node_modules/', '.git/', 'logs/', 'coverage/', 'storage/',
+  'backups/', 'backup/', 'dumps/', 'db-dumps/', 'db_dumps/', 'cpanel_nodejs/',
+];
+const EXCLUDED_FILES = [ARCHIVE_NAME, '.env', '.env.local', '.env.production', '.env.development', '.DS_Store'];
+const EXCLUDED_EXTENSIONS = [
+  '.log', '.key', '.pem', '.p12', '.pfx', '.jks', '.keystore', '.kdbx',
+  '.dump', '.bak', '.sql.gz', '.sql.zip', '.tar', '.tgz', '.zip', '.7z', '.rar',
+];
+
+/** `.env.example` is documentation and ships; every other `.env*` does not. */
+const ENV_FILE = /(^|\/)\.env(\.[^/]+)?$/i;
+const SQL_DUMP = /(^|\/)(dump|backup|db[-_]?dump|export)[^/]*\.sql$/i;
+const PRIVATE_MATERIAL = /(^|\/)(id_rsa|id_dsa|id_ecdsa|id_ed25519|\.npmrc|\.netrc|\.htpasswd|\.pgpass)$/i;
+
+/** True when a tracked path must never enter a deployment artefact. */
+function isSensitive(file) {
+  const name = String(file);
+  if (name === '.env.example' || name === ARCHIVE_NAME) return false;
+  if (ENV_FILE.test(name)) return true;
+  if (SQL_DUMP.test(name)) return true;
+  if (PRIVATE_MATERIAL.test(name)) return true;
+  return EXCLUDED_EXTENSIONS.some((extension) => name.toLowerCase().endsWith(extension));
+}
+
+function isExcluded(file) {
+  if (EXCLUDED_FILES.includes(file)) return true;
+  if (EXCLUDED_PREFIXES.some((prefix) => file.startsWith(prefix))) return true;
+  if (EXCLUDED_EXTENSIONS.some((extension) => file.toLowerCase().endsWith(extension))) return true;
+  return isSensitive(file);
+}
 
 /* --------------------------- ZIP primitives ------------------------- */
 
@@ -120,9 +156,7 @@ function deploymentFiles() {
     .filter(Boolean);
 
   return tracked
-    .filter((file) => !EXCLUDED_FILES.includes(file))
-    .filter((file) => !EXCLUDED_PREFIXES.some((prefix) => file.startsWith(prefix)))
-    .filter((file) => !EXCLUDED_EXTENSIONS.some((ext) => file.endsWith(ext)))
+    .filter((file) => !isExcluded(file))
     .filter((file) => fs.existsSync(path.join(ROOT, file)))
     .sort();
 }
@@ -151,8 +185,27 @@ function buildArchive() {
 
 /* -------------------------------- run ------------------------------- */
 
+/** Tracked files that look like secrets — the build refuses to continue. */
+function sensitiveTrackedFiles() {
+  return execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean)
+    .filter(isSensitive)
+    .sort();
+}
+
 function main() {
   const check = process.argv.includes('--check');
+  const unsafe = sensitiveTrackedFiles();
+  if (unsafe.length) {
+    process.stderr.write(
+      'REFUSING TO BUILD: tracked files look like secrets and must never enter a deployment ZIP:\n' +
+        unsafe.map((file) => `  - ${file}\n`).join('') +
+        'Remove them from git (git rm --cached), rotate anything that was committed, and keep them outside the repository.\n'
+    );
+    process.exitCode = 1;
+    return;
+  }
   const archive = buildArchive();
 
   if (check) {
@@ -182,4 +235,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { buildArchive, deploymentFiles, ARCHIVE_NAME, ARCHIVE_PATH };
+module.exports = { buildArchive, deploymentFiles, sensitiveTrackedFiles, isExcluded, isSensitive, ARCHIVE_NAME, ARCHIVE_PATH };

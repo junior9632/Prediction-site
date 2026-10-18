@@ -532,3 +532,90 @@ test('API Management repair: schema/encryption failures disable saving without h
   assert.equal(h.nodes.get('apiTestBtn').disabled, false);
   assert.match(h.html(), /npm run db:migrate/);
 });
+
+/** A complete, credential-free storage report for the view tests. */
+function storageReport(overrides = {}) {
+  return {
+    readOnly: true,
+    state: 'READY',
+    ready: true,
+    degraded: false,
+    canRead: true,
+    canSave: true,
+    summary: 'Credential storage is ready: the database tables are present and the encryption key is usable.',
+    checkedAt: '2026-10-16T09:20:00.000Z',
+    database: { reachable: true, code: null, driverCode: null, message: 'Database connection is available.' },
+    schema: { checked: true, ready: true, source: 'information_schema', missingTables: [], missingColumns: [], migration: { required: false, file: '003-api-credential-management.sql', applied: true } },
+    permissions: { checked: true, select: true, insert: true, update: true, delete: true, all: false, message: null },
+    credentials: { readable: true, count: 1, error: null },
+    history: { ready: true, eventsReadable: true, syncsReadable: true, error: null },
+    encryption: { state: 'ENV_READY', configured: true, pending: false, canEncrypt: true, canDecrypt: true, source: 'env', keyEnvVar: 'API_CREDENTIALS_ENCRYPTION_KEY', keyPath: null, message: 'set' },
+    issues: [],
+    ...overrides,
+  };
+}
+
+test('API Management repair: credential storage is a separate, explicit readiness panel', async () => {
+  const payload = structuredClone(STATUS_PAYLOAD);
+  payload.storage = storageReport();
+  const h = harness({ 'GET /admin/api-management': () => payload });
+  await h.view.load(h.helpers);
+
+  assert.match(h.html(), /Credential storage — admin-only read-only check/);
+  assert.match(h.html(), /READY/);
+  assert.match(h.html(), /a provider connection test does not change this/);
+  assert.equal(h.nodes.get('apiSaveBtn').disabled, false, 'ready storage allows saving');
+  assert.match(h.html(), /CONNECTED/, 'the provider connection remains visible on its own');
+});
+
+test('API Management repair: schema storage failure names the migration and disables saving', async () => {
+  const payload = structuredClone(STATUS_PAYLOAD);
+  payload.databaseManaged = false;
+  payload.degradedReason = 'SCHEMA_OUT_OF_DATE';
+  payload.storage = storageReport({
+    state: 'SCHEMA_OUT_OF_DATE',
+    ready: false,
+    degraded: true,
+    canRead: false,
+    canSave: false,
+    summary: 'Credential storage is unavailable: the database is missing migration 003-api-credential-management.sql.',
+    schema: {
+      checked: true, ready: false, source: 'information_schema',
+      missingTables: ['api_credentials', 'api_connection_events'], missingColumns: [],
+      migration: { required: true, file: '003-api-credential-management.sql', applied: false },
+    },
+    issues: [{
+      area: 'schema',
+      code: 'SCHEMA_OUT_OF_DATE',
+      message: 'Missing credential-storage objects: api_credentials, api_connection_events.',
+      fix: 'Apply 003-api-credential-management.sql with npm run db:migrate, or paste it into phpMyAdmin.',
+    }],
+  });
+  const h = harness({ 'GET /admin/api-management': () => payload });
+  await h.view.load(h.helpers);
+
+  assert.equal(h.nodes.get('apiSaveBtn').disabled, true);
+  assert.equal(h.nodes.get('apiTestBtn').disabled, false, 'provider testing stays available');
+  assert.match(h.html(), /003-api-credential-management\.sql/);
+  assert.match(h.html(), /npm run db:migrate/);
+  assert.match(h.html(), /does not prove that a key can be stored/);
+});
+
+test('API Management repair: a history-only failure does not claim storage is unavailable', async () => {
+  const payload = structuredClone(STATUS_PAYLOAD);
+  payload.degradedReason = 'HISTORY_UNAVAILABLE';
+  payload.storage = storageReport({
+    state: 'HISTORY_DEGRADED',
+    ready: false,
+    degraded: true,
+    summary: 'Credential storage is ready; only the diagnostics history is unavailable.',
+    history: { ready: false, eventsReadable: false, syncsReadable: false, error: 'SCHEMA_OUT_OF_DATE' },
+    issues: [{ area: 'history', code: 'SCHEMA_OUT_OF_DATE', message: 'History queries fail.', fix: 'Saving a credential is not blocked by this.' }],
+  });
+  const h = harness({ 'GET /admin/api-management': () => payload });
+  await h.view.load(h.helpers);
+
+  assert.equal(h.nodes.get('apiSaveBtn').disabled, false, 'history is not a save blocker');
+  assert.match(h.html(), /only the diagnostics history is unavailable/);
+  assert.doesNotMatch(h.html(), /Credential storage is unavailable\. Ask the host/);
+});

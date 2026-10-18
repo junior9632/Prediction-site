@@ -316,7 +316,23 @@ API-Football credential an admin task instead of a deployment edit:
   **real** quota when it reports one, rate limits and the recent API error history;
 * the whole screen can be reviewed without a real key: `npm run preview:ui` seeds a fictional,
   encrypted sample credential and a sample `/status` verdict into the in-memory preview harness
-  (nothing leaves the sandbox and every value is labelled sample data).
+  (nothing leaves the sandbox and every value is labelled sample data);
+* **credential storage is reported separately from provider connectivity.** A successful
+  Test Connection proves the provider accepted a key; it does **not** prove that a key can be
+  stored. The screen shows a read-only storage panel backed by
+  `GET /api/admin/api-management/storage-diagnostics`, which distinguishes an unreachable
+  database, a missing migration (003), missing SELECT/INSERT/UPDATE grants, an unusable
+  encryption key, a credential-table read failure and a broken diagnostics history. The check
+  runs SELECT/SHOW only and returns no key, ciphertext, password, cookie or grant text.
+
+Encryption keys live outside the request path. `API_CREDENTIALS_ENCRYPTION_KEY` wins when set.
+Otherwise an **existing** `storage/api-credentials.key` is used first (upgrade compatibility);
+a new install creates a key file outside the application folder (normally
+`~/.goalpredict/api-credentials.key`, derived from the application root so Passenger and cron
+agree) on the first save. An existing key
+is never regenerated, moved or deleted automatically. See
+[API credential storage on cPanel](docs/API-CREDENTIAL-STORAGE.md) for the optional,
+reversible key-file migration and the full diagnosis/fix matrix.
 
 Saving, testing or switching a credential **never** generates, publishes or replaces a
 prediction ticket. The market stays Over 1.5 Goals, combined odds stay 2.00–4.00, generation
@@ -334,7 +350,8 @@ Every variable is documented in [`.env.example`](.env.example). The important on
 | `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` | MySQL connection (cPanel "MySQL Databases") |
 | `API_FOOTBALL_KEY` | API-Football Pro key — **server side only** |
 | `API_FOOTBALL_HOST` | `v3.football.api-sports.io` (or the RapidAPI host) |
-| `API_CREDENTIALS_ENCRYPTION_KEY` | 64 hex characters — AES-256-GCM master key for credentials saved from the admin **API Management** screen. Required before an administrator can save a key; without it, saving fails safely and stores nothing |
+| `API_CREDENTIALS_ENCRYPTION_KEY` | 64 hex characters — AES-256-GCM master key for credentials saved from the admin **API Management** screen. When empty, an existing `storage/api-credentials.key` is used first, otherwise the server creates a key file outside the application folder (normally `~/.goalpredict/api-credentials.key`) on the first save |
+| `API_CREDENTIALS_KEY_FILE`, `API_CREDENTIALS_AUTO_KEY` | optional explicit key-file path (relative paths resolve against the application root) and the switch that disables automatic key-file creation (`0`) so only the environment variable is accepted |
 | `API_CREDENTIALS_TEST_TIMEOUT_MS`, `API_CREDENTIALS_TEST_MIN_INTERVAL_MS`, `API_CREDENTIALS_TEST_REUSE_MS` | bounds for the *Test Connection* action (15s timeout, 3s floor between real tests, 60s verdict reuse) |
 | `JWT_SECRET` | 64+ random characters; signs admin sessions |
 | `APP_URL`, `CORS_ORIGINS` | public origin, used for CORS and secure cookies |
@@ -403,7 +420,9 @@ npm test          # offline regression suite; no database or network required
 | `tests/engine.test.js` | exact decimal odds maths, the 14-point odds gate, exact Over 1.5 goal-line matching, combination engine, correlation protection, settlement rules, locked settings |
 | `tests/acceptance.test.js` | manual-trigger guards, data-source-unavailable runs, a full qualified generation, regeneration, settlement end to end |
 | `tests/http.test.js` | the booted Express app: forged client odds are ignored, public/admin contracts, a field-by-field frontend contract check, CSRF, auth, CSP, and a scan proving no secret ships to the browser |
-| `tests/deployment-zip.test.js` | `GoalPredict-cPanel-deployment.zip` is the build of the current tree, byte for byte: it contains every file the host needs (never `node_modules`, `.git`, logs, `.env`), the build is deterministic, and the committed archive matches the source |
+| `tests/deployment-zip.test.js` | `GoalPredict-cPanel-deployment.zip` is the build of the current tree, byte for byte: it contains every file the host needs and never `node_modules`, `.git`, logs, `.env*` (except `.env.example`), encryption keys, private certificates, database dumps or backups; the build is deterministic, refuses sensitive tracked files, and the committed archive matches the source |
+| `tests/credential-storage.test.js` | admin-only read-only storage diagnosis: database, migration/schema, permissions, encryption, credential read and history failures are distinguished; readiness is honest for pending, invalid, unreadable and unwritable key files; no key or grant text is returned |
+| `tests/api-management.test.js` | save/test/activate/disable over HTTP, AES-256-GCM at rest, masked-only responses, SSRF guards, authorization/CSRF, schema drift and the "no ticket was touched" contract |
 | `tests/settings-validation.test.js` | all 50 editable defaults round-trip, strict types/weights/timezones/leagues, locked values, cross-field rules, legacy repair warnings and transactional persistence |
 | `tests/fixture-settings.test.js` | UNIX timestamps, 90-minute AET/PEN scores, real sync clocks, selected-date sync, zero H2H budgets, per-request quota reserves and fixture/odds settings over HTTP |
 | `tests/admin-settings-client.test.js` · `tests/admin-fixtures-client.test.js` | executed editor/browser modules: changed-only saves, drafts/errors, touch controls, race safety, date sync, quota reporting, filtering and pagination |

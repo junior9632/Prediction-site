@@ -16,7 +16,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { buildArchive, deploymentFiles, ARCHIVE_NAME, ARCHIVE_PATH } = require('../scripts/build-deployment-zip');
+const {
+  buildArchive, deploymentFiles, sensitiveTrackedFiles, isExcluded, isSensitive,
+  ARCHIVE_NAME, ARCHIVE_PATH,
+} = require('../scripts/build-deployment-zip');
 
 test('deployment zip: the committed archive is the build of the current source', () => {
   assert.ok(fs.existsSync(ARCHIVE_PATH), `${ARCHIVE_NAME} is tracked and must exist`);
@@ -101,4 +104,38 @@ test('deployment zip: every packaged file is the reviewed file, byte for byte', 
     assert.equal(meta.size, source.length, `${name} is packaged at its current size`);
     assert.equal(meta.localOffset > 0 || name === deploymentFiles()[0], true, `${name} has a local header`);
   }
+});
+
+
+test('deployment zip: encryption keys, env files and database dumps can never ship', () => {
+  // Every one of these must be filtered even if a future commit tracks it.
+  for (const file of [
+    '.env', '.env.production', '.env.local', '.env.test',
+    'storage/api-credentials.key', 'config/credentials.key', 'certs/server.pem',
+    'client.p12', 'client.pfx', 'secrets/keystore.jks',
+    'database/backup.sql', 'dump.sql', 'exports/db-dump-2026.sql',
+    'db.sql.gz', 'nightly.dump', 'home/.pgpass', 'id_rsa', '.npmrc',
+    'backups/site.zip', 'logs/app.log',
+  ]) {
+    assert.equal(isSensitive(file), true, `${file} is sensitive`);
+    assert.equal(isExcluded(file), true, `${file} must not enter the ZIP`);
+  }
+
+  // Documentation and the reviewable migration stay in the package.
+  for (const file of [
+    '.env.example',
+    'server/database/migrations/003-api-credential-management.sql',
+    'server/database/schema.sql',
+    'docs/DEPLOYMENT-CPANEL.md',
+  ]) {
+    assert.equal(isExcluded(file), false, `${file} ships`);
+  }
+
+  assert.deepEqual(sensitiveTrackedFiles(), [], 'no tracked file may look like a secret');
+  const files = deploymentFiles();
+  for (const forbidden of ['storage/api-credentials.key', '.env', '.env.production', 'dump.sql']) {
+    assert.ok(!files.includes(forbidden), `${forbidden} never ships`);
+  }
+  assert.ok(!files.some((file) => /\.(key|pem|p12|pfx)$/i.test(file)), 'no private key material');
+  assert.ok(!files.some((file) => /(^|\/)\.env(\.[^/]+)?$/i.test(file) && !file.endsWith('.env.example')), 'no env file');
 });

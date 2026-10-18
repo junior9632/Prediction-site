@@ -314,17 +314,14 @@ async function checkDatabase(createConnection = mysql.createConnection) {
   try {
     const [rows] = await connection.query('SELECT COUNT(*) AS total FROM api_credentials');
     const saved = Number((rows[0] || {}).total || 0);
-    const configured = credentialVault.isConfigured();
+    const encryption = credentialVault.status();
+    const location = encryption.keyPath ? ` (${encryption.keyPath})` : '';
     record(
       `API credential encryption (${saved} saved credential(s))`,
-      saved === 0 || configured,
-      saved === 0
-        ? configured
-          ? 'no database credential saved yet — the environment configuration is in use'
-          : `no database credential saved yet; ${credentialVault.ENV_VAR} is not set either`
-        : `stored credentials are encrypted with ${credentialVault.ALGORITHM}`,
-      `set ${credentialVault.ENV_VAR} in the cPanel Node.js application environment and restart the app. ` +
-        `Generate a value with: ${credentialVault.GENERATE_COMMAND}`
+      saved === 0 ? encryption.canEncrypt : encryption.canDecrypt,
+      `${encryption.state}${location}${encryption.legacyLocation ? ' — key is inside the application folder' : ''}`,
+      `${encryption.message} Generate a value with: ${credentialVault.GENERATE_COMMAND}. ` +
+        'For the full read-only breakdown open /api/admin/api-management/storage-diagnostics as an administrator.'
     );
   } catch (err) {
     // An older live database (before migration 003) has no such table: that is

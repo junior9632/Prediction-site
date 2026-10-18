@@ -35,6 +35,17 @@ const diagnostics = asyncHandler(async (req, res) => {
   res.json({ ok: true, data: await credentialService.getDiagnostics({ probe }) });
 });
 
+/**
+ * GET /api/admin/api-management/storage-diagnostics
+ *
+ * Read-only: separates database, schema/migration, permission, encryption,
+ * credential-read and history failures. It writes nothing, creates no key and
+ * exposes no secret. A provider connection test never substitutes for it.
+ */
+const storageDiagnostics = asyncHandler(async (_req, res) => {
+  res.json({ ok: true, data: await credentialService.getStorageDiagnostics() });
+});
+
 /** GET /api/admin/api-management/providers — the allowlisted registry. */
 const listProviders = asyncHandler(async (_req, res) => {
   res.json({ ok: true, data: { providers: providers.list(), defaultProviderId: providers.DEFAULT_PROVIDER_ID } });
@@ -144,4 +155,4 @@ const disable = asyncHandler(async (req, res) => {
   res.json({ ok: true, data: result });
 });
 
-module.exports = { status, diagnostics, listProviders, saveCredentials, testConnection, activate, disable };
+module.exports = { status, diagnostics, storageDiagnostics, listProviders, saveCredentials, testConnection, activate, disable };

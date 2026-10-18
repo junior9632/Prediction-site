@@ -10,24 +10,35 @@
  *     authenticated data (AAD) binding of `provider:field`, so a ciphertext
  *     copied to another provider/row/column fails authentication.
  *   * the master key comes from the server environment variable
- *     `API_CREDENTIALS_ENCRYPTION_KEY` (64 hex chars / base64 of 32 bytes). When
- *     that variable is NOT set, the vault creates a random key file on the
- *     server's own disk the first time an administrator saves a credential from
- *     the dashboard (`storage/api-credentials.key`, mode 0600, git-ignored) so
- *     no one has to touch the server environment. The environment variable
- *     always wins when present. The key is never written to the database, never
- *     logged and never sent to the browser.
+ *     `API_CREDENTIALS_ENCRYPTION_KEY` (64 hex chars / base64 of 32 bytes).
+ *     When that variable is NOT set, the vault uses a key file on the server:
+ *       - an existing `<application root>/storage/api-credentials.key` (the
+ *         original location) is ALWAYS used first, so credentials saved by an
+ *         earlier release keep decrypting after an upgrade;
+ *       - otherwise a key file outside the application folder is used
+ *         (normally `~/.goalpredict/api-credentials.key`, derived from the
+ *         application root so Passenger and cron agree), so re-uploading the
+ *         deployment ZIP or cleaning the application folder cannot destroy it.
+ *     `API_CREDENTIALS_KEY_FILE` overrides both locations (a relative value is
+ *     resolved against the application root, never the process working
+ *     directory, so Passenger and cron resolve the same file).
+ *   * the environment variable always wins when present. The key is never
+ *     written to the database, never logged and never sent to the browser.
  *   * FAIL SAFE: with no usable master key, `encryptSecret` refuses to store
  *     anything (it throws) — the platform never silently saves a plaintext key
  *     and never downgrades to "no encryption".
+ *   * a key is created ONLY when none exists and a credential is being saved.
+ *     An existing key file is never regenerated, replaced or deleted: doing so
+ *     would make every stored credential permanently undecryptable.
  *
- * The module reads `process.env` on every call (with a tiny cache keyed on the
- * raw value), so a key can be rotated by restarting the app with a new value —
- * see `keyId()` and `describeStoredKey()` for how a rotation is reported.
+ * The module reads `process.env` and the key file on every call, so a key can
+ * be rotated deliberately by restarting the app with a new value — see
+ * `keyId()` and `inspect()` for how that is reported.
  */
 
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { AppError } = require('./errors');
 
@@ -40,19 +51,65 @@ const ENV_VAR = 'API_CREDENTIALS_ENCRYPTION_KEY';
 /** How an operator creates the value, shown verbatim in the dashboard + docs. */
 const GENERATE_COMMAND = `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`;
 
-const DEFAULT_KEY_FILE = path.resolve(__dirname, '..', '..', 'storage', 'api-credentials.key');
+/** The application root (the folder that contains server/, public/ and storage/). */
+const APP_ROOT = path.resolve(__dirname, '..', '..');
 
-let cached = { raw: null, key: null, problem: null };
+/** Original location, kept for backward compatibility with existing installs. */
+const LEGACY_KEY_FILE = path.join(APP_ROOT, 'storage', 'api-credentials.key');
 
-/** Where the auto-managed key file lives (override with API_CREDENTIALS_KEY_FILE). */
+/**
+ * New default: a persistent folder OUTSIDE the application root and outside a
+ * web root. It is derived from the application folder, not from `$HOME`, so
+ * Passenger, cron and CLI resolve the same file even when their HOME differs.
+ * Normally `/home/USER/.goalpredict/api-credentials.key` on cPanel.
+ */
+function defaultPersistentKeyFile(appRoot = APP_ROOT) {
+  const parent = path.dirname(appRoot);
+  const isWebRoot = (dir) => /(^|\/)(public_html|public|www|htdocs|httpdocs)$/i.test(dir);
+  let base = parent;
+  if (isWebRoot(base)) {
+    // Never put a key inside a served folder. Prefer the account's home folder;
+    // if that IS the web root, step one level above it instead.
+    const home = os.homedir();
+    base = home && home !== base && !home.startsWith(`${base}${path.sep}`)
+      ? home
+      : path.dirname(base);
+  }
+  return path.join(base, '.goalpredict', 'api-credentials.key');
+}
+
+const PERSISTENT_KEY_FILE = defaultPersistentKeyFile();
+
+/**
+ * Where the auto-managed key file lives.
+ *
+ * `API_CREDENTIALS_KEY_FILE` is explicit: it is the only candidate. Without it
+ * an existing legacy file wins (compatibility), then the persistent file.
+ */
 function keyFilePath() {
   const custom = String(process.env.API_CREDENTIALS_KEY_FILE || '').trim();
-  return custom ? path.resolve(custom) : DEFAULT_KEY_FILE;
+  if (custom) return resolvePath(custom);
+  if (fileExists(LEGACY_KEY_FILE)) return LEGACY_KEY_FILE;
+  return PERSISTENT_KEY_FILE;
+}
+
+/** Resolve an operator-supplied path against the application root when relative. */
+function resolvePath(value) {
+  const raw = String(value || '').trim();
+  return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(APP_ROOT, raw);
 }
 
 /** API_CREDENTIALS_AUTO_KEY=0 turns the key file off (environment key only). */
 function autoKeyEnabled() {
   return !/^(0|false|no|off)$/i.test(String(process.env.API_CREDENTIALS_AUTO_KEY || '1').trim());
+}
+
+function fileExists(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch (_err) {
+    return false;
+  }
 }
 
 function failConfiguration(reason, message) {
@@ -64,9 +121,13 @@ function failConfiguration(reason, message) {
       envVar: ENV_VAR,
       reason,
       keyFile: auto ? keyFilePath() : null,
+      legacyKeyFile: auto ? LEGACY_KEY_FILE : null,
+      persistentKeyFile: auto ? PERSISTENT_KEY_FILE : null,
       generate: GENERATE_COMMAND,
       hint: `Set ${ENV_VAR} in the cPanel Node.js application environment (or .env) to 64 hex characters and restart the application.${
-        auto ? ` Alternatively make ${path.dirname(keyFilePath())} writable so the server can create its own key file.` : ''
+        auto
+          ? ` Alternatively make ${path.dirname(keyFilePath())} writable so the server can create its own key file.`
+          : ''
       }`,
     },
   });
@@ -83,66 +144,319 @@ function parseKey(raw) {
 }
 
 /**
- * Parse the configured master key.
- * @returns {{key: Buffer|null, raw: string, problem: string|null, source: 'env'|'file'|null}}
+ * Describe one key file WITHOUT reading its value into any output.
+ * `valid` is computed from the content; the content itself is never returned.
  */
-function readKey() {
+function inspectKeyFile(file, { legacy = false, explicit = false } = {}) {
+  const meta = { path: file, exists: false, readable: false, valid: false, legacy, explicit, mode: null, bytes: null };
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch (err) {
+    meta.exists = false;
+    meta.reason = err && err.code === 'ENOENT' ? 'MISSING' : err && err.code;
+    return meta;
+  }
+  if (!stat.isFile()) {
+    meta.exists = true;
+    meta.reason = 'NOT_A_FILE';
+    return meta;
+  }
+  meta.exists = true;
+  meta.mode = `0${(stat.mode & 0o777).toString(8)}`;
+  meta.bytes = stat.size;
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8').trim();
+  } catch (err) {
+    meta.reason = err && err.code === 'EACCES' ? 'UNREADABLE' : err && err.code;
+    return meta;
+  }
+  meta.readable = true;
+  const parsed = parseKey(raw);
+  meta.valid = Boolean(parsed.key);
+  meta.problem = parsed.problem;
+  // Never return the key material in a serialisable field: the raw text and the
+  // parsed buffer are non-enumerable, so JSON.stringify(status()) cannot leak them.
+  Object.defineProperty(meta, 'raw', { value: raw, enumerable: false });
+  Object.defineProperty(meta, 'key', { value: parsed.key, enumerable: false });
+  return meta;
+}
+
+/**
+ * Can the server create a file below `dir`? Finds the nearest existing ancestor
+ * and checks it is a directory the process may write to. Read-only: nothing is
+ * created, so a diagnostic cannot change the deployment.
+ */
+function directoryWritable(dir) {
+  let current = path.resolve(dir);
+  for (let depth = 0; depth < 40; depth += 1) {
+    let stat;
+    try {
+      stat = fs.statSync(current);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        const parent = path.dirname(current);
+        if (parent === current) return { writable: false, checked: current, reason: 'NO_ANCESTOR' };
+        current = parent;
+        continue;
+      }
+      return { writable: false, checked: current, reason: err && err.code };
+    }
+    if (!stat.isDirectory()) return { writable: false, checked: current, reason: 'NOT_A_DIRECTORY' };
+    try {
+      fs.accessSync(current, fs.constants.W_OK | fs.constants.X_OK);
+      return { writable: true, checked: current, reason: null };
+    } catch (err) {
+      return { writable: false, checked: current, reason: err && err.code === 'EACCES' ? 'NOT_WRITABLE' : err && err.code };
+    }
+  }
+  return { writable: false, checked: current, reason: 'TOO_DEEP' };
+}
+
+/**
+ * Resolve the master key and the storage readiness in one read-only pass.
+ *
+ * State vocabulary:
+ *   ENV_READY        a valid environment key is loaded
+ *   FILE_READY       a valid server key file is loaded
+ *   PENDING          no key yet, but the server can create one on first save
+ *   PENDING_FALLBACK no key yet; the persistent location is unusable but the
+ *                    legacy application folder is writable
+ *   ENV_INVALID      the environment variable is set but unusable
+ *   KEY_FILE_INVALID a key file exists but its content is not a 32-byte key
+ *   KEY_FILE_UNREADABLE an existing key file cannot be read (permissions)
+ *   KEY_FILE_UNWRITABLE no key exists and no candidate directory is writable
+ *   MISSING          no key and automatic key creation is disabled
+ *
+ * A key file that EXISTS is never skipped in favour of another location: the
+ * first existing candidate decides. Falling through would silently switch
+ * encryption keys and make every saved credential unreadable.
+ */
+function inspect() {
   const envRaw = String(process.env[ENV_VAR] || '').trim();
+  const customRaw = String(process.env.API_CREDENTIALS_KEY_FILE || '').trim();
+  const auto = autoKeyEnabled();
+  const custom = customRaw ? resolvePath(customRaw) : null;
+  const base = {
+    algorithm: ALGORITHM,
+    keyEnvVar: ENV_VAR,
+    source: null,
+    keyPath: null,
+    keyFile: null,
+    legacyKeyFile: LEGACY_KEY_FILE,
+    persistentKeyFile: PERSISTENT_KEY_FILE,
+    explicitKeyFile: custom,
+    writable: null,
+    canEncrypt: false,
+    canDecrypt: false,
+    pending: false,
+    keyId: null,
+    problem: null,
+    message: '',
+  };
 
   if (envRaw) {
-    if (cached.raw === envRaw && cached.source === 'env') return cached;
     const parsed = parseKey(envRaw);
-    cached = { raw: envRaw, key: parsed.key, problem: parsed.problem, source: 'env' };
-    return cached;
+    if (parsed.key) {
+      return {
+        ...base,
+        state: 'ENV_READY',
+        configured: true,
+        source: 'env',
+        key: parsed.key,
+        canEncrypt: true,
+        canDecrypt: true,
+        keyId: keyId(parsed.key),
+        message: `${ENV_VAR} is set (${ALGORITHM}).`,
+      };
+    }
+    const messages = {
+      TOO_SHORT: `${ENV_VAR} is too short — it must be 64 hex characters (32 bytes).`,
+      MALFORMED: `${ENV_VAR} is not valid — it must be 64 hex characters (32 bytes), or the base64 form of 32 bytes.`,
+    };
+    return {
+      ...base,
+      state: 'ENV_INVALID',
+      configured: false,
+      source: 'env',
+      problem: parsed.problem,
+      message: messages[parsed.problem] || messages.MALFORMED,
+      generate: GENERATE_COMMAND,
+    };
   }
 
-  // No environment key: use the server-managed key file when it exists.
-  if (autoKeyEnabled()) {
-    let fileRaw = '';
-    try {
-      fileRaw = fs.readFileSync(keyFilePath(), 'utf8').trim();
-    } catch (_err) {
-      fileRaw = '';
+  const candidates = custom ? [{ path: custom, explicit: true }] : [
+    { path: LEGACY_KEY_FILE, legacy: true },
+    { path: PERSISTENT_KEY_FILE, legacy: false },
+  ];
+
+  for (const candidate of candidates) {
+    const file = inspectKeyFile(candidate.path, { legacy: Boolean(candidate.legacy), explicit: Boolean(candidate.explicit) });
+    if (!file.exists) continue;
+    const common = {
+      ...base,
+      source: 'file',
+      keyPath: file.path,
+      keyFile: file,
+      writable: directoryWritable(path.dirname(file.path)),
+      legacy: Boolean(file.legacy),
+    };
+    if (file.exists && file.reason === 'NOT_A_FILE') {
+      return {
+        ...common,
+        state: 'KEY_FILE_INVALID',
+        configured: false,
+        problem: 'KEY_FILE_INVALID',
+        message: `The key path ${file.path} exists but is not a regular file. Restore the key file from a backup; do not create a different key while stored credentials must remain readable.`,
+      };
     }
-    if (fileRaw) {
-      const parsed = parseKey(fileRaw);
-      cached = { raw: fileRaw, key: parsed.key, problem: parsed.problem ? 'KEY_FILE_INVALID' : null, source: 'file' };
-      return cached;
+    if (!file.readable) {
+      return {
+        ...common,
+        state: 'KEY_FILE_UNREADABLE',
+        configured: false,
+        problem: 'KEY_FILE_UNREADABLE',
+        message: `The server key file ${file.path} exists but is not readable by the application (${file.reason || 'permission denied'}). Fix its permissions; do not delete or replace it.`,
+      };
+    }
+    if (!file.valid) {
+      return {
+        ...common,
+        state: 'KEY_FILE_INVALID',
+        configured: false,
+        problem: 'KEY_FILE_INVALID',
+        message: `The server key file ${file.path} is not a valid 32-byte key (${file.problem || 'malformed'}). Restore it from a backup or set ${ENV_VAR}; do not generate a replacement while stored credentials must remain readable.`,
+      };
+    }
+    return {
+      ...common,
+      state: 'FILE_READY',
+      configured: true,
+      key: file.key,
+      canEncrypt: true,
+      canDecrypt: true,
+      keyId: keyId(file.key),
+      message: file.legacy
+        ? `Encrypted with the key file managed by the server in the application folder (${ALGORITHM}).`
+        : `Encrypted with the key file managed by the server outside the application folder (${ALGORITHM}).`,
+    };
+  }
+
+  if (!auto) {
+    return {
+      ...base,
+      state: 'MISSING',
+      configured: false,
+      problem: 'NOT_SET',
+      message: `${ENV_VAR} is not set on the server — saving an API key is disabled until it is configured.`,
+      generate: GENERATE_COMMAND,
+    };
+  }
+
+  const primary = custom || PERSISTENT_KEY_FILE;
+  const primaryDir = directoryWritable(path.dirname(primary));
+  if (primaryDir.writable) {
+    return {
+      ...base,
+      state: 'PENDING',
+      configured: true,
+      pending: true,
+      source: 'file',
+      keyPath: primary,
+      writable: primaryDir,
+      canEncrypt: true,
+      canDecrypt: false,
+      message: `No ${ENV_VAR} is set — the server will create its own encryption key file at ${primary} the first time you save an API key (${ALGORITHM}).`,
+      generate: GENERATE_COMMAND,
+    };
+  }
+
+  if (!custom) {
+    const legacyDir = directoryWritable(path.dirname(LEGACY_KEY_FILE));
+    if (legacyDir.writable) {
+      return {
+        ...base,
+        state: 'PENDING_FALLBACK',
+        configured: true,
+        pending: true,
+        source: 'file',
+        keyPath: LEGACY_KEY_FILE,
+        writable: legacyDir,
+        canEncrypt: true,
+        canDecrypt: false,
+        message: `No ${ENV_VAR} is set. ${primary} is not writable, so the server will create its key file in the application folder instead (${ALGORITHM}).`,
+        generate: GENERATE_COMMAND,
+      };
     }
   }
 
-  cached = { raw: '', key: null, problem: 'NOT_SET', source: null };
-  return cached;
+  return {
+    ...base,
+    state: 'KEY_FILE_UNWRITABLE',
+    configured: false,
+    problem: 'KEY_FILE_UNWRITABLE',
+    keyPath: primary,
+    writable: primaryDir,
+    message: `No ${ENV_VAR} is set and the server cannot create a key file at ${primary} (${primaryDir.reason || 'not writable'}). Set the variable in the cPanel Node.js application environment and restart.`,
+    generate: GENERATE_COMMAND,
+  };
+}
+
+/**
+ * Parse the configured master key.
+ * @returns {{key: Buffer|null, raw: string, problem: string|null, source: 'env'|'file'|null, keyPath: string|null}}
+ */
+function readKey() {
+  const state = inspect();
+  const raw = state.keyFile && state.keyFile.raw ? state.keyFile.raw : '';
+  return {
+    raw,
+    key: state.key || null,
+    problem: state.key ? null : state.problem,
+    source: state.source,
+    keyPath: state.keyPath,
+    state: state.state,
+  };
 }
 
 /**
  * Create the server-managed key file (first save from the dashboard).
+ *
  * Exclusive create: an existing key is never overwritten — that would make
- * every stored credential undecryptable.
+ * every stored credential undecryptable. New installs prefer the persistent
+ * location outside the application root; if that is not writable the legacy
+ * application folder is used, exactly like earlier releases.
  */
-function createKeyFile() {
-  const file = keyFilePath();
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(file, `${crypto.randomBytes(KEY_BYTES).toString('hex')}\n`, { flag: 'wx', mode: 0o600 });
-  } catch (err) {
-    // another request created the file first — use theirs, never overwrite
-    if (err && err.code === 'EEXIST' && fs.existsSync(file) && fs.statSync(file).isFile()) return;
-    throw failConfiguration(
-      'KEY_FILE_UNWRITABLE',
-      `API credentials cannot be saved: ${ENV_VAR} is not set and the server could not create its key file (${err && err.code ? err.code : 'write failed'}).`
-    );
+function createKeyFile(target = null) {
+  const custom = String(process.env.API_CREDENTIALS_KEY_FILE || '').trim();
+  const candidates = target ? [target] : custom ? [resolvePath(custom)] : [PERSISTENT_KEY_FILE, LEGACY_KEY_FILE];
+  const failures = [];
+
+  for (const file of candidates) {
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(file, `${crypto.randomBytes(KEY_BYTES).toString('hex')}\n`, { flag: 'wx', mode: 0o600 });
+      return { path: file, created: true };
+    } catch (err) {
+      // another request created the file first — use theirs, never overwrite
+      if (err && err.code === 'EEXIST' && fileExists(file)) return { path: file, created: false };
+      failures.push(`${file}: ${err && err.code ? err.code : 'write failed'}`);
+    }
   }
+
+  throw failConfiguration(
+    'KEY_FILE_UNWRITABLE',
+    `API credentials cannot be saved: ${ENV_VAR} is not set and the server could not create its key file (${failures.join('; ')}).`
+  );
 }
 
 /**
- * True when credentials can be stored: either a usable master key exists, or
- * the server may create its own key file on the first save.
+ * True when credentials can be stored: a usable key exists, or the server can
+ * create one on the first save in a writable location.
  */
 function isConfigured() {
-  const { key, problem } = readKey();
-  if (key) return true;
-  return problem === 'NOT_SET' && autoKeyEnabled();
+  return inspect().canEncrypt;
 }
 
 /**
@@ -150,47 +464,64 @@ function isConfigured() {
  * how to fix it — and never includes the key itself.
  */
 function status() {
-  const { key, problem, source } = readKey();
-  if (key) {
-    return {
-      configured: true,
-      algorithm: ALGORITHM,
-      keyEnvVar: ENV_VAR,
-      keyId: keyId(key),
-      source,
-      message:
-        source === 'env'
-          ? `${ENV_VAR} is set (${ALGORITHM}).`
-          : `Encrypted with a key file managed by the server (${ALGORITHM}).`,
-    };
-  }
-  if (problem === 'NOT_SET' && autoKeyEnabled()) {
-    return {
-      configured: true,
-      pending: true,
-      algorithm: ALGORITHM,
-      keyEnvVar: ENV_VAR,
-      keyId: null,
-      source: 'file',
-      message: `No ${ENV_VAR} is set — the server will create its own encryption key file the first time you save an API key (${ALGORITHM}).`,
-    };
-  }
-  const messages = {
-    NOT_SET: `${ENV_VAR} is not set on the server — saving an API key is disabled until it is configured.`,
-    TOO_SHORT: `${ENV_VAR} is too short — it must be 64 hex characters (32 bytes).`,
-    MALFORMED: `${ENV_VAR} is not valid — it must be 64 hex characters (32 bytes), or the base64 form of 32 bytes.`,
-    WRONG_LENGTH: `${ENV_VAR} does not decode to 32 bytes.`,
-    KEY_FILE_INVALID: `The server key file ${keyFilePath()} is not valid — remove it (stored keys must then be re-entered) or set ${ENV_VAR}.`,
-  };
-  return {
-    configured: false,
+  const state = inspect();
+  const configured = Boolean(state.canEncrypt);
+  const result = {
+    configured,
+    ready: configured,
+    state: state.state,
     algorithm: ALGORITHM,
     keyEnvVar: ENV_VAR,
-    keyId: null,
-    problem,
-    message: messages[problem] || messages.NOT_SET,
-    generate: GENERATE_COMMAND,
+    source: state.source,
+    keyId: state.keyId,
+    keyPath: state.keyPath,
+    keyFile: state.keyFile
+      ? {
+          path: state.keyFile.path,
+          exists: state.keyFile.exists,
+          readable: state.keyFile.readable,
+          valid: state.keyFile.valid,
+          mode: state.keyFile.mode,
+          legacy: state.keyFile.legacy,
+          explicit: state.keyFile.explicit,
+        }
+      : null,
+    legacyKeyFile: state.legacyKeyFile,
+    persistentKeyFile: state.persistentKeyFile,
+    explicitKeyFile: state.explicitKeyFile,
+    writable: state.writable,
+    canEncrypt: configured,
+    canDecrypt: Boolean(state.canDecrypt),
+    message: state.message,
   };
+
+  if (state.pending) {
+    result.pending = true;
+  } else if (!configured) {
+    result.problem = state.problem || state.state;
+    result.generate = GENERATE_COMMAND;
+  }
+
+  // A legacy key still works, but it sits inside the application folder and a
+  // ZIP re-upload/cleanup can remove it. Report the optional migration; never
+  // perform it automatically.
+  if (state.source === 'file' && state.keyFile && state.keyFile.legacy) {
+    result.legacyLocation = true;
+    result.migrationRecommended = true;
+    result.migration = {
+      required: false,
+      from: state.keyFile.path,
+      to: state.persistentKeyFile,
+      steps: [
+        'Back up the application and database, and keep the current key file untouched.',
+        'Copy the existing key file to the new location (never move or regenerate it).',
+        `Set API_CREDENTIALS_KEY_FILE=${state.persistentKeyFile} in the cPanel Node.js environment and restart.`,
+        'Verify a saved credential can still be tested/activated, then keep the old file as a backup.',
+      ],
+    };
+  }
+
+  return result;
 }
 
 /** Non-secret identifier of the loaded master key (detects a rotated key). */
@@ -205,18 +536,18 @@ function keyId(keyBuffer) {
  * use when no environment key is set. Throws when encryption is unusable.
  */
 function assertConfigured() {
-  let { key, problem } = readKey();
-  if (key) return key;
-  if (problem === 'NOT_SET' && autoKeyEnabled()) {
-    createKeyFile();
-    ({ key, problem } = readKey());
-    if (key) return key;
+  let state = inspect();
+  if (state.key) return state.key;
+  if (state.canEncrypt && (state.state === 'PENDING' || state.state === 'PENDING_FALLBACK')) {
+    createKeyFile(state.keyPath);
+    state = inspect();
+    if (state.key) return state.key;
   }
   const message =
-    problem === 'NOT_SET'
+    state.problem === 'NOT_SET' || state.state === 'MISSING'
       ? `API credentials cannot be saved: ${ENV_VAR} is not configured on the server.`
-      : `API credentials cannot be saved: ${ENV_VAR} is set but not usable (${problem}).`;
-  throw failConfiguration(problem || 'NOT_SET', message);
+      : `API credentials cannot be saved: ${state.message || `${ENV_VAR} is not usable (${state.problem || state.state})`}`;
+  throw failConfiguration(state.problem || state.state || 'NOT_SET', message);
 }
 
 /** AAD binds the ciphertext to the provider + the field it belongs to. */
@@ -261,7 +592,7 @@ function decryptSecret(record, { provider, field = 'api_key' } = {}) {
   if (!key) {
     throw failConfiguration(
       problem || 'NOT_SET',
-      `The stored API credential cannot be decrypted: ${ENV_VAR} is missing on the server.`
+      `The stored API credential cannot be decrypted: ${ENV_VAR} / the server key file is missing or unusable.`
     );
   }
   const ciphertext = Buffer.from(record.key_ciphertext);
@@ -285,7 +616,7 @@ function decryptSecret(record, { provider, field = 'api_key' } = {}) {
     return plaintext;
   } catch (_err) {
     throw new AppError(
-      `The stored API credential cannot be decrypted with the current ${ENV_VAR}. ` +
+      `The stored API credential cannot be decrypted with the current ${ENV_VAR} / key file. ` +
         'The encryption key was changed after the credential was saved — re-enter and save the API key.',
       { status: 500, code: 'CREDENTIAL_UNREADABLE', details: { reason: 'AUTH_TAG_MISMATCH' } }
     );
@@ -327,9 +658,15 @@ function lastFour(secret) {
 
 module.exports = {
   ALGORITHM,
+  defaultPersistentKeyFile,
   ENV_VAR,
   GENERATE_COMMAND,
+  LEGACY_KEY_FILE,
+  PERSISTENT_KEY_FILE,
   keyFilePath,
+  inspect,
+  inspectKeyFile,
+  directoryWritable,
   isConfigured,
   status,
   keyId,
