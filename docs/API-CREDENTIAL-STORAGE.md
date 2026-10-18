@@ -20,7 +20,9 @@ the screen now splits them:
 | `READY` | database reachable, both tables and their columns present, encryption usable, credential row readable, history readable | nothing |
 | `DATABASE_UNREACHABLE` | `SELECT 1` failed (bad `DB_*`, MySQL down, access denied at connect) | correct `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` in **Setup Node.js App → Environment Variables**, then restart |
 | `SCHEMA_OUT_OF_DATE` | `api_credentials` / `api_connection_events` or one of their columns is missing | apply `server/database/migrations/003-api-credential-management.sql` (section 4) |
-| `PERMISSION_DENIED` | the database user lacks `SELECT`, `INSERT` or `UPDATE` | cPanel → **MySQL® Databases** → add the user to the database with the required privileges |
+| `PERMISSION_DENIED` | the database user lacks `SELECT`, `INSERT` or `UPDATE` on the selected database / credential table | cPanel → **MySQL® Databases** → add the user to the database with the required privileges |
+| `PERMISSIONS_UNVERIFIED` | the credential row is readable but the host does not allow checking grants; no write was attempted, so save permission is unknown | ask the host to confirm `SELECT`, `INSERT` and `UPDATE`, or permit `SHOW GRANTS` |
+| `SCHEMA_CHECK_FAILED` | read-only schema verification failed for a reason other than a confirmed missing migration | inspect the safe driver code and verify metadata/table read access before applying any migration |
 | `ENCRYPTION_NOT_READY` | no usable `API_CREDENTIALS_ENCRYPTION_KEY` and no usable key file | section 3; the diagnostic names `PENDING`, `KEY_FILE_INVALID`, `KEY_FILE_UNREADABLE`, `KEY_FILE_UNWRITABLE` or `MISSING` |
 | `CREDENTIAL_READ_FAILED` | the tables look present but reading the credential row fails for another reason | read the server log for the safe `SQL_*` driver code; nothing was written |
 | `HISTORY_DEGRADED` | credential storage itself works; the **diagnostics history** queries (`api_connection_events`, `api_sync_logs`) fail | saving and activating still work. Apply the pending migration or restore the baseline schema when convenient |
@@ -47,7 +49,10 @@ https://yourdomain.com/api/admin/api-management/storage-diagnostics
 The request is protected by the same administrator guard as the rest of `/api/admin`. It runs
 `SELECT` and `SHOW` statements only. It never creates a key, writes a row, runs DDL, or returns
 an API key, ciphertext, encryption key, database password, session cookie or raw `GRANT` text.
-Privileges are reduced to booleans; grant account names are discarded.
+Privileges are reduced to booleans; grant account names and raw grant text are discarded. Grants are
+matched to the selected database rather than accepting a privilege granted on an unrelated database.
+If a host blocks `SHOW GRANTS`, the diagnostic does not guess: `canSave` is `null`, state is
+`PERMISSIONS_UNVERIFIED`, and the UI says “save unknown.” No write probe is performed.
 
 A minimal healthy response looks like:
 

@@ -183,7 +183,8 @@
       .join('');
     const permission = storage.permissions && storage.permissions.checked
       ? [storage.permissions.select ? 'SELECT' : null, storage.permissions.insert ? 'INSERT' : null, storage.permissions.update ? 'UPDATE' : null].filter(Boolean).join(', ') || 'none reported'
-      : 'not checked';
+      : 'not verified';
+    const saveStatus = storage.canSave === true ? 'save yes' : storage.canSave === false ? 'save no' : 'save unknown';
     return ui.card(
       'Credential storage — admin-only read-only check',
       `<div class="card-body">
@@ -198,7 +199,7 @@
           <div class="diag-cell"><div class="k">Database privileges</div><div class="v ${storage.permissions.checked && storage.permissions.select ? 'good' : 'warn'}">${escapeHtml(permission)}</div><div class="tiny muted">${storage.permissions.checked ? 'from SHOW GRANTS (booleans only)' : escapeHtml(storage.permissions.message || 'not readable')}</div></div>
           <div class="diag-cell"><div class="k">Encryption key</div><div class="v ${storage.encryption.canEncrypt ? 'good' : 'warn'}">${escapeHtml(storage.encryption.state || (storage.encryption.configured ? 'READY' : 'MISSING'))}</div><div class="tiny muted">${escapeHtml(storage.encryption.message || '')}</div></div>
           <div class="diag-cell"><div class="k">Diagnostics history</div><div class="v ${storage.history.ready ? 'good' : 'warn'}">${storage.history.ready ? 'readable' : 'unavailable'}</div><div class="tiny muted">${storage.history.ready ? 'recent API events and sync times' : escapeHtml(storage.history.error || '')}</div></div>
-          <div class="diag-cell"><div class="k">Read / save</div><div class="v">${storage.canRead ? 'read yes' : 'read no'} · ${storage.canSave ? 'save yes' : 'save no'}</div><div class="tiny muted">a provider connection test does not change this</div></div>
+          <div class="diag-cell"><div class="k">Read / save</div><div class="v">${storage.canRead ? 'read yes' : 'read no'} · ${saveStatus}</div><div class="tiny muted">a provider connection test does not change this</div></div>
         </div>
         ${issueRows ? `<div class="alert warn section"><div><b>What to fix</b><ul class="small" style="margin:8px 0 0 18px;padding:0;">${issueRows}</ul></div></div>` : ''}
         <p class="tiny muted" style="margin:12px 0 0;">This check runs SELECT/SHOW statements only. It never creates an encryption key, changes a table or returns a key, password, cookie or grant text.</p>
