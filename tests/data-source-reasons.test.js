@@ -51,6 +51,35 @@ const {
 } = require('../server/services/apiFootball');
 
 const BASE = settingsService.toEngineSettings(settingsService.defaults());
+
+/** The next 00:00 UTC — exactly the rule the client uses (`nextDailyReset`). */
+function nextDailyReset(from = new Date()) {
+  return new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate() + 1)).toISOString();
+}
+
+/**
+ * Assert the daily-reset instant the client reported for an action that started
+ * at `startedAt`.
+ *
+ * These four assertions used to compare against a hard-coded `RESET_AT`, so they
+ * only passed on the day that date was written: the client reports the NEXT
+ * 00:00 UTC, computed at the moment it gives up. `nextDailyReset()` is a step
+ * function that changes exactly at 00:00 UTC, so an action that began at
+ * `startedAt` can only legitimately report one of two values: the next midnight
+ * after it started, or — when the test itself straddles midnight — the next
+ * midnight after the assertion. Both are accepted, nothing else is, and the
+ * production quota behaviour is untouched: the test follows the contract, it
+ * does not dictate it.
+ */
+function assertDailyReset(actual, startedAt, message) {
+  const allowed = new Set([nextDailyReset(startedAt), nextDailyReset(new Date())]);
+  assert.match(String(actual), /^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/, `${message}: an exact 00:00 UTC instant`);
+  assert.ok(allowed.has(actual), `${message}: expected ${[...allowed].join(' or ')}, got ${actual}`);
+  assert.ok(new Date(actual).getTime() > startedAt.getTime(), `${message}: requests have not resumed yet`);
+}
+
+// Synthetic fixtures carry a fixed reset so the message-formatting assertions
+// stay deterministic; nothing here depends on today's date.
 const RESET_AT = '2026-10-17T00:00:00.000Z';
 
 /** Minimal provider answer with the headers API-Football sends on every call. */
@@ -109,12 +138,13 @@ test('quota: a spent daily budget is reported as QUOTA_EXCEEDED with the reset t
     jsonResponse(200, { get: 'fixtures', errors: { requests: 'You have reached the request limit for the day' }, response: [] })
   );
 
+  const startedAt = new Date();
   await assert.rejects(client.request('/fixtures', { date: '2026-10-16' }), (err) => {
     const info = describeUnavailable(err);
     assert.equal(info.reason, UNAVAILABLE_REASONS.QUOTA_EXCEEDED);
     assert.match(info.label, /quota/i);
     assert.match(info.hint, /00:00 UTC/);
-    assert.equal(info.resetAt, RESET_AT, 'the client says when requests resume');
+    assertDailyReset(info.resetAt, startedAt, 'the client says when requests resume');
     return true;
   });
 
@@ -136,12 +166,13 @@ test('quota: once the day is spent, calls stop — but the free /status probe st
     return jsonResponse(200, { errors: { requests: 'limit reached' }, response: [] });
   });
 
+  const startedAt = new Date();
   await assert.rejects(client.request('/odds', { date: '2026-10-16' }), /quota/i);
   assert.equal(upstream, 1);
 
   await assert.rejects(client.request('/odds', { date: '2026-10-16' }), (err) => {
     assert.equal(err.details.reason, UNAVAILABLE_REASONS.QUOTA_EXCEEDED);
-    assert.equal(err.details.resetAt, RESET_AT);
+    assertDailyReset(err.details.resetAt, startedAt, 'the paused client keeps the reset it first reported');
     return true;
   });
   assert.equal(upstream, 1, 'the second call never reached the provider');
@@ -190,6 +221,7 @@ test('quota: 429 with 0 requests left is the daily quota, not a per-minute burst
     jsonResponse(429, { errors: { requests: 'daily limit' } }, { 'x-ratelimit-requests-limit': '100', 'x-ratelimit-requests-remaining': '0' })
   );
 
+  const startedAt = new Date();
   await assert.rejects(client.request('/fixtures', { date: '2026-10-16' }), (err) => {
     assert.equal(err.details.reason, UNAVAILABLE_REASONS.QUOTA_EXCEEDED);
     return true;
@@ -197,7 +229,26 @@ test('quota: 429 with 0 requests left is the daily quota, not a per-minute burst
   assert.equal(calls.length, 1, 'no retry storm against an exhausted plan');
   assert.equal(client.breakerState().state, 'QUOTA_EXHAUSTED');
   assert.equal(client.breakerState().available, false);
-  assert.equal(client.breakerState().resetsAt, RESET_AT);
+  assertDailyReset(client.breakerState().resetsAt, startedAt, 'the breaker says when the plan resumes');
+});
+
+test('quota: the reset expectation survives a UTC-midnight crossing inside the test', () => {
+  // The action ran "yesterday": the client reported today's 00:00 UTC. If the
+  // assertion happens after midnight, the naive `nextDailyReset()` comparison
+  // rejects the correct answer — the exact flake that made these tests fail on
+  // every day after the frozen date. The helper must accept both sides.
+  const startedAt = new Date(Date.now() - 86_400_000);
+  const reportedBeforeMidnight = nextDailyReset(startedAt);
+  assertDailyReset(reportedBeforeMidnight, startedAt, 'a reset computed before midnight is accepted');
+  assertDailyReset(nextDailyReset(), startedAt, 'a reset computed after midnight is accepted too');
+
+  const unrelated = new Date(nextDailyReset());
+  unrelated.setUTCDate(unrelated.getUTCDate() + 2);
+  assert.throws(
+    () => assertDailyReset(unrelated.toISOString(), startedAt, 'an invented reset'),
+    /expected/,
+    'an unrelated midnight is still rejected'
+  );
 });
 
 test('auth, outage and network failures are distinguishable', async () => {
@@ -520,6 +571,7 @@ test('health: /api/health names the reason and the reset time when the source is
   try {
     // a configured client whose plan's day is spent (the production case)
     apiFootball.key = 'test-key';
+    const startedAt = new Date();
     apiFootball._markQuotaExhausted('test: daily budget spent');
 
     let resolveBody;
@@ -547,7 +599,7 @@ test('health: /api/health names the reason and the reset time when the source is
     assert.equal(res.body.data.dataSource.available, false);
     assert.equal(res.body.data.dataSource.reason, UNAVAILABLE_REASONS.QUOTA_EXCEEDED);
     assert.match(res.body.data.dataSource.hint, /quota|plan/i);
-    assert.equal(res.body.data.dataSource.resetsAt, RESET_AT);
+    assertDailyReset(res.body.data.dataSource.resetsAt, startedAt, 'the health endpoint reports the quota reset');
     assert.equal(res.body.data.status, 'degraded');
   } finally {
     apiFootball._quota = previous.quota;

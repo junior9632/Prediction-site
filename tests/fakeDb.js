@@ -10,6 +10,7 @@
  */
 
 const connection = require('../server/database/connection');
+const { REQUIRED_SCHEMA } = require('../server/services/credentialStorageService');
 
 function nowIso() {
   return new Date().toISOString();
@@ -37,6 +38,12 @@ function install(overrides = {}) {
     /* API Management (migration 003): credentials + connection diagnostics */
     apiCredentials: overrides.apiCredentials || [],
     apiConnectionEvents: overrides.apiConnectionEvents || [],
+    /* Read-only storage diagnostic: a per-table column map, and the grant text.
+       null grants makes SHOW GRANTS fail like a restricted shared host. */
+    schema: overrides.schema || null,
+    grants: overrides.grants === undefined ? 'GRANT SELECT, INSERT, UPDATE, DELETE ON `testdb`.* TO `test`@`localhost`' : overrides.grants,
+    /* Named read failures, so the storage diagnostic can be exercised per area. */
+    failQueries: overrides.failQueries || {},
     ids: 1000,
   };
 
@@ -47,6 +54,24 @@ function install(overrides = {}) {
 
   async function query(sql, params = []) {
     const s = String(sql).replace(/\s+/g, ' ').trim();
+
+    /**
+     * Injectable read failures for the credential-storage diagnostic.
+     * Each flag affects only the named area, so a broken history cannot be
+     * confused with a broken credential table.
+     */
+    const fail = (area, message, code = 'ER_BAD_FIELD_ERROR') => {
+      if (!store.failQueries[area]) return;
+      const err = new Error(message);
+      err.code = code;
+      err.errno = code === 'ER_NO_SUCH_TABLE' ? 1146 : 1054;
+      err.sqlMessage = message;
+      throw err;
+    };
+    if (/^SELECT 1/.test(s)) fail('database', "Table 'testdb.settings' doesn't exist", 'ECONNREFUSED');
+    if (/api_credentials/.test(s) && !/information_schema/.test(s)) fail('apiCredentials', "Table 'testdb.api_credentials' doesn't exist", 'ER_NO_SUCH_TABLE');
+    if (/api_connection_events/.test(s) && !/information_schema/.test(s)) fail('apiConnectionEvents', "Unknown column 'x' in 'field list'");
+    if (/api_sync_logs/.test(s) && !/information_schema/.test(s)) fail('apiSyncLogs', "Unknown column 'requests_used' in 'field list'");
 
     if (/^SELECT \* FROM admins WHERE id = \?/.test(s)) return store.admins.filter((a) => a.id === Number(params[0]));
     if (/^SELECT \* FROM admins WHERE email = \? OR username = \?/.test(s)) {
@@ -451,6 +476,25 @@ function install(overrides = {}) {
         .slice()
         .sort((a, b) => Number(b.id) - Number(a.id))
         .slice(0, limitMatch ? Number(limitMatch[1]) : 50);
+    }
+    if (/^SELECT TABLE_NAME, COLUMN_NAME\s+FROM information_schema\.COLUMNS/.test(s)) {
+      const schema = store.schema || REQUIRED_SCHEMA;
+      const wanted = params.map(String);
+      const rows = [];
+      for (const table of wanted) {
+        const columns = Object.prototype.hasOwnProperty.call(schema, table) ? schema[table] : null;
+        if (!columns) continue;
+        for (const column of columns) rows.push({ TABLE_NAME: table, COLUMN_NAME: column });
+      }
+      return rows;
+    }
+    if (/^SHOW GRANTS FOR CURRENT_USER/.test(s)) {
+      if (store.grants === null) {
+        const err = new Error('Access denied; you need the SHOW GRANTS privilege');
+        err.code = 'ER_SPECIFIC_ACCESS_DENIED_ERROR';
+        throw err;
+      }
+      return [{ 'Grants for test@localhost': store.grants }];
     }
     if (/^SHOW TABLES/.test(s)) return [];
     if (/^SELECT 1/.test(s)) return [{ 1: 1 }];

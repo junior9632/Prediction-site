@@ -454,10 +454,37 @@ the server environment:
 3. **Restart** the application.
 
 **Optional:** you can skip the steps above. When `API_CREDENTIALS_ENCRYPTION_KEY` is not set, the
-server creates its own random key file (`storage/api-credentials.key`, permissions `0600`) the
-first time an administrator saves a key from **Admin → API Management**. Keep that file with your
-backups; deleting it makes saved keys unreadable (re-enter them). Set `API_CREDENTIALS_AUTO_KEY=0`
-to disable the file and require the environment variable.
+server uses a key file with permissions `0600`, created only on the first save from
+**Admin → API Management**:
+
+1. an **existing** `storage/api-credentials.key` is always used first. Credentials saved by an
+   earlier release therefore keep decrypting after this upgrade — nothing is regenerated;
+2. otherwise the server creates a key file **outside** the application folder (normally
+   `~/.goalpredict/api-credentials.key`, derived from the application root so Passenger and cron
+   agree), so re-uploading the deployment ZIP or cleaning the folder cannot remove it;
+3. `API_CREDENTIALS_KEY_FILE` overrides both. A relative value resolves against the application
+   root, never the process working directory (Passenger and cron differ).
+
+Keep the key file with your database backups; deleting it makes saved keys unreadable (re-enter
+them). Set `API_CREDENTIALS_AUTO_KEY=0` to require the environment variable and forbid automatic
+key-file creation. **Never replace a working key** — see
+[API credential storage on cPanel](API-CREDENTIAL-STORAGE.md) for the optional, reversible
+migration to the outside-folder location.
+
+### Read the storage diagnosis before changing anything
+
+Open **Admin → API Management** and read the **Credential storage — admin-only read-only check**
+panel, or open this URL while signed in as an administrator:
+
+```
+https://yourdomain.com/api/admin/api-management/storage-diagnostics
+```
+
+It separates: database unreachable, missing migration 003, missing database grants, unusable
+encryption key, credential-table read failure and a broken diagnostics history. It runs
+`SELECT`/`SHOW` only, writes nothing and never returns a key, password, cookie or grant text.
+A successful **Test Connection** is about the provider; it is **not** proof that a credential can
+be stored.
 
 If neither is possible (for example the folder is read-only) the platform **fails safely**: *Save configuration* answers
 `503 ENCRYPTION_KEY_MISSING` with the exact variable name, and **nothing is written** — a key is
@@ -520,7 +547,9 @@ needs migration `003-api-credential-management.sql`. No Terminal required:
 | `/admin/users` answers **Internal server error** / "Could Not Load Users" while the page itself loads | the live database is older than the code — migration `002-user-approval-system.sql` is missing. Read `error.code` at `/api/admin/users/summary`, confirm read-only in phpMyAdmin, back the database up, then paste `002-user-approval-system.sql` into the SQL tab. No Terminal needed — section 9b |
 | `/api/health` returns `503` with `database: "unavailable"` | `DB_HOST/DB_USER/DB_PASSWORD/DB_NAME` are wrong, or the user was not added to the database with ALL PRIVILEGES |
 | `dataSource.configured: false` | no usable credential is active. Configure an environment key or save/activate one in API Management. The app can boot without an environment API key |
-| API Management: *Save configuration* answers `503 ENCRYPTION_KEY_MISSING` | `API_CREDENTIALS_ENCRYPTION_KEY` is not set on the server (see section 9c). Nothing was written — the key is never stored unencrypted |
+| API Management: *Save configuration* answers `503 ENCRYPTION_KEY_MISSING` | `API_CREDENTIALS_ENCRYPTION_KEY` is not set and no usable key file exists or can be created (see section 9c). Nothing was written — the key is never stored unencrypted. Open the storage diagnostic for the exact state (`PENDING`, `KEY_FILE_INVALID`, `KEY_FILE_UNREADABLE`, `KEY_FILE_UNWRITABLE`) |
+| API Management says *Credential storage is unavailable* | open the read-only storage panel / `/api/admin/api-management/storage-diagnostics`. `DATABASE_UNREACHABLE` → fix DB_*; `SCHEMA_OUT_OF_DATE` → apply migration 003; `PERMISSION_DENIED` → grant SELECT/INSERT/UPDATE; `ENCRYPTION_NOT_READY` → section 9c; `HISTORY_DEGRADED` → only event/sync history is unavailable and saving still works |
+| Storage diagnostic shows `KEY_FILE_IN_APPLICATION_FOLDER` | optional: migrate the key outside the application folder with the reversible procedure in [API credential storage on cPanel](API-CREDENTIAL-STORAGE.md). Do not move or regenerate it without verifying a saved credential first |
 | API Management: `500 CREDENTIAL_UNREADABLE` / *cannot be decrypted* | the encryption key changed (or `.env` was restored from another machine) after the credential was saved. Re-enter and save the API key on the API Management screen |
 | API Management shows a raw `SCHEMA_OUT_OF_DATE` | migration `003-api-credential-management.sql` was not applied to the live database — see section 9c. The site keeps working with the environment credential meanwhile |
 | `dataSource.state: "OPEN"` | the circuit breaker opened after repeated upstream failures; it half-opens automatically after the cooldown. Check quota/plan and `logs/cron.log` |

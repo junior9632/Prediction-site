@@ -34,6 +34,7 @@ const vault = require('../utils/credentialVault');
 const { AppError } = require('../utils/errors');
 const providers = require('./apiProviders');
 const settingsService = require('./settingsService');
+const { inspectStorage } = require('./credentialStorageService');
 const { normalizeApiKey, redactSecret } = require('../utils/providerConfig');
 const {
   ApiFootballClient,
@@ -294,34 +295,39 @@ async function getStatus() {
   const provider = providers.get(resolved.providerId) || providers.get(providers.DEFAULT_PROVIDER_ID);
 
   const asArray = (value) => (Array.isArray(value) ? value : []);
-  let rows = [];
-  let events = [];
-  let recentErrors = [];
-  let lastSyncs = {
-    fixtures: { lastSuccessAt: null, runs: 0 },
-    odds: { lastSuccessAt: null, runs: 0 },
-    results: { lastSuccessAt: null, runs: 0 },
+  // Separate, read-only probes replace one try/catch that used to label EVERY
+  // failure (database down, migration missing, permission denied, history
+  // query broken) as the same "storage unavailable" sentence.
+  const { report: storage, data: storageData } = await inspectStorage();
+  const rows = asArray(storageData.rows);
+  const events = asArray(storageData.events);
+  const recentErrors = asArray(storageData.recentErrors);
+  const syncs = storageData.lastSyncs || {};
+  const pick = (job) => syncs[job] || { lastSuccessAt: null, runs: 0 };
+  const lastSyncs = {
+    fixtures: { lastSuccessAt: isoOrNull(pick('fixtures').lastSuccessAt), runs: pick('fixtures').runs || 0 },
+    odds: { lastSuccessAt: isoOrNull(pick('odds').lastSuccessAt), runs: pick('odds').runs || 0 },
+    results: { lastSuccessAt: isoOrNull(pick('results').lastSuccessAt), runs: pick('results').runs || 0 },
   };
-  let databaseManaged = false;
-  let degradedReason = null;
-
-  try {
-    rows = asArray(await db.listApiCredentials());
-    events = asArray(await db.listApiConnectionEvents({ limit: 12 }));
-    recentErrors = asArray(await db.listApiConnectionEvents({ limit: 12, errorsOnly: true }));
-    const syncs = (await db.getLastSuccessfulSyncs(['fixtures', 'odds', 'results'])) || {};
-    const pick = (job) => syncs[job] || { lastSuccessAt: null, runs: 0 };
-    lastSyncs = {
-      fixtures: { lastSuccessAt: isoOrNull(pick('fixtures').lastSuccessAt), runs: pick('fixtures').runs || 0 },
-      odds: { lastSuccessAt: isoOrNull(pick('odds').lastSuccessAt), runs: pick('odds').runs || 0 },
-      results: { lastSuccessAt: isoOrNull(pick('results').lastSuccessAt), runs: pick('results').runs || 0 },
-    };
-    databaseManaged = true;
-  } catch (err) {
-    degradedReason = err.code === 'SCHEMA_OUT_OF_DATE' ? 'SCHEMA_OUT_OF_DATE' : err.code || 'DB_UNAVAILABLE';
-    log.warn('api management status could not read the credential tables', {
-      code: err.code,
-      message: err.message,
+  // The credential tables are readable and present. A broken diagnostics
+  // history does not make storage unavailable and must not disable saving.
+  const databaseManaged = storage.database.reachable && storage.schema.ready && storage.credentials.readable;
+  const degradedReason = databaseManaged
+    ? storage.history.ready
+      ? null
+      : 'HISTORY_UNAVAILABLE'
+    : storage.state === 'SCHEMA_OUT_OF_DATE'
+      ? 'SCHEMA_OUT_OF_DATE'
+      : !storage.database.reachable
+        ? 'DB_UNAVAILABLE'
+        : storage.state;
+  if (degradedReason) {
+    log.warn('api management storage is degraded', {
+      state: storage.state,
+      reason: degradedReason,
+      databaseReachable: storage.database.reachable,
+      schemaReady: storage.schema.ready,
+      historyReady: storage.history.ready,
     });
   }
 
@@ -386,6 +392,9 @@ async function getStatus() {
     effectiveCredential: { source: resolved.source, host: resolved.host, maskedKey: resolved.maskedKey || null },
     databaseManaged,
     degradedReason,
+    // Independent of the provider connection: a successful /status test does
+    // NOT prove that a credential can be stored. This object does.
+    storage,
     credential: storedRow
       ? {
           provider: storedRow.provider,
@@ -496,6 +505,15 @@ async function getStatus() {
   };
 }
 
+/**
+ * Read-only credential-storage diagnostic for the admin console.
+ * It never writes, never creates a key and never returns a secret.
+ */
+async function getStorageDiagnostics() {
+  const { report } = await inspectStorage();
+  return report;
+}
+
 /** Safe quota + connection diagnostics (used by the Refresh API Status button). */
 async function getDiagnostics({ probe = false } = {}) {
   let liveProbe = null;
@@ -514,7 +532,8 @@ async function getDiagnostics({ probe = false } = {}) {
   // Re-read AFTER the request so quota, badge, last test and errors agree.
   const status = await getStatus();
   return { quota: status.quota, rateLimits: status.rateLimits, connection: status.connection,
-    liveProbe, recentErrors: status.recentErrors, encryption: status.encryption, serverTime: status.serverTime, status };
+    liveProbe, recentErrors: status.recentErrors, encryption: status.encryption,
+    storage: status.storage, serverTime: status.serverTime, status };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -767,6 +786,7 @@ module.exports = {
   syncClientCredential,
   recordUpstreamRequest,
   getStatus,
+  getStorageDiagnostics,
   getDiagnostics,
   saveCredential,
   testConnection,

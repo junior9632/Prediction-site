@@ -56,6 +56,24 @@
 
   /* ----------------------------- markup ------------------------------ */
 
+  function storageNotice(status) {
+    const storage = status.storage;
+    if (!storage) {
+      // Backward-compatible payload: an older server only has degradedReason.
+      return status.degradedReason
+        ? '<div class="alert warn">Credential storage is unavailable. Ask the host to run npm run db:migrate and verify the database connection. Environment-based testing remains available.</div>'
+        : '';
+    }
+    if (storage.ready && storage.state === 'READY') return '';
+    const issues = (storage.issues || []).slice(0, 3)
+      .map((issue) => `<li><b>${escapeHtml(issue.area)}</b>: ${escapeHtml(issue.message)}${issue.fix ? `<div class="tiny muted">${escapeHtml(issue.fix)}</div>` : ''}</li>`)
+      .join('');
+    const cls = storage.state === 'HISTORY_DEGRADED' ? 'warn' : 'error';
+    return `<div class="alert ${cls}"><div><b>${escapeHtml(storage.summary || 'Credential storage is not ready.')}</b>
+      ${issues ? `<ul class="small" style="margin:8px 0 0 18px;padding:0;">${issues}</ul>` : ''}
+      <div class="tiny" style="margin-top:8px;">Credential storage and provider connectivity are separate checks: a successful Test Connection does not prove that a key can be stored.</div></div></div>`;
+  }
+
   function configurationCard(status) {
     const providers = status.providers || [];
     const implemented = providers.filter((p) => p.implemented);
@@ -108,7 +126,7 @@
       `<div class="card-body">
         <p class="small muted" style="margin:0 0 16px;">1. Choose your key’s host. 2. Paste and test the key. 3. Save configuration. 4. Activate the saved credential.
         ${current.docsUrl ? `<a href="${escapeHtml(current.docsUrl)}" target="_blank" rel="noopener noreferrer">Provider documentation ↗</a>` : ''}</p>
-        ${status.degradedReason ? '<div class="alert warn">Credential storage is unavailable. Ask the host to run npm run db:migrate and verify the database connection. Environment-based testing remains available.</div>' : ''}
+        ${storageNotice(status)}
         <div class="row wrap" style="gap:16px;align-items:flex-start;">
           <div class="field" style="min-width:0;flex:1 1 240px;">
             <label for="apiProvider">Provider</label>
@@ -152,6 +170,38 @@
             2
           )}–${status.predictionRules.oddsWindow[1].toFixed(2)}, minimum confidence ${status.predictionRules.minConfidence}.
         </p>
+      </div>`
+    );
+  }
+
+  function storageCard(status) {
+    const storage = status.storage;
+    if (!storage) return '';
+    const tone = storage.ready ? 'good' : storage.state === 'HISTORY_DEGRADED' ? 'warn' : 'warn';
+    const issueRows = (storage.issues || [])
+      .map((issue) => `<li><b>${escapeHtml(issue.area)}</b>: ${escapeHtml(issue.message)}${issue.fix ? `<div class="tiny muted">${escapeHtml(issue.fix)}</div>` : ''}</li>`)
+      .join('');
+    const permission = storage.permissions && storage.permissions.checked
+      ? [storage.permissions.select ? 'SELECT' : null, storage.permissions.insert ? 'INSERT' : null, storage.permissions.update ? 'UPDATE' : null].filter(Boolean).join(', ') || 'none reported'
+      : 'not checked';
+    return ui.card(
+      'Credential storage — admin-only read-only check',
+      `<div class="card-body">
+        <div class="row wrap" style="gap:12px;align-items:center;">
+          <span class="badge badge-${tone}">${escapeHtml(storage.state)}</span>
+          <b>${escapeHtml(storage.summary || '')}</b>
+          <span class="tiny muted">checked ${storage.checkedAt ? escapeHtml(fmt.dateTimeLabel(storage.checkedAt)) : 'just now'} · nothing was written</span>
+        </div>
+        <div class="diag-grid section">
+          <div class="diag-cell"><div class="k">Database</div><div class="v ${storage.database.reachable ? 'good' : 'warn'}">${storage.database.reachable ? 'reachable' : 'unreachable'}</div><div class="tiny muted">${escapeHtml(storage.database.message || '')}</div></div>
+          <div class="diag-cell"><div class="k">Credential tables</div><div class="v ${storage.schema.ready ? 'good' : 'warn'}">${storage.schema.ready ? 'present' : 'missing / incomplete'}</div><div class="tiny muted">${escapeHtml(storage.schema.migration && storage.schema.migration.required ? `apply ${storage.schema.migration.file}` : 'migration 003')}</div></div>
+          <div class="diag-cell"><div class="k">Database privileges</div><div class="v ${storage.permissions.checked && storage.permissions.select ? 'good' : 'warn'}">${escapeHtml(permission)}</div><div class="tiny muted">${storage.permissions.checked ? 'from SHOW GRANTS (booleans only)' : escapeHtml(storage.permissions.message || 'not readable')}</div></div>
+          <div class="diag-cell"><div class="k">Encryption key</div><div class="v ${storage.encryption.canEncrypt ? 'good' : 'warn'}">${escapeHtml(storage.encryption.state || (storage.encryption.configured ? 'READY' : 'MISSING'))}</div><div class="tiny muted">${escapeHtml(storage.encryption.message || '')}</div></div>
+          <div class="diag-cell"><div class="k">Diagnostics history</div><div class="v ${storage.history.ready ? 'good' : 'warn'}">${storage.history.ready ? 'readable' : 'unavailable'}</div><div class="tiny muted">${storage.history.ready ? 'recent API events and sync times' : escapeHtml(storage.history.error || '')}</div></div>
+          <div class="diag-cell"><div class="k">Read / save</div><div class="v">${storage.canRead ? 'read yes' : 'read no'} · ${storage.canSave ? 'save yes' : 'save no'}</div><div class="tiny muted">a provider connection test does not change this</div></div>
+        </div>
+        ${issueRows ? `<div class="alert warn section"><div><b>What to fix</b><ul class="small" style="margin:8px 0 0 18px;padding:0;">${issueRows}</ul></div></div>` : ''}
+        <p class="tiny muted" style="margin:12px 0 0;">This check runs SELECT/SHOW statements only. It never creates an encryption key, changes a table or returns a key, password, cookie or grant text.</p>
       </div>`
     );
   }
@@ -298,7 +348,10 @@
     controlIds.forEach((id) => {
       const el = $('#' + id);
       if (!el) return;
-      el.disabled = ctx.busy || (id === 'apiSaveBtn' && (!ctx.status.databaseManaged || !ctx.status.encryption.configured)) ||
+      const storageAllowsSave = ctx.status.storage
+        ? Boolean(ctx.status.storage.canSave)
+        : Boolean(ctx.status.databaseManaged && ctx.status.encryption && ctx.status.encryption.configured);
+      el.disabled = ctx.busy || (id === 'apiSaveBtn' && !storageAllowsSave) ||
         ((id === 'apiActivateBtn' || id === 'apiDisableBtn') && !ctx.status.credential);
     });
   }
@@ -323,7 +376,8 @@
   }
 
   function panels(status) {
-    return `<section class="section">${statusCard(status)}</section>
+    return `<section class="section">${storageCard(status)}</section>
+      <section class="section">${statusCard(status)}</section>
       <section class="section">${quotaCard(status)}</section>
       <section class="section">${eventsCard('Recent API errors', status.recentErrors, 'No API errors recorded')}</section>
       <section class="section">${eventsCard('Recent API activity', status.recentEvents, 'No API activity recorded yet')}</section>
@@ -333,7 +387,8 @@
   function summary(status) {
     return `<b>${status.connection.inUse === false ? 'Saved credential' : 'Provider'}</b> ${badge(status.connection.state)}
       <span class="tiny muted">${escapeHtml(status.connection.label || '')}</span>
-      <span class="tiny muted">· active source: ${escapeHtml(status.credentialSource)}</span>`;
+      <span class="tiny muted">· active source: ${escapeHtml(status.credentialSource)}</span>
+      <span class="tiny muted">· credential storage: ${escapeHtml(status.storage ? status.storage.state : (status.degradedReason || 'unknown'))}</span>`;
   }
 
   function renderAll(ctx) {

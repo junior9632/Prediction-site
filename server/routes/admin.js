@@ -25,6 +25,7 @@ router.get('/api-management', apiManagement.status);
 router.get('/api-management/status', apiManagement.status);
 router.get('/api-management/providers', apiManagement.listProviders);
 router.get('/api-management/diagnostics', apiManagement.diagnostics);
+router.get('/api-management/storage-diagnostics', apiManagement.storageDiagnostics);
 router.put('/api-management/credentials', apiManagement.saveCredentials);
 router.post('/api-management/test', apiManagement.testConnection);
 router.post('/api-management/activate', apiManagement.activate);
