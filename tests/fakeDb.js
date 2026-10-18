@@ -69,6 +69,12 @@ function install(overrides = {}) {
       throw err;
     };
     if (/^SELECT 1/.test(s)) fail('database', "Table 'testdb.settings' doesn't exist", 'ECONNREFUSED');
+    if (/^SELECT TABLE_NAME, COLUMN_NAME\s+FROM information_schema\.COLUMNS/.test(s)) {
+      fail('informationSchema', 'Access denied to schema metadata', 'ER_ACCESS_DENIED_ERROR');
+    }
+    if (/^SELECT .+ FROM api_(credentials|connection_events) LIMIT 0$/i.test(s)) {
+      fail('schemaProbe', 'Access denied to schema probe', 'ER_ACCESS_DENIED_ERROR');
+    }
     if (/api_credentials/.test(s) && !/information_schema/.test(s)) fail('apiCredentials', "Table 'testdb.api_credentials' doesn't exist", 'ER_NO_SUCH_TABLE');
     if (/api_connection_events/.test(s) && !/information_schema/.test(s)) fail('apiConnectionEvents', "Unknown column 'x' in 'field list'");
     if (/api_sync_logs/.test(s) && !/information_schema/.test(s)) fail('apiSyncLogs', "Unknown column 'requests_used' in 'field list'");
@@ -488,6 +494,7 @@ function install(overrides = {}) {
       }
       return rows;
     }
+    if (/^SELECT DATABASE\(\) AS databaseName$/i.test(s)) return [{ databaseName: 'testdb' }];
     if (/^SHOW GRANTS FOR CURRENT_USER/.test(s)) {
       if (store.grants === null) {
         const err = new Error('Access denied; you need the SHOW GRANTS privilege');

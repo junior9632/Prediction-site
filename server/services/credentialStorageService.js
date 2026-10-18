@@ -67,15 +67,25 @@ const SCHEMA_CODES = new Set([
 ]);
 const PERMISSION_CODES = new Set([
   'ER_TABLEACCESS_DENIED_ERROR', 'ER_DBACCESS_DENIED_ERROR', 'ER_SPECIFIC_ACCESS_DENIED_ERROR',
-  'ER_ACCESS_DENIED_ERROR',
 ]);
 
 /** Safe classification — never includes SQL, a value or a credential. */
-function classifyError(err) {
+function classifyError(err, context = 'query') {
   const reported = String((err && (err.driverCode || err.code)) || 'UNKNOWN');
   // connection.toAppError prefixes generic driver codes with SQL_. Strip it so
   // a permission error is still classified as a permission error.
   const code = reported.startsWith('SQL_') ? reported.slice(4) : reported;
+  // MySQL reuses ER_ACCESS_DENIED_ERROR for bad login credentials and denied
+  // statements. The SELECT 1 connection probe is the former; failures during a
+  // table/history query are the latter.
+  if (code === 'ER_ACCESS_DENIED_ERROR' && context !== 'database') {
+    return {
+      state: 'PERMISSION_DENIED',
+      code: 'DATABASE_PERMISSION_DENIED',
+      driverCode: reported,
+      message: 'The database user is missing a privilege required for this read-only storage check.',
+    };
+  }
   if (CONNECTION_CODES.has(code)) {
     return {
       state: 'DATABASE_UNREACHABLE',
@@ -109,11 +119,11 @@ function classifyError(err) {
 }
 
 /** Execute a read-only statement, capturing a classified failure instead of throwing. */
-async function attempt(work) {
+async function attempt(work, context = 'query') {
   try {
     return { ok: true, value: await work(), error: null };
   } catch (err) {
-    const classified = classifyError(err);
+    const classified = classifyError(err, context);
     return {
       ok: false,
       value: null,
@@ -150,7 +160,8 @@ async function inspectSchema() {
         WHERE TABLE_SCHEMA = DATABASE()
           AND TABLE_NAME IN (${expectedTables.map(() => '?').join(', ')})`,
       expectedTables
-    )
+    ),
+    'schema'
   );
 
   if (info.ok) {
@@ -172,7 +183,7 @@ async function inspectSchema() {
     // INFORMATION_SCHEMA is unavailable (permissions or an old server). Probe
     // each table with a statement that returns no rows and writes nothing.
     for (const table of expectedTables) {
-      const probe = await attempt(() => connection.query(`SELECT ${REQUIRED_SCHEMA[table].join(', ')} FROM ${table} LIMIT 0`));
+      const probe = await attempt(() => connection.query(`SELECT ${REQUIRED_SCHEMA[table].join(', ')} FROM ${table} LIMIT 0`), 'schema');
       result.tables[table] = { exists: probe.ok, error: probe.ok ? null : probe.error };
       if (!probe.ok) {
         if (probe.error.state === 'SCHEMA_OUT_OF_DATE') result.missingTables.push(table);
@@ -183,9 +194,11 @@ async function inspectSchema() {
     result.source = 'probe';
   }
 
-  result.ready = result.missingTables.length === 0 && result.missingColumns.length === 0 && !result.schemaError;
-  result.migration.required = !result.ready;
-  result.migration.applied = result.ready ? true : false;
+  const migrationMissing = result.missingTables.length > 0 || result.missingColumns.length > 0;
+  result.ready = !migrationMissing && !result.schemaError;
+  // A permission/query failure does not prove migration 003 is missing.
+  result.migration.required = migrationMissing;
+  result.migration.applied = migrationMissing ? false : result.ready ? true : null;
   return result;
 }
 
@@ -194,30 +207,51 @@ async function inspectSchema() {
  * The grant text and the account name never leave this function.
  */
 async function inspectPermissions() {
-  const grants = await attempt(() => connection.query('SHOW GRANTS FOR CURRENT_USER()'));
-  if (!grants.ok) {
+  const [grants, database] = await Promise.all([
+    attempt(() => connection.query('SHOW GRANTS FOR CURRENT_USER()'), 'permissions'),
+    attempt(() => connection.queryOne('SELECT DATABASE() AS databaseName'), 'permissions'),
+  ]);
+  if (!grants.ok || !database.ok || !database.value || !database.value.databaseName) {
     return {
       checked: false,
-      code: grants.error.code,
-      message: 'Database privileges could not be read (the account may lack SHOW GRANTS). No write was attempted.',
+      code: grants.ok ? database.error && database.error.code || 'DATABASE_UNKNOWN' : grants.error.code,
+      message: 'Database privileges could not be verified for the selected database (SHOW GRANTS or the database name is unavailable). No write was attempted.',
       select: null, insert: null, update: null, delete: null, all: null,
     };
   }
-  const text = (grants.value || [])
+  const lines = (grants.value || [])
     .map((row) => String(row[(Object.keys(row) || [])[0]] || ''))
-    .join('\n');
-  if (!text) {
+    .filter(Boolean);
+  if (!lines.length) {
     return { checked: false, code: 'NO_GRANTS_RETURNED', message: 'The database returned no grant information.', select: null, insert: null, update: null, delete: null, all: null };
   }
-  const all = /ALL PRIVILEGES|GRANT ALL\b/i.test(text);
-  const has = (privilege) => all || new RegExp(`\\b${privilege}\\b`, 'i').test(text);
+
+  const databaseName = String(database.value.databaseName).toLowerCase();
+  const privileges = new Set();
+  const all = [];
+  const normalizeIdentifier = (value) => String(value).replace(/^`|`$/g, '').replace(/``/g, '`').toLowerCase();
+  for (const line of lines) {
+    const match = line.match(/^GRANT\s+(.+?)\s+ON\s+(.+?)\s+TO\s+/i);
+    if (!match) continue;
+    const scope = match[2].trim();
+    const parts = scope.split('.');
+    const globalScope = scope === '*.*';
+    const databaseScope = parts.length === 2 && normalizeIdentifier(parts[0]) === databaseName && parts[1] === '*';
+    const credentialTableScope = parts.length === 2 && normalizeIdentifier(parts[0]) === databaseName &&
+      normalizeIdentifier(parts[1]) === 'api_credentials';
+    if (!globalScope && !databaseScope && !credentialTableScope) continue;
+    const granted = match[1].split(',').map((name) => name.trim().toUpperCase());
+    if (granted.some((name) => name === 'ALL' || name === 'ALL PRIVILEGES')) all.push(true);
+    for (const name of granted) privileges.add(name);
+  }
+  const has = (privilege) => all.length > 0 || privileges.has(privilege);
   return {
     checked: true,
     select: has('SELECT'),
     insert: has('INSERT'),
     update: has('UPDATE'),
     delete: has('DELETE'),
-    all,
+    all: all.length > 0,
   };
 }
 
@@ -226,7 +260,7 @@ async function inspectPermissions() {
  * `data` is for internal callers (the status DTO); `report` is safe to send.
  */
 async function collectStorage() {
-  const databaseProbe = await attempt(() => connection.queryOne('SELECT 1 AS ok'));
+  const databaseProbe = await attempt(() => connection.queryOne('SELECT 1 AS ok'), 'database');
   const database = {
     reachable: databaseProbe.ok,
     checkedAt: new Date().toISOString(),
@@ -249,20 +283,20 @@ async function collectStorage() {
     evidence.schema = await inspectSchema();
     evidence.permissions = await inspectPermissions();
 
-    const credentials = await attempt(() => db.listApiCredentials());
+    const credentials = await attempt(() => db.listApiCredentials(), 'credentials');
     evidence.credentials = credentials.ok
       ? { readable: true, count: (credentials.value || []).length, error: null }
       : { readable: false, count: null, error: credentials.error };
     if (credentials.ok) data.rows = credentials.value || [];
 
-    const events = await attempt(() => db.listApiConnectionEvents({ limit: 12 }));
+    const events = await attempt(() => db.listApiConnectionEvents({ limit: 12 }), 'history');
     evidence.events = events.ok ? { readable: true, error: null } : { readable: false, error: events.error };
     if (events.ok) data.events = events.value || [];
 
-    const recentErrors = await attempt(() => db.listApiConnectionEvents({ limit: 12, errorsOnly: true }));
+    const recentErrors = await attempt(() => db.listApiConnectionEvents({ limit: 12, errorsOnly: true }), 'history');
     if (recentErrors.ok) data.recentErrors = recentErrors.value || [];
 
-    const syncs = await attempt(() => db.getLastSuccessfulSyncs(['fixtures', 'odds', 'results']));
+    const syncs = await attempt(() => db.getLastSuccessfulSyncs(['fixtures', 'odds', 'results']), 'history');
     evidence.syncs = syncs.ok ? { readable: true, error: null } : { readable: false, error: syncs.error };
     if (syncs.ok) data.lastSyncs = syncs.value || {};
   }
@@ -281,12 +315,21 @@ function buildReport(evidence) {
       'Correct DB_HOST / DB_USER / DB_PASSWORD / DB_NAME in the cPanel Node.js environment, then restart the application.');
   }
 
-  if (evidence.database.reachable && !evidence.schema.ready) {
+  const missingSchema = evidence.schema.missingTables.length > 0 || evidence.schema.missingColumns.length > 0;
+  if (evidence.database.reachable && missingSchema) {
     addIssue('schema', 'SCHEMA_OUT_OF_DATE',
-      evidence.schema.missingTables.length || evidence.schema.missingColumns.length
-        ? `Missing credential-storage objects: ${[...evidence.schema.missingTables, ...evidence.schema.missingColumns].join(', ')}.`
-        : 'The credential-storage tables could not be verified.',
+      `Missing credential-storage objects: ${[...evidence.schema.missingTables, ...evidence.schema.missingColumns].join(', ')}.`,
       `Apply ${MIGRATION_FILE} with npm run db:migrate, or paste it into phpMyAdmin's SQL tab on cPanel. It only creates two new tables.`);
+  } else if (evidence.database.reachable && evidence.schema.schemaError) {
+    const schemaError = evidence.schema.schemaError;
+    if (schemaError.state === 'PERMISSION_DENIED') {
+      addIssue('permissions', schemaError.code, schemaError.message,
+        'Ask the host to grant SELECT on the credential tables, or allow this read-only schema probe.');
+    } else {
+      addIssue('schema', schemaError.code,
+        'The credential tables could not be verified; this read-only probe did not establish that a migration is missing.',
+        'Check the server log for the safe SQL driver code, then retry after confirming the database user can read schema metadata or the credential tables.');
+    }
   }
 
   if (evidence.credentials.error) {
@@ -297,10 +340,15 @@ function buildReport(evidence) {
   const permissions = evidence.permissions;
   const readAllowed = permissions.checked ? permissions.select !== false : null;
   const writeAllowed = permissions.checked ? permissions.insert !== false && permissions.update !== false : null;
+  const schemaPermissionFailure = evidence.schema.schemaError && evidence.schema.schemaError.state === 'PERMISSION_DENIED';
   if (permissions.checked && (!readAllowed || !writeAllowed)) {
     addIssue('permissions', 'DATABASE_PERMISSION_DENIED',
       `The database user ${!readAllowed ? 'cannot SELECT' : ''}${!readAllowed && !writeAllowed ? ' and ' : ''}${!writeAllowed ? 'cannot INSERT/UPDATE' : ''} credential rows.`,
       'Ask the host to grant SELECT, INSERT and UPDATE on the application database to the configured database user.');
+  } else if (evidence.database.reachable && !permissions.checked && !schemaPermissionFailure) {
+    addIssue('permissions', 'DATABASE_PERMISSIONS_UNVERIFIED',
+      'Database privileges could not be verified. This check is read-only and did not attempt a write, so saving permission is unknown.',
+      'Ask the host to confirm SELECT, INSERT and UPDATE on the application database, or allow SHOW GRANTS to the application database user.');
   }
 
   if (!encryption.canEncrypt) {
@@ -315,31 +363,41 @@ function buildReport(evidence) {
 
   const historyErrors = [evidence.events.error, evidence.syncs.error].filter(Boolean);
   if (historyErrors.length) {
-    addIssue('history', historyErrors[0].code,
-      'Credential storage itself is readable, but the diagnostics/history queries fail, so recent events and sync times cannot be shown.',
-      `Usually a missing baseline table (api_sync_logs/api_connection_events). Apply the pending migration ${MIGRATION_FILE} or restore the baseline schema. Saving a credential is not blocked by this.`);
+    const historyPermissionDenied = historyErrors.some((error) => error.state === 'PERMISSION_DENIED');
+    addIssue('history', historyPermissionDenied ? 'DATABASE_PERMISSION_DENIED' : historyErrors[0].code,
+      historyPermissionDenied
+        ? 'Credential storage itself is readable, but the database user cannot read one or more diagnostics/history tables.'
+        : 'Credential storage itself is readable, but the diagnostics/history queries fail, so recent events and sync times cannot be shown.',
+      historyPermissionDenied
+        ? 'Ask the host to grant SELECT on api_connection_events and api_sync_logs. Saving a credential is not blocked by this.'
+        : `Check the baseline schema for api_sync_logs and apply ${MIGRATION_FILE} only if api_connection_events is missing. Saving a credential is not blocked by this.`);
   }
 
   // A credential read can itself reveal that the table is missing or that the
   // database user lacks SELECT even when INFORMATION_SCHEMA looked healthy.
   // Treat that as a schema/permission failure, not as an anonymous read error.
   const credentialFailure = evidence.credentials.error;
-  const schemaReady = evidence.schema.ready && !(credentialFailure && credentialFailure.state === 'SCHEMA_OUT_OF_DATE');
-  const permissionFailure = permissions.checked
-    ? permissions.select === false || permissions.insert === false || permissions.update === false
-    : false;
+  const schemaMissing = evidence.schema.missingTables.length > 0 || evidence.schema.missingColumns.length > 0 ||
+    Boolean(credentialFailure && credentialFailure.state === 'SCHEMA_OUT_OF_DATE');
+  const schemaReady = evidence.schema.ready && !schemaMissing;
+  const permissionFailure = Boolean(schemaPermissionFailure || credentialFailure && credentialFailure.state === 'PERMISSION_DENIED' ||
+    permissions.checked && (permissions.select === false || permissions.insert === false || permissions.update === false));
 
   const canRead = evidence.database.reachable && schemaReady && evidence.credentials.readable &&
     readAllowed !== false && (encryption.canDecrypt || evidence.credentials.count === 0);
-  const canSave = evidence.database.reachable && schemaReady && encryption.canEncrypt && writeAllowed !== false;
+  const canSavePrerequisites = evidence.database.reachable && schemaReady && encryption.canEncrypt && !permissionFailure;
+  // SHOW GRANTS is read-only and some shared hosts disallow it. In that case
+  // do not claim writes work; report unknown instead of silently assuming yes.
+  const canSave = !canSavePrerequisites || writeAllowed === false ? false : writeAllowed === null ? null : true;
 
   let state = 'READY';
   if (!evidence.database.reachable) state = 'DATABASE_UNREACHABLE';
-  else if (!schemaReady) state = 'SCHEMA_OUT_OF_DATE';
+  else if (schemaMissing) state = 'SCHEMA_OUT_OF_DATE';
   else if (permissionFailure) state = 'PERMISSION_DENIED';
+  else if (!schemaReady) state = 'SCHEMA_CHECK_FAILED';
   else if (!encryption.canEncrypt) state = 'ENCRYPTION_NOT_READY';
-  else if (credentialFailure && credentialFailure.state === 'PERMISSION_DENIED') state = 'PERMISSION_DENIED';
   else if (!evidence.credentials.readable) state = 'CREDENTIAL_READ_FAILED';
+  else if (writeAllowed === null) state = 'PERMISSIONS_UNVERIFIED';
   else if (historyErrors.length) state = 'HISTORY_DEGRADED';
   else if (!canRead || !canSave) state = 'DEGRADED';
 
@@ -351,6 +409,8 @@ function buildReport(evidence) {
     PERMISSION_DENIED: 'Credential storage is unavailable: the database user lacks the required privileges.',
     ENCRYPTION_NOT_READY: 'Credential storage is unavailable: no usable encryption key is configured.',
     CREDENTIAL_READ_FAILED: 'Credential storage is unavailable: the credential table cannot be read.',
+    SCHEMA_CHECK_FAILED: 'Credential storage readiness could not be fully verified; no missing migration was confirmed.',
+    PERMISSIONS_UNVERIFIED: 'Credential storage is readable and encryption is ready, but database write permission could not be verified.',
     HISTORY_DEGRADED: 'Credential storage is ready; only the diagnostics history is unavailable.',
     DEGRADED: 'Credential storage is only partly ready. Read the issues below.',
   }[state];
@@ -376,6 +436,7 @@ function buildReport(evidence) {
       source: evidence.schema.source || null,
       missingTables: evidence.schema.missingTables,
       missingColumns: evidence.schema.missingColumns,
+      verificationError: evidence.schema.schemaError ? evidence.schema.schemaError.code : null,
       migration: evidence.schema.migration,
     },
     permissions: {

@@ -146,6 +146,21 @@ test('storage diagnostic: a missing migration names the missing tables, not a ge
   });
 });
 
+test('storage diagnostic: denied schema probes are not misreported as a missing migration', async () => {
+  await withDb({ failQueries: { informationSchema: true, schemaProbe: true } }, async () => {
+    const res = await req('GET', '/api/admin/api-management/storage-diagnostics', { token: adminBearer });
+    assert.equal(res.status, 200);
+    const report = res.json.data;
+    assert.equal(report.state, 'PERMISSION_DENIED');
+    assert.deepEqual(report.schema.missingTables, []);
+    assert.equal(report.schema.migration.required, false);
+    assert.equal(report.schema.migration.applied, null);
+    assert.equal(report.schema.verificationError, 'DATABASE_PERMISSION_DENIED');
+    assert.ok(report.issues.some((issue) => issue.area === 'permissions'));
+    assert.ok(!report.issues.some((issue) => issue.area === 'schema' && /Apply 003/.test(issue.fix || '')));
+  });
+});
+
 test('storage diagnostic: a broken history degrades the screen without blocking saving', async () => {
   await withDb({ failQueries: { apiConnectionEvents: true, apiSyncLogs: true } }, async () => {
     const res = await req('GET', '/api/admin/api-management/storage-diagnostics', { token: adminBearer });
@@ -194,6 +209,40 @@ test('storage diagnostic: missing write privileges are reported as a permission 
     assert.ok(report.issues.some((issue) => issue.area === 'permissions'));
     assert.ok(!res.text.includes('GRANT SELECT'), 'the raw grant text is never returned');
   });
+});
+
+test('storage diagnostic: grants on another database do not prove this database can save', async () => {
+  await withDb({ grants: 'GRANT SELECT, INSERT, UPDATE ON `anotherdb`.* TO `test`@`localhost`' }, async () => {
+    const res = await req('GET', '/api/admin/api-management/storage-diagnostics', { token: adminBearer });
+    assert.equal(res.status, 200);
+    const report = res.json.data;
+    assert.equal(report.state, 'PERMISSION_DENIED');
+    assert.equal(report.permissions.checked, true);
+    assert.equal(report.permissions.select, false);
+    assert.equal(report.permissions.insert, false);
+    assert.equal(report.canSave, false);
+    assert.ok(!res.text.includes('anotherdb'), 'database grant scope is not disclosed');
+  });
+});
+
+test('storage diagnostic: unavailable SHOW GRANTS means save readiness is unknown, not yes', async () => {
+  await withDb({ grants: null }, async () => {
+    const res = await req('GET', '/api/admin/api-management/storage-diagnostics', { token: adminBearer });
+    assert.equal(res.status, 200);
+    const report = res.json.data;
+    assert.equal(report.state, 'PERMISSIONS_UNVERIFIED');
+    assert.equal(report.ready, false);
+    assert.equal(report.canRead, true, 'the read-only credential query did succeed');
+    assert.equal(report.canSave, null, 'no write was attempted, so write permission remains unknown');
+    assert.equal(report.permissions.checked, false);
+    assert.ok(report.issues.some((issue) => issue.code === 'DATABASE_PERMISSIONS_UNVERIFIED'));
+  });
+});
+
+test('storage diagnostic: an access denied during a database query is a permission failure', async () => {
+  const info = storage.classifyError({ code: 'ER_ACCESS_DENIED_ERROR' }, 'credentials');
+  assert.equal(info.state, 'PERMISSION_DENIED');
+  assert.equal(storage.classifyError({ code: 'ER_ACCESS_DENIED_ERROR' }, 'database').state, 'DATABASE_UNREACHABLE');
 });
 
 test('storage diagnostic: a missing encryption key does not turn into a fake database problem', async () => {
