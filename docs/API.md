@@ -326,7 +326,7 @@ request. Rate limited separately from the public API.
 | `GET /overview` | `{today, generationRunning, lastGeneration, dataToday {fixtures, playableFixtures, fixturesWithVerifiedOdds, verifiedOddsRows}, settings, dataSource, analytics, recentSyncs, serverTime}` |
 | `POST /generate-ticket` | `{date?}` only. Returns `202 {runId, status: "RUNNING", ticketDate, ignoredClientFields[], note, progressUrl}` |
 | `GET /generation-progress?run_id=` | `{runId, status, currentStep, currentMessage, progress[], finishedAt, report, ticket, error}` |
-| `GET /generation-report?run_id=&date=` | the persisted run: `{…, counters {…18 keys…}, report, error}` |
+| `GET /generation-report?run_id=&date=` | the persisted run: `{…, counters {…18 keys…}, report, error}`. `report.oddsSync` is credential-free sync metrics (`endpointCalls`, `rowsWritten`, `fixturesScanned`, `fixturesWithAnyOffers`, `fixturesWithRejectedOffers`, `fixturesWithVerifiedOver15`, `offerRejectionCounts`, `over15OfferRejectionCounts`, `providerErrors[]`). Fixture-level counts stay separate from offer-level rejection maps. `report.oddsLoad` is the generation query against stored verified Over 1.5 rows. |
 | `GET /generations?limit=` | recent runs as a flat array |
 | `GET /settings` | `{items[], effective {}}` — `items` carry `key, label, description, group, type, options, min, max, integer, required, maxLength, locked, value, warning, needsRepair, updatedAt` |
 | `PUT /settings` | `{key: value, …}` → `{applied[], rejected[{key, reason, message}], settings}` |

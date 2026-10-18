@@ -68,9 +68,13 @@
     return `<div class="alert warn" style="margin-top:10px;">${icons.alert}<div><b>${escapeHtml(g.reason || 'FAILED')}</b>${label ? ` — ${escapeHtml(label)}` : ''}.${escapeHtml(when)}${g.reasonHint ? `<div class="tiny muted">${escapeHtml(g.reasonHint)}</div>` : ''}${g.errorDetail ? `<div class="tiny muted">${escapeHtml(g.errorDetail)}</div>` : ''}</div></div>`;
   }
 
+  function cellsGrid(cells) {
+    return `<div class="diag-grid">${cells.map(([k, v, tone]) => `<div class="diag-cell"><div class="k">${escapeHtml(k)}</div><div class="v ${tone || ''}">${v === null || v === undefined || v === '' ? '—' : escapeHtml(v)}</div></div>`).join('')}</div>`;
+  }
+
   function diagGrid(c) {
     if (!c) return '';
-    const cells = [
+    return cellsGrid([
       ['Fixtures scanned', c.fixturesScanned, ''], ['Playable', c.playableFixtures, ''],
       ['Over 1.5 candidates', c.over15Candidates, ''], ['Verified odds', c.verifiedOdds, 'good'],
       ['Rejected total', c.rejectedMatches, 'warn'], ['No odds', c.rejectedNoOdds, 'warn'],
@@ -80,8 +84,40 @@
       ['Confidence qualified', c.confidenceQualified, 'good'], ['Risk qualified', c.riskQualified, 'good'],
       ['Final candidates', c.finalCandidates, ''], ['Combinations tested', c.combinationsTested, ''],
       ['Qualified combos', c.qualifiedCombinations, 'good'], ['Selected picks', c.selectedPicks, 'good'],
-    ];
-    return `<div class="diag-grid">${cells.map(([k, v, tone]) => `<div class="diag-cell"><div class="k">${escapeHtml(k)}</div><div class="v ${tone}">${v === null || v === undefined ? '—' : escapeHtml(v)}</div></div>`).join('')}</div>`;
+    ]);
+  }
+
+  function countMapText(map) {
+    if (!map || typeof map !== 'object') return '—';
+    const parts = Object.entries(map)
+      .filter(([, n]) => Number(n) > 0)
+      .sort((a, b) => Number(b[1]) - Number(a[1]))
+      .slice(0, 8)
+      .map(([reason, n]) => `${reason}: ${n}`);
+    return parts.length ? parts.join(' · ') : 'none';
+  }
+
+  function oddsSyncGrid(sync, load) {
+    if (!sync && !load) return '';
+    const s = sync || {};
+    const errors = Array.isArray(s.providerErrors) ? s.providerErrors : [];
+    const errorText = errors.length
+      ? errors.map((e) => `page ${e.page || '?'}${e.status ? ` HTTP ${e.status}` : ''}${e.reason ? ` ${e.reason}` : ''}: ${e.message || ''}`).join(' · ')
+      : 'none';
+    return `${cellsGrid([
+      ['Odds endpoint calls', s.endpointCalls, ''],
+      ['Odds rows written', s.rowsWritten, ''],
+      ['Odds fixtures scanned', s.fixturesScanned, ''],
+      ['Fixtures with any offers', s.fixturesWithAnyOffers, ''],
+      ['Fixtures with rejected offers', s.fixturesWithRejectedOffers, 'warn'],
+      ['Fixtures with verified Over 1.5', s.fixturesWithVerifiedOver15, 'good'],
+      ['Unmatched provider items', s.unmatchedProviderItems, 'warn'],
+      ['Provider items seen', s.providerItemsSeen, ''],
+      ['Pages fetched', s.pagesFetched, ''],
+      ['Paging total', s.pagingTotal, ''],
+      ['Stopped reason', s.stoppedReason, ''],
+      ['DB fixtures with verified Over 1.5', load && load.fixturesWithVerifiedOver15, 'good'],
+    ])}<p class="small muted" style="margin-top:8px;"><b>Offer rejections</b> — ${escapeHtml(countMapText(s.offerRejectionCounts))}</p><p class="small muted"><b>Over 1.5 offer rejections</b> — ${escapeHtml(countMapText(s.over15OfferRejectionCounts))}</p><p class="small muted"><b>Provider/page errors</b> — ${escapeHtml(errorText)}</p>${load && load.offerRejectionCounts ? `<p class="small muted"><b>DB re-validation rejections</b> — ${escapeHtml(countMapText(load.offerRejectionCounts))}</p>` : ''}`;
   }
 
   /* ---------------------------- generation ----------------------------- */
@@ -239,7 +275,7 @@
        ${t.status !== 'QUALIFIED' ? `<div class="card-body"><div class="alert warn">${icons.info}<div><b>${escapeHtml(t.status)}</b> — ${escapeHtml((t.noTicket && t.noTicket.message) || '')}</div></div><div class="diag-grid section">${diagGrid(c)}</div></div>` : ''}`,
       `<a class="btn btn-ghost btn-sm" href="/ticket.html">Open public page</a>`
     )}
-    <section class="section">${card('Latest generation report', `<div class="card-body">${report ? diagGrid(c) + `<p class="small muted" style="margin-top:10px;">${escapeHtml((report.report && report.report.message) || '')}</p>` + generationFailureNote({ status: report.status, reason: (report.report || {}).reason, reasonLabel: (report.report || {}).label, reasonHint: (report.report || {}).hint, resetsAt: (report.report || {}).resetAt, errorDetail: report.error }) : emptyState('history', 'No generation yet', 'Use the Dashboard to generate the first ticket.')}</div>`)}</section>`);
+    <section class="section">${card('Latest generation report', `<div class="card-body">${report ? diagGrid(c) + `<p class="small muted" style="margin-top:10px;">${escapeHtml((report.report && report.report.message) || '')}</p>` + ((report.report && (report.report.oddsSync || report.report.oddsLoad)) ? `<h3 class="card-title" style="margin-top:16px;">Odds sync</h3>${oddsSyncGrid(report.report.oddsSync, report.report.oddsLoad)}` : '') + generationFailureNote({ status: report.status, reason: (report.report || {}).reason, reasonLabel: (report.report || {}).label, reasonHint: (report.report || {}).hint, resetsAt: (report.report || {}).resetAt, errorDetail: report.error }) : emptyState('history', 'No generation yet', 'Use the Dashboard to generate the first ticket.')}</div>`)}</section>`);
   }
 
   async function loadFixtures() {

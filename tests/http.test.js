@@ -248,6 +248,10 @@ test('acceptance 9: the admin dashboard endpoints describe the same run', async 
   assert.equal(report.json.data.counters.selectedPicks, 3);
   assert.equal(report.json.data.counters.finalCandidates, 3);
   assert.equal(report.json.data.report.totalOdds, '2.20');
+  assert.ok(report.json.data.report.oddsSync);
+  assert.equal(typeof report.json.data.report.oddsSync.endpointCalls, 'number');
+  assert.ok(report.json.data.report.oddsSync.fixturesWithVerifiedOver15 >= 1);
+  assert.ok(report.json.data.report.oddsLoad);
   assert.equal(report.json.data.triggerSource, 'admin_ui');
   assert.equal(report.json.data.adminId, ADMIN.id);
 
