@@ -307,8 +307,13 @@ API-Football credential an admin task instead of a deployment edit:
   (AES-256-GCM, key from `API_CREDENTIALS_ENCRYPTION_KEY`);
 * **Test connection** performs one real server-side request to the provider's `/status`
   endpoint and reports exactly what came back — connected, invalid key, quota exceeded,
-  rate limited, network failure, timeout, provider unavailable or incomplete configuration.
-  A saved key is never reported as "connected" on its own;
+  missing/inactive subscription, rate limited, network failure, timeout, provider unavailable or
+  incomplete configuration.
+  A saved key is never reported as "connected" on its own. Host-specific account links explain
+  where to fix “You are not subscribed”; direct and RapidAPI subscriptions are separate;
+* API actions unlock after failure or a bounded browser timeout. Missing Save/Activate/Disable
+  prerequisites explain themselves on click instead of leaving a dead button; storage and activation
+  checks remain enforced. A failed probe can be retested after the short anti-hammering interval;
 * **Activate / disable** switches the platform between the stored credential and the existing
   environment configuration. While nothing is active the old `API_FOOTBALL_KEY` setup keeps
   working untouched;

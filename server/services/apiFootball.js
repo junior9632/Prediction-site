@@ -53,7 +53,7 @@ const CONNECTION_LABELS = Object.freeze({
   CONNECTED: 'Connection successful',
   INVALID_KEY: 'Invalid API key or unauthorized',
   REQUEST_REJECTED: 'Provider rejected the request',
-  SUBSCRIPTION_INACTIVE: 'Subscription is inactive',
+  SUBSCRIPTION_INACTIVE: 'API subscription required or inactive',
   QUOTA_EXCEEDED: 'Daily quota exceeded',
   RATE_LIMITED: 'Rate limit exceeded',
   NETWORK_ERROR: 'Network failure',
@@ -104,8 +104,8 @@ const REASON_INFO = Object.freeze({
     hint: 'Use an approved API-Football host and the key issued for that host. Check API Management or API_FOOTBALL_HOST / API_FOOTBALL_KEY, then run npm run api:check.',
   },
   SUBSCRIPTION_INACTIVE: {
-    label: 'the provider subscription is inactive',
-    hint: 'Check the subscription in the provider dashboard and renew or activate it, then use Refresh API status.',
+    label: 'the provider subscription is missing or inactive',
+    hint: 'For RapidAPI, subscribe to API-Football with the same account/app that issued this key, then retry Test connection. If your key came from the API-Sports dashboard, select v3.football.api-sports.io instead; the keys and subscriptions are separate. Renew an expired plan in the issuing provider dashboard.',
   },
   CREDENTIAL_UNREADABLE: {
     label: 'the stored API credential cannot be used',
@@ -222,7 +222,9 @@ function classifyProviderError({ httpStatus = null, errors = null, message = '' 
   if (/per minute|rate.?limit|too many requests/.test(text) || (errors && errors.rateLimit)) return CONNECTION_STATES.RATE_LIMITED;
   if ((errors && errors.requests) || /daily|quota|limit for the day|requests? limit|reached the limit/.test(text)) return CONNECTION_STATES.QUOTA_EXCEEDED;
   if (httpStatus && (httpStatus >= 500 || httpStatus === 499 || httpStatus === 408 || httpStatus === 425)) return CONNECTION_STATES.PROVIDER_UNAVAILABLE;
-  if (/subscription.*(expired|inactive|not active)/.test(text)) return CONNECTION_STATES.SUBSCRIPTION_INACTIVE;
+  // RapidAPI also uses HTTP 403 for a missing API subscription.
+  // Its explicit message must win over the generic 401/403 auth fallback.
+  if (/\bnot subscribed\b|\bunsubscribed\b|\bno active subscription\b|\bsubscription\b[^.{}]*\b(expired|inactive|not active|required)\b|\b(expired|inactive) subscription\b/.test(text)) return CONNECTION_STATES.SUBSCRIPTION_INACTIVE;
   if (httpStatus === 401 || httpStatus === 403 || /missing application key|no api key|invalid api key|invalid token|token.*invalid|not authorized|unauthorized|account suspended|invalid.*key/.test(text)) return CONNECTION_STATES.INVALID_KEY;
   if (httpStatus === 429) return CONNECTION_STATES.RATE_LIMITED;
   return CONNECTION_STATES.REQUEST_REJECTED;

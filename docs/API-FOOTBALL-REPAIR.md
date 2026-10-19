@@ -16,6 +16,33 @@ Reviewed against the official v3 documentation on **2026-10-16**.
 - **Correct diagnostics ownership:** only matching key fingerprint **and** host can update a saved credential's verdict. A conditional SQL update protects key rotation during an in-flight test. Identical concurrent tests share one request; conflicting tests are throttled. Test and Refresh share the reuse window. Environment-only test results remain visible for the current process.
 - **Current state:** Refresh persists failures as well as successes and rereads status after the probe. Successful checks clear obsolete error fields. Replacing a key clears the old key's diagnostics. The rules card uses saved settings, not hard-coded environment defaults.
 
+## HTTP 403 “You are not subscribed” and unclickable controls (2026-10-19)
+
+This explicit provider message is now reported as **API subscription required or inactive**
+(`SUBSCRIPTION_INACTIVE`), not as proof that the key is invalid. HTTP status and the original
+provider message are preserved. Generic invalid-key/unauthorized responses are still authentication
+failures; subscription failures are not retried automatically and keys are never tried on a different host.
+
+- For a **RapidAPI** key, open the selected host's **Manage API account / subscription** link and
+  subscribe to API-Football using the same account/application that issued that key.
+- For an **API-Sports dashboard** key, select the direct host, test, save, then activate it. A direct
+  subscription and a marketplace subscription are separate; changing a host does not transfer either.
+- After correcting the account, retry **Test connection**. Failed verdicts are reused only for the
+  short anti-hammering interval (default three seconds), rather than hiding the repair behind the
+  successful-test reuse window (default 60 seconds). Successful tests still share/reuse a single probe.
+- API Management browser requests, including the follow-up status read, stop waiting after 45 seconds.
+  Controls unlock on success, failure or timeout, and an unsaved key/host draft is retained. After Test
+  answers, the read-only status refresh runs in the background without locking the form; late reads
+  cannot overwrite a newer action. A timed-out write may still finish on the server: check status
+  before resubmitting it.
+- Save/Activate/Disable no longer silently grey out for missing prerequisites. Clicking explains
+  what must be fixed. Unavailable encrypted storage **still blocks saving**, and activation **still
+  requires a saved credential**. Controls remain disabled during an in-flight request to prevent
+  duplicate actions. Test remains independent of storage.
+
+This change cannot grant an API subscription or validate/replace a production key. Correct the
+provider account/key pairing in the protected admin page, never in chat or a public source file.
+
 ## Safe dashboard workflow
 
 1. Open **Admin → API Management**.
@@ -49,7 +76,7 @@ npm run api:check -- --json
 | Certificate / TLS error | Repair the CA trust store, clock or certificate chain. **Never disable TLS verification.** |
 | `TIMEOUT` | Check routing/provider availability; adjust `API_FOOTBALL_TIMEOUT_MS` only if appropriate. |
 | `AUTH_REJECTED` / `INVALID_KEY` | Use the key issued for the selected host; check revocation/account restrictions. |
-| `SUBSCRIPTION_INACTIVE` | Renew/activate the subscription in the provider dashboard. |
+| `SUBSCRIPTION_INACTIVE` | For “not subscribed”, subscribe to API-Football on the issuing RapidAPI account/app; for an expired plan, renew in its dashboard. API-Sports keys must use the direct host. |
 | `REQUEST_REJECTED` | Read the provider's parameter/season/plan message. Do not replace missing data with guesses. |
 | `QUOTA_EXCEEDED` / `RATE_LIMITED` | Wait for the advertised reset/backoff; reduce request frequency/range or change the plan. |
 
