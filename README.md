@@ -204,7 +204,8 @@ team + league statistics ┘                          recency, league environmen
                                                 ─► risk 0–100
                                                 ─► data quality 0–100
                                                         │
-                              filters: confidence ≥ 72 · risk ≤ 35 · quality ≥ 60
+                              filters: confidence auto-detected (≥72 when the pool allows,
+                              never below the 30 floor) · risk ≤ 35 · quality ≥ 60
                                                         │
                               correlation protection (league / country / team / kickoff window)
                                                         │

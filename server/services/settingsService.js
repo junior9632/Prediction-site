@@ -37,7 +37,8 @@ const DEFINITIONS = {
   odds_bookmaker_preference: { maxLength: 1000, value: 'Bet365,Pinnacle,William Hill,Unibet,bwin', type: 'string', group: 'odds_window', label: 'Preferred Bookmakers', description: 'Comma separated, used for tie-breaks and the preferred strategy.' },
 
   /* ---------------- filters ---------------- */
-  min_confidence: { value: '72', type: 'number', group: 'filters', label: 'Minimum Confidence', min: 1, max: 99, description: 'Candidates below this never enter the ticket builder.' },
+  confidence_mode: { value: 'auto', type: 'enum', options: ['auto', 'fixed'], group: 'filters', label: 'Confidence Mode', description: 'auto (default): the effective confidence gate is detected from each day\'s candidate pool, starting at 72 and lowering only as far as needed to fill the pool. fixed: min_confidence is the exact gate.' },
+  min_confidence: { value: '30', type: 'number', group: 'filters', label: 'Minimum Confidence', min: 1, max: 99, description: 'In auto mode this is the hard floor (default 30): the detected gate never drops below it and candidates under it never enter the ticket builder. In fixed mode it is the exact gate.' },
   max_risk: { value: '35', type: 'number', group: 'filters', label: 'Maximum Risk', min: 1, max: 100, description: 'Candidates above this risk score are rejected.' },
   min_data_quality: { value: '60', type: 'number', group: 'filters', label: 'Minimum Data Quality', min: 1, max: 100, description: 'Minimum completeness/freshness of the real evidence.' },
   min_selections: { integer: true, value: '2', type: 'number', group: 'filters', label: 'Minimum Selections', min: 1, max: 20 },
@@ -321,6 +322,7 @@ function toEngineSettings(effective) {
     oddsBookmakerPreference: s.odds_bookmaker_preference,
     oddsFreshnessMinutes: s.odds_freshness_minutes,
     reverifyOddsBeforeGeneration: s.odds_reverify_before_generation,
+    confidenceMode: s.confidence_mode,
     minConfidence: s.min_confidence,
     maxRisk: s.max_risk,
     minDataQuality: s.min_data_quality,

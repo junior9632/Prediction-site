@@ -493,6 +493,7 @@ async function getStatus() {
       market: config.market.label,
       marketKey: config.market.key,
       oddsWindow: [Number(settings.minTotalOdds), Number(settings.maxTotalOdds)],
+      confidenceMode: settings.confidenceMode || 'auto',
       minConfidence: Number(settings.minConfidence),
       maxRisk: Number(settings.maxRisk),
       minDataQuality: Number(settings.minDataQuality),

@@ -71,7 +71,7 @@ function usage() {
       `Generating the ${date} ticket for ${admin.username} (manual CLI run)`,
       `  market           : ${settings.marketLabel} (locked)`,
       `  odds window      : ${Number(settings.minTotalOdds).toFixed(2)} - ${Number(settings.maxTotalOdds).toFixed(2)}`,
-      `  min confidence   : ${settings.minConfidence}`,
+      `  confidence       : ${settings.confidenceMode === 'fixed' ? `fixed minimum ${settings.minConfidence}` : `auto-detected (floor ${settings.minConfidence})`}`,
       `  max risk         : ${settings.maxRisk}`,
       `  min data quality : ${settings.minDataQuality}`,
       `  selections       : ${settings.minSelections}-${settings.maxSelections}`,

@@ -142,7 +142,10 @@ const config = {
     freshnessMinutes: int('ODDS_FRESHNESS_MINUTES', 90),
     minTotalOdds: float('MIN_TOTAL_ODDS', 2.0),
     maxTotalOdds: float('MAX_TOTAL_ODDS', 4.0),
-    minConfidence: float('MIN_CONFIDENCE', 72),
+    // Auto-detected by default (see prediction/confidenceThreshold.js);
+    // this is the hard floor the detected gate may never drop below.
+    confidenceMode: ['auto', 'fixed'].includes(str('CONFIDENCE_MODE', 'auto').toLowerCase()) ? str('CONFIDENCE_MODE', 'auto').toLowerCase() : 'auto',
+    minConfidence: float('MIN_CONFIDENCE', 30),
     maxRisk: float('MAX_RISK', 35),
     minDataQuality: float('MIN_DATA_QUALITY', 60),
     maxSelections: int('MAX_SELECTIONS', 6),
