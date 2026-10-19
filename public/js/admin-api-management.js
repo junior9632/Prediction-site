@@ -168,7 +168,7 @@
           Saving, testing or switching a credential never generates, publishes or replaces a prediction ticket.
           Tickets stay manual: ${escapeHtml(status.predictionRules.market)}, combined odds ${status.predictionRules.oddsWindow[0].toFixed(
             2
-          )}–${status.predictionRules.oddsWindow[1].toFixed(2)}, minimum confidence ${status.predictionRules.minConfidence}.
+          )}–${status.predictionRules.oddsWindow[1].toFixed(2)}, confidence ${status.predictionRules.confidenceMode === 'fixed' ? 'minimum ' + status.predictionRules.minConfidence : 'auto-detected (floor ' + status.predictionRules.minConfidence + ')'}.
         </p>
       </div>`
     );
@@ -308,7 +308,7 @@
       `<div class="card-body"><div class="diag-grid">
         <div class="diag-cell"><div class="k">Market</div><div class="v good">${escapeHtml(rules.market)} ONLY</div></div>
         <div class="diag-cell"><div class="k">Combined ticket odds</div><div class="v">${rules.oddsWindow[0].toFixed(2)}–${rules.oddsWindow[1].toFixed(2)}</div></div>
-        <div class="diag-cell"><div class="k">Minimum confidence</div><div class="v">${Number(rules.minConfidence)}</div></div>
+        <div class="diag-cell"><div class="k">Confidence</div><div class="v">${rules.confidenceMode === 'fixed' ? 'min ' + Number(rules.minConfidence) : 'auto (floor ' + Number(rules.minConfidence) + ')'}</div></div>
         <div class="diag-cell"><div class="k">Maximum risk</div><div class="v">${Number(rules.maxRisk)}</div></div>
         <div class="diag-cell"><div class="k">Minimum data quality</div><div class="v">${Number(rules.minDataQuality)}</div></div>
         <div class="diag-cell"><div class="k">Maximum selections</div><div class="v">${Number(rules.maxSelections)}</div></div>

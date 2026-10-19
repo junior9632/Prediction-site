@@ -64,6 +64,7 @@ const meta = asyncHandler(async (_req, res) => {
       market: { key: 'over_1_5', label: 'Over 1.5 Goals', goalLine: 1.5 },
       oddsWindow: { min: Number(settings.minTotalOdds), max: Number(settings.maxTotalOdds) },
       thresholds: {
+        confidenceMode: settings.confidenceMode || 'auto',
         minConfidence: Number(settings.minConfidence),
         maxRisk: Number(settings.maxRisk),
         minDataQuality: Number(settings.minDataQuality),

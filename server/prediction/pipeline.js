@@ -17,6 +17,7 @@ const riskModule = require('./risk');
 const qualityModule = require('./quality');
 const ticketBuilder = require('./ticketBuilder');
 const correlation = require('./correlation');
+const confidenceThreshold = require('./confidenceThreshold');
 const decimal = require('../utils/decimal');
 const numbers = require('../utils/numbers');
 const time = require('../utils/time');
@@ -206,6 +207,10 @@ async function runPipeline(params) {
 
   const predictions = [];
   const candidates = [];
+  // Confidence is gated AFTER the scan: in auto mode (the default) the
+  // effective threshold is detected from this list, so it cannot be known
+  // until every fixture that passes the other gates has been analysed.
+  const confidencePool = [];
 
   for (const fixture of normalized) {
     const odds = oddsMap.get(Number(fixture.id)) || oddsMap.get(String(fixture.id)) || null;
@@ -272,17 +277,6 @@ async function runPipeline(params) {
     }
     counters.qualityQualified += 1;
 
-    onProgress('CALCULATING_CONFIDENCE', PROGRESS_LABELS.CALCULATING_CONFIDENCE, { fixtureId: fixture.id });
-    const minConfidence = Number(settings.minConfidence ?? 72);
-    if (Number(prediction.confidence) < minConfidence) {
-      prediction.isEligible = false;
-      prediction.rejectReason = 'LOW_CONFIDENCE';
-      counters.rejectedMatches += 1;
-      counters.rejectedLowConfidence += 1;
-      continue;
-    }
-    counters.confidenceQualified += 1;
-
     onProgress('FILTERING_RISK', PROGRESS_LABELS.FILTERING_RISK, { fixtureId: fixture.id });
     const maxRisk = Number(settings.maxRisk ?? 35);
     if (Number(prediction.riskScore) > maxRisk) {
@@ -293,6 +287,33 @@ async function runPipeline(params) {
       continue;
     }
     counters.riskQualified += 1;
+
+    onProgress('CALCULATING_CONFIDENCE', PROGRESS_LABELS.CALCULATING_CONFIDENCE, { fixtureId: fixture.id });
+    confidencePool.push({ prediction, fixture });
+  }
+
+  // Auto-detect the confidence gate from the surviving pool (default), or
+  // apply the configured gate verbatim in fixed mode. The detected gate is
+  // never below the configured floor (min_confidence, default 30).
+  const threshold = confidenceThreshold.detectConfidenceThreshold(
+    confidencePool.map(({ prediction }) => prediction.confidence),
+    {
+      mode: settings.confidenceMode,
+      minConfidence: settings.minConfidence ?? confidenceThreshold.DEFAULT_FLOOR,
+      minSelections: settings.minSelections,
+      candidatePoolSize: settings.candidatePoolSize,
+    }
+  );
+
+  for (const { prediction, fixture } of confidencePool) {
+    if (Number(prediction.confidence) < threshold.effective) {
+      prediction.isEligible = false;
+      prediction.rejectReason = 'LOW_CONFIDENCE';
+      counters.rejectedMatches += 1;
+      counters.rejectedLowConfidence += 1;
+      continue;
+    }
+    counters.confidenceQualified += 1;
 
     candidates.push({
       fixtureId: fixture.id,
@@ -401,6 +422,7 @@ async function runPipeline(params) {
     candidates,
     counters,
     report: built.report,
+    confidenceThreshold: threshold,
     alternatives: built.alternatives || [],
     progress: PROGRESS_STEPS,
   };
@@ -481,6 +503,7 @@ module.exports = {
   analyzeFixture,
   validateFinalSelections,
   describeNoTicket,
+  detectConfidenceThreshold: confidenceThreshold.detectConfidenceThreshold,
   normalizeFixtureRow,
   emptyCounters,
   numbers,

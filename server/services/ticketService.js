@@ -786,7 +786,12 @@ function buildReport({ ticketDate, counters, result, settings, reverify, bulkSyn
     maxRisk: qualified ? result.ticket.maxRisk : null,
     oddsWindow: { min: Number(settings.minTotalOdds), max: Number(settings.maxTotalOdds) },
     thresholds: {
-      minConfidence: Number(settings.minConfidence),
+      // In auto mode `minConfidence` is the gate actually detected for this
+      // run; the configured value survives as the floor it never crossed.
+      minConfidence: result.confidenceThreshold ? result.confidenceThreshold.effective : Number(settings.minConfidence),
+      confidenceMode: result.confidenceThreshold ? result.confidenceThreshold.mode : (settings.confidenceMode || 'auto'),
+      confidenceFloor: result.confidenceThreshold ? result.confidenceThreshold.floor : Number(settings.minConfidence),
+      confidenceThreshold: result.confidenceThreshold || null,
       maxRisk: Number(settings.maxRisk),
       minDataQuality: Number(settings.minDataQuality),
       maxSelections: Number(settings.maxSelections),

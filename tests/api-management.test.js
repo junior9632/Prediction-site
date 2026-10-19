@@ -636,7 +636,8 @@ test('product rules: the Over 1.5 constraints are untouched by API configuration
   assert.equal(settings.marketLabel, 'Over 1.5 Goals');
   assert.equal(settings.minTotalOdds, 2.0);
   assert.equal(settings.maxTotalOdds, 4.0);
-  assert.equal(Number(settings.minConfidence), 72);
+  assert.equal(Number(settings.minConfidence), 30);
+  assert.equal(settings.confidenceMode, 'auto');
   assert.equal(Number(settings.maxRisk), 35);
   assert.equal(Number(settings.minDataQuality), 60);
   assert.equal(Number(settings.maxSelections), 6);
@@ -951,7 +952,7 @@ test('repair: API Management shows the saved prediction thresholds, not environm
     assert.equal(status.json.data.predictionRules.minConfidence, 80);
     assert.equal(status.json.data.predictionRules.maxRisk, 25);
     assert.equal(status.json.data.predictionRules.automaticTicketGeneration, false);
-  } finally { await settingsService.updateSettings({ min_confidence: 72, max_risk: 35 }); }
+  } finally { await settingsService.updateSettings({ min_confidence: 30, max_risk: 35 }); }
 });
 
 test('repair: invalid environment URLs are configuration errors, not fake network outages', async () => {

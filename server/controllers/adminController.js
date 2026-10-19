@@ -103,6 +103,7 @@ const overview = asyncHandler(async (_req, res) => {
         market: { key: settings.marketKey, label: settings.marketLabel },
         oddsWindow: { min: Number(settings.minTotalOdds), max: Number(settings.maxTotalOdds) },
         thresholds: {
+          confidenceMode: settings.confidenceMode || 'auto',
           minConfidence: Number(settings.minConfidence),
           maxRisk: Number(settings.maxRisk),
           minDataQuality: Number(settings.minDataQuality),
