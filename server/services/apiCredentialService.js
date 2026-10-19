@@ -57,8 +57,9 @@ const CACHE_TTL_MS = 15 * 1000;
  * Throttling windows for credential tests (operator tunable through the
  * environment, overridable in tests through `setTestWindowsForTests`):
  *   * minIntervalMs — never hammer the provider from the same process;
- *   * reuseMs — the same credential + host tested inside this window is
- *     reported from the recorded verdict instead of a second provider call.
+ *   * reuseMs — a successful test of the same credential + host inside this
+ *     window reuses its recorded verdict. Failures reuse only minIntervalMs
+ *     (or reuseMs when shorter), so a repaired account can be checked promptly.
  */
 const TEST_WINDOW_DEFAULTS = Object.freeze({
   minIntervalMs: config.apiCredentials.testMinIntervalMs,
@@ -674,7 +675,11 @@ async function testConnection({ provider: providerId, key, host }, { adminId = n
 async function runProbe({ provider, hostEntry, apiKey, keyOrigin, fingerprint }) {
   const identity = `${provider.id}:${hostEntry.id}:${fingerprint}`;
   const cached = latestProbe(provider.id, hostEntry.id, fingerprint);
-  if (cached && Date.now() - cached.at < testWindows.reuseMs) return { ...cached.result, keyOrigin, reused: true };
+  // A successful verdict can be reused, but an old rejection must not hide a
+  // subscription/key repair for the full success-cache window. Keep the short
+  // anti-hammering floor for failures, then allow an explicit fresh test.
+  const reuseMs = cached && cached.result.ok ? testWindows.reuseMs : Math.min(testWindows.reuseMs, testWindows.minIntervalMs);
+  if (cached && Date.now() - cached.at < reuseMs) return { ...cached.result, keyOrigin, reused: true };
   if (probeInFlight) {
     if (probeInFlight.identity === identity) return { ...await probeInFlight.promise, keyOrigin, reused: true };
     throw AppError.tooMany('A connection test is already running. Please wait for its result.', 'TEST_THROTTLED');

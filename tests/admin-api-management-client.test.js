@@ -118,7 +118,7 @@ const STATUS_PAYLOAD = {
  * `render()` registers every id in the produced markup so the view can bind to
  * the controls it just rendered — exactly like the real console does.
  */
-function harness(responses = {}) {
+function harness(responses = {}, { fetchImpl = null, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   const nodes = new Map();
   const requests = [];
   const alerts = [];
@@ -167,20 +167,20 @@ function harness(responses = {}) {
 
   const api = {
     async request(pathname, options = {}) {
-      requests.push({ path: pathname, method: options.method || 'GET', body: options.body });
+      requests.push({ path: pathname, method: options.method || 'GET', body: options.body, timeoutMs: options.timeoutMs });
       const key = `${options.method || 'GET'} ${pathname.split('?')[0]}`;
       const responder = responses[key];
       if (!responder) throw new Error(`unexpected request: ${key}`);
-      return responder(options.body);
+      return responder(options.body, options);
     },
-    get(pathname) {
-      return api.request(pathname);
+    get(pathname, options = {}) {
+      return api.request(pathname, options);
     },
-    post(pathname, body) {
-      return api.request(pathname, { method: 'POST', body });
+    post(pathname, body, options = {}) {
+      return api.request(pathname, { ...options, method: 'POST', body });
     },
-    put(pathname, body) {
-      return api.request(pathname, { method: 'PUT', body });
+    put(pathname, body, options = {}) {
+      return api.request(pathname, { ...options, method: 'PUT', body });
     },
   };
 
@@ -188,13 +188,14 @@ function harness(responses = {}) {
   const ctx = {
     window,
     document,
-    fetch: async () => {
+    fetch: fetchImpl || (async () => {
       throw new Error('the admin view must use the shared API helper, never fetch directly');
-    },
+    }),
     navigator: {},
     console,
-    setTimeout,
-    clearTimeout,
+    setTimeout: setTimer,
+    clearTimeout: clearTimer,
+    AbortController,
     Promise,
     Object,
     Array,
@@ -218,11 +219,12 @@ function harness(responses = {}) {
 
   // the view module uses the shared helper (App.API), exactly like the console
   // does — so the recording stub replaces App.API, not a local copy
-  ctx.window.App.API = api;
+  const sharedApi = ctx.window.App.API;
+  if (!fetchImpl) ctx.window.App.API = api;
 
   // capture alerts by wrapping the element innerHTML setter used by actionBox
   const helpers = {
-    API: api,
+    API: ctx.window.App.API,
     fmt: ctx.window.App.fmt,
     escapeHtml: ctx.window.App.escapeHtml,
     icons: ctx.window.App.icons,
@@ -235,7 +237,7 @@ function harness(responses = {}) {
 
   vm.runInContext(VIEW_JS, ctx, { filename: 'public/js/admin-api-management.js' });
 
-  return { ctx, nodes, requests, helpers, view: ctx.window.AdminApiManagement, html: () => lastHtml, alerts };
+  return { ctx, nodes, requests, helpers, sharedApi, view: ctx.window.AdminApiManagement, html: () => lastHtml, alerts };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -522,14 +524,18 @@ test('API Management repair: refresh failures preserve the test verdict and the 
   assert.equal(h.nodes.get('apiKey').value, 'unsaved-test-only-key');
 });
 
-test('API Management repair: schema/encryption failures disable saving without hiding the diagnosis', async () => {
+test('API Management repair: schema/encryption failures explain the blocked save on click', async () => {
   const payload = structuredClone(STATUS_PAYLOAD);
   payload.databaseManaged = false; payload.degradedReason = 'SCHEMA_OUT_OF_DATE';
   payload.encryption.configured = false;
   const h = harness({ 'GET /admin/api-management': () => payload });
   await h.view.load(h.helpers);
-  assert.equal(h.nodes.get('apiSaveBtn').disabled, true);
+  assert.equal(h.nodes.get('apiSaveBtn').disabled, false, 'a prerequisite failure is not a dead button');
   assert.equal(h.nodes.get('apiTestBtn').disabled, false);
+  await h.nodes.get('apiSaveBtn').onclick();
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /Credential storage needs attention/);
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /npm run db:migrate/);
+  assert.equal(h.requests.filter((r) => r.method !== 'GET').length, 0, 'no unsafe save is submitted');
   assert.match(h.html(), /npm run db:migrate/);
 });
 
@@ -568,7 +574,7 @@ test('API Management repair: credential storage is a separate, explicit readines
   assert.match(h.html(), /CONNECTED/, 'the provider connection remains visible on its own');
 });
 
-test('API Management repair: schema storage failure names the migration and disables saving', async () => {
+test('API Management repair: schema storage failure names the migration and blocks unsafe saving', async () => {
   const payload = structuredClone(STATUS_PAYLOAD);
   payload.databaseManaged = false;
   payload.degradedReason = 'SCHEMA_OUT_OF_DATE';
@@ -594,8 +600,15 @@ test('API Management repair: schema storage failure names the migration and disa
   const h = harness({ 'GET /admin/api-management': () => payload });
   await h.view.load(h.helpers);
 
-  assert.equal(h.nodes.get('apiSaveBtn').disabled, true);
+  assert.equal(h.nodes.get('apiSaveBtn').disabled, false, 'clicking explains the prerequisite');
   assert.equal(h.nodes.get('apiTestBtn').disabled, false, 'provider testing stays available');
+  h.nodes.get('apiKey').value = 'unsaved-test-only-key';
+  await h.nodes.get('apiSaveBtn').onclick();
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /003-api-credential-management\.sql/);
+  assert.match(h.nodes.get('apiSaveBtn').title, /npm run db:migrate/);
+  assert.match(h.nodes.get('apiControlHint').textContent, /Credential storage needs attention/);
+  assert.equal(h.nodes.get('apiKey').value, 'unsaved-test-only-key');
+  assert.equal(h.requests.filter((r) => r.method === 'PUT').length, 0, 'storage protection is not bypassed');
   assert.match(h.html(), /003-api-credential-management\.sql/);
   assert.match(h.html(), /npm run db:migrate/);
   assert.match(h.html(), /does not prove that a key can be stored/);
@@ -618,4 +631,201 @@ test('API Management repair: a history-only failure does not claim storage is un
   assert.equal(h.nodes.get('apiSaveBtn').disabled, false, 'history is not a save blocker');
   assert.match(h.html(), /only the diagnostics history is unavailable/);
   assert.doesNotMatch(h.html(), /Credential storage is unavailable\. Ask the host/);
+});
+
+test('API Management: unsaved Activate/Disable buttons explain the next step instead of being dead', async () => {
+  const payload = structuredClone(STATUS_PAYLOAD);
+  payload.credential = null;
+  payload.credentialSource = 'none';
+  const h = harness({ 'GET /admin/api-management': () => payload });
+  await h.view.load(h.helpers);
+  assert.equal(h.nodes.get('apiActivateBtn').disabled, false);
+  assert.equal(h.nodes.get('apiDisableBtn').disabled, false);
+  await h.nodes.get('apiActivateBtn').onclick();
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /Save the configuration first/);
+  await h.nodes.get('apiDisableBtn').onclick();
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /No saved credential to disable/);
+  assert.equal(h.requests.filter((r) => r.method !== 'GET').length, 0, 'prerequisites remain enforced');
+});
+
+test('API Management: subscription failure leaves the form editable and Test clickable again', async () => {
+  let attempts = 0;
+  const h = harness({
+    'GET /admin/api-management': () => STATUS_PAYLOAD,
+    'POST /admin/api-management/test': () => {
+      attempts += 1;
+      return { ok: false, state: 'SUBSCRIPTION_INACTIVE', label: 'API subscription required or inactive',
+        message: 'You are not subscribed to this API.', hint: 'Subscribe using the same account/app as the key.',
+        httpStatus: 403, latencyMs: 390 };
+    },
+  });
+  await h.view.load(h.helpers);
+  h.nodes.get('apiKey').value = 'unsaved-test-only-key';
+  await h.nodes.get('apiTestBtn').onclick();
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /You are not subscribed/);
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /HTTP 403/);
+  assert.doesNotMatch(h.nodes.get('apiActionBox').innerHTML, /Invalid API key/);
+  for (const id of ['apiTestBtn', 'apiRefreshBtn', 'apiHost', 'apiKey', 'apiSaveBtn']) assert.equal(h.nodes.get(id).disabled, false, id);
+  await h.nodes.get('apiTestBtn').onclick();
+  assert.equal(attempts, 2, 'a second click actually runs a test');
+  assert.equal(h.nodes.get('apiKey').value, 'unsaved-test-only-key');
+  assert.ok(h.requests.every((r) => r.timeoutMs === 45000), 'initial load, tests and status refreshes are all bounded');
+});
+
+test('API Management: account/subscription help follows the selected host without switching it automatically', async () => {
+  const payload = structuredClone(STATUS_PAYLOAD);
+  payload.providers = require('../server/services/apiProviders').list();
+  const h = harness({ 'GET /admin/api-management': () => payload });
+  await h.view.load(h.helpers);
+  assert.match(h.html(), /Manage API account \/ subscription/);
+  assert.match(h.html(), /https:\/\/dashboard\.api-football\.com\//);
+  h.nodes.get('apiHost').value = 'api-football-v1.p.rapidapi.com/v3';
+  h.nodes.get('apiHost').onchange();
+  assert.match(h.nodes.get('apiHostHelp').innerHTML, /same account\/app/);
+  assert.match(h.nodes.get('apiHostHelp').innerHTML, /https:\/\/rapidapi\.com\/api-sports\/api\/api-football\/pricing/);
+  assert.match(h.nodes.get('apiHostHelp').innerHTML, /rel="noopener noreferrer"/);
+  assert.equal(h.requests.length, 1, 'selecting a host never sends a secret or changes the saved credential');
+});
+
+/** Drive the real shared HTTP helper without waiting 45 wall-clock seconds. */
+function manualTimers() {
+  const timers = new Map();
+  let nextId = 0;
+  return {
+    timers,
+    setTimer(fn, ms) { const id = ++nextId; timers.set(id, { fn, ms }); return id; },
+    clearTimer(id) { timers.delete(id); },
+    expire() {
+      assert.equal(timers.size, 1, 'one request deadline is pending');
+      const [id, timer] = timers.entries().next().value;
+      assert.equal(timer.ms, 45000);
+      timers.delete(id);
+      timer.fn();
+    },
+  };
+}
+
+function waitForAbort(signal) {
+  return new Promise((_resolve, reject) => {
+    const abort = () => reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  });
+}
+const jsonReply = (data) => ({ ok: true, status: 200, json: async () => ({ ok: true, data }) });
+
+test('API Management: a stalled real HTTP request times out, unlocks the buttons, and can be retried', async () => {
+  const clock = manualTimers();
+  let attempts = 0;
+  let testSignal;
+  const h = harness({}, { ...clock, fetchImpl: async (url, options) => {
+    if (url === '/api/admin/api-management') return jsonReply(STATUS_PAYLOAD);
+    assert.equal(url, '/api/admin/api-management/test');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers['X-CSRF-Token'], 'csrf-token-abc');
+    assert.equal(options.credentials, 'same-origin');
+    attempts += 1;
+    testSignal = options.signal;
+    if (attempts === 1) return waitForAbort(options.signal);
+    return jsonReply({ ok: true, label: 'Connection successful', message: 'Accepted', latencyMs: 1 });
+  } });
+  await h.view.load(h.helpers);
+  assert.equal(clock.timers.size, 0, 'a completed load clears its deadline');
+  h.nodes.get('apiKey').value = 'unsaved-test-only-key';
+  const running = h.nodes.get('apiTestBtn').onclick();
+  assert.equal(h.nodes.get('apiTestBtn').disabled, true);
+  clock.expire();
+  await running;
+  assert.equal(testSignal.aborted, true, 'the browser request is actually aborted');
+  assert.equal(h.view.isBusy(), false);
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /Request timed out/);
+  for (const id of ['apiTestBtn', 'apiRefreshBtn', 'apiHost', 'apiKey', 'apiSaveBtn']) assert.equal(h.nodes.get(id).disabled, false, id);
+  assert.equal(h.nodes.get('apiKey').value, 'unsaved-test-only-key', 'timeout does not erase the draft');
+  await h.nodes.get('apiTestBtn').onclick();
+  assert.equal(attempts, 2);
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /Connection successful/);
+  await tick();
+  assert.equal(clock.timers.size, 0, 'successful retry and its refresh both clear their deadlines');
+});
+
+test('API Management: a stalled status refresh cannot lock the form after a provider 403', async () => {
+  const clock = manualTimers();
+  let reads = 0;
+  const h = harness({}, { ...clock, fetchImpl: async (url, options) => {
+    if (url === '/api/admin/api-management') return ++reads === 1 ? jsonReply(STATUS_PAYLOAD) : waitForAbort(options.signal);
+    assert.equal(url, '/api/admin/api-management/test');
+    return jsonReply({ ok: false, state: 'SUBSCRIPTION_INACTIVE', label: 'API subscription required or inactive',
+      message: 'You are not subscribed to this API.', httpStatus: 403, latencyMs: 390 });
+  } });
+  await h.view.load(h.helpers);
+  h.nodes.get('apiKey').value = 'unsaved-test-only-key';
+  const running = h.nodes.get('apiTestBtn').onclick();
+  await tick(); // the verdict is already displayed; the follow-up GET is pending
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /You are not subscribed/);
+  assert.equal(h.nodes.get('apiTestBtn').disabled, false, 'a background diagnostics read does not lock the form');
+  await running;
+  clock.expire();
+  await tick();
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /You are not subscribed/);
+  assert.match(h.nodes.get('apiActionBox').innerHTML, /Status refresh failed: Request timed out/);
+  assert.equal(h.nodes.get('apiKey').value, 'unsaved-test-only-key');
+  assert.equal(h.nodes.get('apiTestBtn').disabled, false);
+  assert.equal(h.view.isBusy(), false);
+});
+
+test('shared HTTP helper: PUT deadlines cover a stalled JSON body, not just response headers', async () => {
+  const clock = manualTimers();
+  let signal;
+  const h = harness({}, { ...clock, fetchImpl: async (_url, options) => {
+    signal = options.signal;
+    return { ok: true, status: 200, json: () => waitForAbort(signal) };
+  } });
+  const pending = h.sharedApi.put('/admin/api-management/credentials', { key: 'test-only-key' }, { timeoutMs: 45000 });
+  await tick();
+  clock.expire();
+  await assert.rejects(pending, (err) => err.code === 'REQUEST_TIMEOUT' && /server may still finish/.test(err.message));
+  assert.equal(signal.aborted, true);
+  assert.equal(clock.timers.size, 0);
+});
+
+test('shared HTTP helper: adding a deadline preserves caller cancellation and server errors', async () => {
+  const clock = manualTimers();
+  const h = harness({}, { ...clock, fetchImpl: async (_url, options) => waitForAbort(options.signal) });
+  const controller = new AbortController();
+  const pending = h.sharedApi.get('/admin/api-management', { timeoutMs: 45000, signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, (err) => err.name === 'AbortError' && err.code !== 'REQUEST_TIMEOUT');
+  assert.equal(clock.timers.size, 0);
+
+  h.ctx.fetch = async () => ({ ok: false, status: 403, json: async () => ({ error: { code: 'CSRF_INVALID', message: 'Invalid CSRF token' } }) });
+  await assert.rejects(h.sharedApi.post('/admin/api-management/test', {}, { timeoutMs: 45000 }),
+    (err) => err.code === 'CSRF_INVALID' && err.status === 403);
+  assert.equal(clock.timers.size, 0, 'server errors also release their timer');
+});
+
+test('API Management: a late background status read cannot overwrite a newer save', async () => {
+  let finish;
+  let reads = 0;
+  const staleStatus = new Promise((resolve) => { finish = resolve; });
+  const saved = structuredClone(STATUS_PAYLOAD);
+  saved.credential.host = 'api-football-v1.p.rapidapi.com/v3';
+  saved.connection.host = saved.credential.host;
+  const h = harness({
+    'GET /admin/api-management': () => ++reads === 1 ? STATUS_PAYLOAD : staleStatus,
+    'POST /admin/api-management/test': () => ({ ok: false, state: 'SUBSCRIPTION_INACTIVE', message: 'Not subscribed', latencyMs: 1 }),
+    'PUT /admin/api-management/credentials': () => ({ maskedKey: '********1234', status: saved }),
+    'POST /admin/api-management/activate': () => ({ status: saved }),
+  });
+  await h.view.load(h.helpers);
+  await h.nodes.get('apiTestBtn').onclick();
+  assert.equal(h.view.isBusy(), false, 'the test is finished even though diagnostics are still pending');
+  h.nodes.get('apiKey').value = 'replacement-test-only-key';
+  h.nodes.get('apiHost').value = saved.credential.host;
+  await h.nodes.get('apiSaveBtn').onclick();
+  assert.equal(h.nodes.get('apiHost').value, saved.credential.host);
+  finish(STATUS_PAYLOAD); // the old, direct-host diagnostics finally arrive
+  await tick();
+  await h.nodes.get('apiActivateBtn').onclick();
+  assert.equal(h.requests.filter((r) => r.path === '/admin/api-management/activate').length, 1,
+    'activation sees the new saved host, not the stale background response');
 });

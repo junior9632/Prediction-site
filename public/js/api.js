@@ -23,44 +23,67 @@ const App = (() => {
       const csrf = API.csrf();
       if (csrf && options.method && options.method !== 'GET') headers['X-CSRF-Token'] = csrf;
 
-      const res = await fetch(API.base + path, {
-        method: options.method || 'GET',
-        headers,
-        credentials: 'same-origin',
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-        cache: options.cache || 'no-store',
-        signal: options.signal,
-      });
+      // Opt-in deadlines keep admin actions from locking their controls forever
+      // when the host or proxy stops responding. Include response-body reads.
+      const timeoutMs = Number(options.timeoutMs);
+      const controller = Number.isFinite(timeoutMs) && timeoutMs > 0 && typeof AbortController === 'function' ? new AbortController() : null;
+      const abort = () => controller.abort();
+      let timedOut = false;
+      let timer = null;
+      if (controller) {
+        if (options.signal) {
+          if (options.signal.aborted) controller.abort();
+          else options.signal.addEventListener('abort', abort, { once: true });
+        }
+        timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+      }
 
-      let payload = null;
       try {
-        payload = await res.json();
-      } catch (_) {
-        payload = null;
-      }
+        const res = await fetch(API.base + path, {
+          method: options.method || 'GET',
+          headers,
+          credentials: 'same-origin',
+          body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+          cache: options.cache || 'no-store',
+          signal: controller ? controller.signal : options.signal,
+        });
 
-      if (!res.ok) {
-        // 401 on a football endpoint means the session is gone: send the
-        // visitor to the member sign-in door instead of leaving an empty
-        // page behind. The server has already refused the data — this is only
-        // so the browser does not sit on a blank screen.
-        if (res.status === 401 && !options.anonymous && !path.startsWith('/auth/')) session.onUnauthorized();
-        const err = new Error((payload && payload.error && payload.error.message) || `Request failed (${res.status})`);
-        err.status = res.status;
-        err.code = payload && payload.error ? payload.error.code : 'HTTP_' + res.status;
-        err.details = payload && payload.error ? payload.error.details : null;
-        throw err;
+        let payload = null;
+        try {
+          payload = await res.json();
+        } catch (err) {
+          if (timedOut || (err && err.name === 'AbortError')) throw err;
+        }
+
+        if (!res.ok) {
+          // A provider rejection is returned as a verdict by our admin API;
+          // only our own HTTP 401 means the signed-in session is gone.
+          if (res.status === 401 && !options.anonymous && !path.startsWith('/auth/')) session.onUnauthorized();
+          const err = new Error((payload && payload.error && payload.error.message) || `Request failed (${res.status})`);
+          err.status = res.status;
+          err.code = payload && payload.error ? payload.error.code : 'HTTP_' + res.status;
+          err.details = payload && payload.error ? payload.error.details : null;
+          throw err;
+        }
+        return payload ? payload.data : null;
+      } catch (err) {
+        if (!timedOut) throw err;
+        const timeout = new Error('Request timed out. The server may still finish the request. Refresh API status before retrying a change.');
+        timeout.code = 'REQUEST_TIMEOUT';
+        throw timeout;
+      } finally {
+        if (timer !== null) clearTimeout(timer);
+        if (controller && options.signal) options.signal.removeEventListener('abort', abort);
       }
-      return payload ? payload.data : null;
     },
     get(path, options = {}) {
       return API.request(path, options);
     },
-    post(path, body) {
-      return API.request(path, { method: 'POST', body });
+    post(path, body, options = {}) {
+      return API.request(path, Object.assign({}, options, { method: 'POST', body }));
     },
-    put(path, body) {
-      return API.request(path, { method: 'PUT', body });
+    put(path, body, options = {}) {
+      return API.request(path, Object.assign({}, options, { method: 'PUT', body }));
     },
     del(path) {
       return API.request(path, { method: 'DELETE' });

@@ -68,6 +68,7 @@ globalThis.fetch = async (url, options = {}) => {
     return jsonResponse(200, { get: 'status', errors: { requests: 'You have reached the request limit for the day' }, response: [] });
   }
   if (upstream.mode === 'rejected') return jsonResponse(403, { errors: { token: 'invalid key' }, response: [] });
+  if (upstream.mode === 'not_subscribed') return jsonResponse(403, { message: 'You are not subscribed to this API.' });
   return jsonResponse(200, {
     get: 'status',
     errors: [],
@@ -446,6 +447,44 @@ test('test connection: invalid key, quota, rate limit, provider down, timeout an
     assert.equal(res.json.data.quota, null, `${mode} must not invent a quota`);
     assert.ok(!res.text.includes(API_KEY), `${mode}: the key never echoes back`);
   }
+});
+
+test('test connection: RapidAPI subscription rejection is persisted honestly and can recover', async () => {
+  resetUpstream('not_subscribed');
+  await saveKey(API_KEY, 'api-football-v1.p.rapidapi.com/v3');
+  const rejected = await post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+  assert.equal(rejected.status, 200, 'a provider 403 is a verdict, not an expired admin session');
+  assert.equal(rejected.json.data.state, 'SUBSCRIPTION_INACTIVE');
+  assert.equal(rejected.json.data.reason, 'SUBSCRIPTION_INACTIVE');
+  assert.equal(rejected.json.data.httpStatus, 403);
+  assert.match(rejected.json.data.message, /You are not subscribed/);
+  assert.match(rejected.json.data.hint, /RapidAPI/);
+  assert.match(rejected.json.data.hint, /subscrib/i);
+  assert.equal(rejected.json.data.quota, null);
+  assert.equal(upstreamCalls.length, 1);
+  assert.equal(upstreamCalls[0].url, `${UPSTREAM_RAPIDAPI}/status`);
+  assert.equal(upstreamCalls[0].headers['x-rapidapi-key'], API_KEY);
+  assert.ok(!rejected.text.includes(API_KEY));
+
+  const status = await get('/api/admin/api-management', { token: adminBearer });
+  assert.equal(status.json.data.connection.state, 'SUBSCRIPTION_INACTIVE');
+  assert.equal(status.json.data.recentErrors[0].outcome, 'SUBSCRIPTION_INACTIVE');
+  assert.equal(status.json.data.credential.isActive, false, 'a rejected test does not activate the key');
+
+  credentialService.setTestWindowsForTests({ reuseMs: 60000, minIntervalMs: 60000 });
+  const repeated = await post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+  assert.equal(repeated.json.data.reused, true, 'the anti-hammering floor still applies to failed tests');
+  assert.equal(upstreamCalls.length, 1);
+
+  upstream.mode = 'ok';
+  credentialService.setTestWindowsForTests({ reuseMs: 60000, minIntervalMs: 0 });
+  const recovered = await post('/api/admin/api-management/test', { provider: 'api_football' }, { token: adminBearer });
+  assert.equal(recovered.json.data.ok, true);
+  assert.equal(recovered.json.data.state, 'CONNECTED');
+  assert.equal(recovered.json.data.reused, false, 'a repaired subscription is not hidden behind a cached rejection');
+  assert.equal(upstreamCalls.length, 2);
+  assert.equal(store.tickets.length, 0, 'testing never creates a ticket');
+  credentialService.setTestWindowsForTests();
 });
 
 test('test connection: incomplete configuration is reported instead of a fake success', async () => {

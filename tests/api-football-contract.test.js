@@ -156,6 +156,36 @@ test('HTTP 200 auth and parameter errors fail closed instead of becoming zero fi
   }
 });
 
+test('not subscribed responses are subscription failures, not invalid keys', async () => {
+  for (const [body, status] of [
+    [{ message: 'You are not subscribed to this API.' }, 403],
+    [{ errors: { subscription: 'You are not subscribed to this API.' }, response: [] }, 200],
+    [{ message: 'An active subscription is required.' }, 403],
+    [{ errors: { subscription: 'No active subscription found.' } }, 403],
+    [{ message: 'Your subscription has expired.' }, 403],
+  ]) {
+    assert.equal(classifyProviderError({ httpStatus: status, errors: body.errors, message: body.message }), 'SUBSCRIPTION_INACTIVE');
+    const { client, calls, waits } = make(() => answer(body, status), { host: RAPID_HOST, maxRetries: 2 });
+    const result = await client.probeCredentials();
+    assert.equal(result.ok, false);
+    assert.equal(result.state, 'SUBSCRIPTION_INACTIVE');
+    assert.equal(result.reason, 'SUBSCRIPTION_INACTIVE');
+    assert.equal(result.httpStatus, status);
+    assert.match(result.hint, /RapidAPI/);
+    assert.match(result.hint, /subscrib/i);
+    assert.match(result.hint, /v3\.football\.api-sports\.io/);
+    assert.equal(result.quota, null, 'no budget is invented for a rejected subscription');
+    assert.equal(calls.length, 1, 'subscription failures are never retried or sent to another host');
+    assert.equal(calls[0].url, `https://${RAPID_HOST}/status`);
+    assert.deepEqual(waits, []);
+    assert.equal(client._breaker.failures, 0, 'a missing subscription is not a network outage');
+  }
+  assert.equal(classifyProviderError({ httpStatus: 403, message: 'Invalid API key.' }), 'INVALID_KEY');
+  assert.equal(classifyProviderError({ httpStatus: 401 }), 'INVALID_KEY');
+  assert.equal(classifyProviderError({ httpStatus: 429, message: 'You have reached the limit of requests per minute of your subscription.' }), 'RATE_LIMITED');
+  assert.equal(classifyProviderError({ httpStatus: 200, errors: { plan: 'This season is not supported by your plan' } }), 'REQUEST_REJECTED');
+});
+
 test('per-minute errors are not confused with daily quota exhaustion', async () => {
   const errors = { rateLimit: 'You have reached the limit of requests per minute of your subscription.' };
   assert.equal(classifyProviderError({ errors, httpStatus: 429 }), 'RATE_LIMITED');

@@ -26,6 +26,10 @@
   let ui = null;
   let current = null;
 
+  // The provider request is bounded server-side too; a stalled proxy/status
+  // refresh must not leave every button and input disabled indefinitely.
+  const REQUEST_OPTIONS = { timeoutMs: 45000 };
+
   const STATE_TONE = {
     CONNECTED: 'green',
     ENVIRONMENT: 'cyan',
@@ -72,6 +76,12 @@
     return `<div class="alert ${cls}"><div><b>${escapeHtml(storage.summary || 'Credential storage is not ready.')}</b>
       ${issues ? `<ul class="small" style="margin:8px 0 0 18px;padding:0;">${issues}</ul>` : ''}
       <div class="tiny" style="margin-top:8px;">Credential storage and provider connectivity are separate checks: a successful Test Connection does not prove that a key can be stored.</div></div></div>`;
+  }
+
+  function hostHelp(provider, hostId) {
+    const host = (provider.hosts || []).find((h) => h.id === hostId) || {};
+    return `${escapeHtml(host.credentialHelp || 'Choose the host that issued your key: the direct provider and the marketplace use different credentials.')}
+      ${host.accountUrl ? `<a href="${escapeHtml(host.accountUrl)}" target="_blank" rel="noopener noreferrer">Manage API account / subscription ↗</a>` : ''}`;
   }
 
   function configurationCard(status) {
@@ -136,7 +146,7 @@
           <div class="field" style="min-width:0;flex:1 1 240px;">
             <label for="apiHost">API host</label>
             <select class="input" id="apiHost">${hostOptions}</select>
-            <div class="hint">Choose the host that issued your key: the direct provider and the marketplace use different credentials.</div>
+            <div class="hint" id="apiHostHelp">${hostHelp(current, configuredHost(status))}</div>
           </div>
         </div>
         <div class="field" style="margin-top:12px;">
@@ -146,12 +156,13 @@
           <div class="hint">Leave empty to test the saved credential. A typed key is tested without saving; it stays in this field until you save or leave the page.</div>
         </div>
         <div class="row wrap" style="margin-top:14px;gap:10px;">
-          <button class="btn btn-primary" id="apiSaveBtn">${icons.check} Save configuration</button>
-          <button class="btn btn-ghost" id="apiTestBtn">${icons.bolt} Test connection</button>
-          <button class="btn btn-outline" id="apiActivateBtn">Activate provider</button>
-          <button class="btn btn-ghost" id="apiDisableBtn">Disable saved credential</button>
-          <button class="btn btn-ghost" id="apiRefreshBtn">${icons.refresh} Refresh API status</button>
+          <button type="button" class="btn btn-primary" id="apiSaveBtn">${icons.check} Save configuration</button>
+          <button type="button" class="btn btn-ghost" id="apiTestBtn">${icons.bolt} Test connection</button>
+          <button type="button" class="btn btn-outline" id="apiActivateBtn">Activate provider</button>
+          <button type="button" class="btn btn-ghost" id="apiDisableBtn">Disable saved credential</button>
+          <button type="button" class="btn btn-ghost" id="apiRefreshBtn">${icons.refresh} Refresh API status</button>
         </div>
+        <p class="hint" id="apiControlHint" style="margin-top:10px;"></p>
         <div class="section" id="apiActionBox" role="status" aria-live="polite" aria-atomic="true"></div>
         <div class="divider" style="margin:16px 0;"></div>
         <div class="diag-grid api-config-details">
@@ -343,23 +354,57 @@
     return { provider: $('#apiProvider').value, host: $('#apiHost').value, key: $('#apiKey').value.trim() };
   }
 
+  function blockedAction(status, id) {
+    if (id === 'apiSaveBtn') {
+      const canSave = status.storage
+        ? Boolean(status.storage.canSave)
+        : Boolean(status.databaseManaged && status.encryption && status.encryption.configured);
+      if (!canSave) {
+        const details = status.storage
+          ? [status.storage.summary, ...(status.storage.issues || []).map((issue) => issue.fix || issue.message)].filter(Boolean).join(' ')
+          : [status.degradedReason ? 'Run npm run db:migrate and verify database access.' : '',
+            status.encryption && !status.encryption.configured ? status.encryption.message : ''].filter(Boolean).join(' ');
+        return { message: 'Credential storage needs attention', details: `${details} Test connection is still available without saving.`.trim() };
+      }
+    }
+    if (id === 'apiActivateBtn' && !status.credential) {
+      return { message: 'Save the configuration first', details: 'Paste your key, test it, then Save configuration before activating the saved provider.' };
+    }
+    if (id === 'apiDisableBtn' && !status.credential) {
+      return { message: 'No saved credential to disable', details: 'This action only disables a saved credential, not a server environment key.' };
+    }
+    return null;
+  }
+
+  function explainBlocked(ctx, id) {
+    const blocked = blockedAction(ctx.status, id);
+    if (blocked) actionBox(ctx, 'warn', blocked.message, blocked.details);
+    return Boolean(blocked);
+  }
+
   const controlIds = ['apiSaveBtn', 'apiTestBtn', 'apiActivateBtn', 'apiDisableBtn', 'apiRefreshBtn', 'apiProvider', 'apiHost', 'apiKey'];
   function controls(ctx) {
     if (!active(ctx)) return;
     controlIds.forEach((id) => {
       const el = $('#' + id);
       if (!el) return;
-      const storageAllowsSave = ctx.status.storage
-        ? Boolean(ctx.status.storage.canSave)
-        : Boolean(ctx.status.databaseManaged && ctx.status.encryption && ctx.status.encryption.configured);
-      el.disabled = ctx.busy || (id === 'apiSaveBtn' && !storageAllowsSave) ||
-        ((id === 'apiActivateBtn' || id === 'apiDisableBtn') && !ctx.status.credential);
+      // Missing prerequisites must explain themselves on click, not leave a
+      // permanently greyed-out API button. The server still enforces them.
+      el.disabled = ctx.busy;
+      const blocked = blockedAction(ctx.status, id);
+      el.title = ctx.busy ? 'A request is in progress.' : blocked ? blocked.details : '';
     });
+    const hint = $('#apiControlHint');
+    const blocked = ['apiSaveBtn', 'apiActivateBtn'].map((id) => blockedAction(ctx.status, id)).filter(Boolean);
+    if (hint) hint.textContent = ctx.busy
+      ? 'Request in progress. Controls become available when it finishes or times out.'
+      : blocked.length ? blocked.map((item) => item.message + '.').join(' ') + ' Click the action for details. Test connection remains available.' : '';
   }
 
   async function busy(ctx, id, label, fn) {
     if (!active(ctx) || ctx.busy) return;
     ctx.busy = true;
+    ctx.actionVersion += 1;
     const button = $('#' + id);
     const original = button.innerHTML;
     controls(ctx);
@@ -404,9 +449,10 @@
   }
 
   async function refresh(ctx, status, replaceForm = false) {
+    const version = ctx.actionVersion;
     try {
-      const next = status || await API.get('/admin/api-management');
-      if (!active(ctx)) return;
+      const next = status || await API.get('/admin/api-management', REQUEST_OPTIONS);
+      if (!active(ctx) || version !== ctx.actionVersion) return;
       ctx.status = next;
       if (replaceForm) renderAll(ctx);
       else {
@@ -417,7 +463,7 @@
       const realtime = $('#serverTime');
       if (realtime && next.serverTime) realtime.textContent = `server ${fmt.dateTimeLabel(next.serverTime)}`;
     } catch (err) {
-      if (!active(ctx)) return;
+      if (!active(ctx) || version !== ctx.actionVersion) return;
       const previous = ctx.feedback;
       actionBox(ctx, 'warn', previous ? previous.message : 'Status could not be refreshed',
         `${previous && previous.details ? previous.details + ' ' : ''}Status refresh failed: ${err.message}. Reload the page to check the current server state.`);
@@ -430,13 +476,20 @@
       const provider = (ctx.status.providers || []).find((p) => p.id === $('#apiProvider').value);
       $('#apiHost').innerHTML = (provider && provider.hosts || [])
         .map((h) => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.label)}</option>`).join('');
+      $('#apiHost').onchange();
+    };
+    $('#apiHost').onchange = () => {
+      if (!active(ctx) || ctx.busy) return;
+      const provider = (ctx.status.providers || []).find((p) => p.id === $('#apiProvider').value) || {};
+      $('#apiHostHelp').innerHTML = hostHelp(provider, $('#apiHost').value);
     };
     $('#apiSaveBtn').onclick = () => busy(ctx, 'apiSaveBtn', 'Saving…', async () => {
+      if (explainBlocked(ctx, 'apiSaveBtn')) return;
       const form = selectedForm();
       if (!form.key) { actionBox(ctx, 'warn', 'Enter an API key first', 'There is nothing to encrypt and save. Test connection can use the saved key.'); return; }
       if (ctx.status.credential && ctx.status.credential.isActive && !window.confirm('This replaces the ACTIVE credential immediately. Continue?')) return;
       try {
-        const result = await API.put('/admin/api-management/credentials', form);
+        const result = await API.put('/admin/api-management/credentials', form, REQUEST_OPTIONS);
         if (!active(ctx)) return;
         $('#apiKey').value = '';
         actionBox(ctx, 'ok', result.replaced ? 'API key replaced (encrypted at rest)' : 'API key saved (encrypted at rest)',
@@ -447,38 +500,42 @@
     $('#apiTestBtn').onclick = () => busy(ctx, 'apiTestBtn', 'Testing…', async () => {
       const form = selectedForm();
       try {
-        const result = await API.post('/admin/api-management/test', { provider: form.provider, host: form.host, ...(form.key ? { key: form.key } : {}) });
+        const result = await API.post('/admin/api-management/test', { provider: form.provider, host: form.host, ...(form.key ? { key: form.key } : {}) }, REQUEST_OPTIONS);
         actionBox(ctx, result.ok ? 'ok' : 'error', result.label || result.state,
           `${result.message}${result.hint ? ' Next step: ' + result.hint : ''}${result.quota ? ` · quota ${result.quota.current}/${result.quota.limitDay || '?'}` : ''}` +
           `${result.httpStatus ? ' · HTTP ' + result.httpStatus : ''}${result.reused ? ' · reused a recent result (no extra API call)' : ' · ' + result.latencyMs + ' ms'}` +
           (form.key ? ' This typed key has not been saved by this test. Save configuration to keep it.' : ''));
-        // Update diagnostics, NOT the key/host inputs. Test-before-save works.
-        await refresh(ctx);
+        // A read-only diagnostics refresh must not keep the form locked after
+        // the test has already answered. A newer action invalidates this read.
+        // Update panels only; Test-before-save keeps the typed key and host.
+        refresh(ctx);
       } catch (err) { actionBox(ctx, 'error', 'Connection test failed', err.message); }
     });
     $('#apiActivateBtn').onclick = () => busy(ctx, 'apiActivateBtn', 'Activating…', async () => {
+      if (explainBlocked(ctx, 'apiActivateBtn')) return;
       const form = selectedForm();
       if (form.key || form.host !== configuredHost(ctx.status)) {
         actionBox(ctx, 'warn', 'Save the configuration first', 'Activation uses the saved key and host, not an unsaved draft.'); return;
       }
       try {
-        const result = await API.post('/admin/api-management/activate', { provider: form.provider });
+        const result = await API.post('/admin/api-management/activate', { provider: form.provider }, REQUEST_OPTIONS);
         actionBox(ctx, 'ok', 'Provider activated', 'The server now uses the saved credential. Activation is not a connection test.');
         await refresh(ctx, result.status, true);
       } catch (err) { actionBox(ctx, 'error', 'Could not activate the provider', err.message); }
     });
     $('#apiDisableBtn').onclick = () => busy(ctx, 'apiDisableBtn', 'Disabling…', async () => {
+      if (explainBlocked(ctx, 'apiDisableBtn')) return;
       const form = selectedForm();
       if (!window.confirm('Stop using the saved credential? It stays encrypted. If an environment credential is configured, the server falls back to it; this is not a global API shutdown.')) return;
       try {
-        const result = await API.post('/admin/api-management/disable', { provider: form.provider });
+        const result = await API.post('/admin/api-management/disable', { provider: form.provider }, REQUEST_OPTIONS);
         actionBox(ctx, 'ok', 'Provider disabled', `Active credential source is now: ${result.credentialSource}. The saved key remains encrypted.`);
         await refresh(ctx, result.status, !hasUnsavedChanges());
       } catch (err) { actionBox(ctx, 'error', 'Could not disable the provider', err.message); }
     });
     $('#apiRefreshBtn').onclick = () => busy(ctx, 'apiRefreshBtn', 'Refreshing…', async () => {
       try {
-        const diagnostics = await API.get('/admin/api-management/diagnostics?probe=1');
+        const diagnostics = await API.get('/admin/api-management/diagnostics?probe=1', REQUEST_OPTIONS);
         const probe = diagnostics.liveProbe;
         actionBox(ctx, probe && probe.ok ? 'ok' : 'warn', probe ? probe.label || probe.state : 'Status refreshed',
           `${probe && probe.message || 'No usable active credential is configured.'}${probe && probe.hint ? ' Next step: ' + probe.hint : ''}` +
@@ -489,11 +546,11 @@
   }
 
   async function load(helpers) {
-    const ctx = { ui: helpers, status: null, feedback: null, busy: false };
+    const ctx = { ui: helpers, status: null, feedback: null, busy: false, actionVersion: 0 };
     current = ctx;
     ui = helpers;
     ui.render('<div class="skeleton block"></div><div class="skeleton line"></div>');
-    const status = await API.get('/admin/api-management');
+    const status = await API.get('/admin/api-management', REQUEST_OPTIONS);
     if (!active(ctx)) return;
     ctx.status = status;
     renderAll(ctx);
