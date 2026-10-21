@@ -1,7 +1,13 @@
 # Deploying GoalPredict on cPanel
 
+> **Primary deployment path:** [cPanel without SSH/Terminal](../CPANEL-START-HERE.md).
+> Follow that guide for panel-managed dependency installation and deployment.
+> The command-line examples retained below are optional developer/hosting-support
+> reference, not steps required from a cPanel-only operator. Never run fresh-install
+> seed/setup instructions against an existing production database during this repair.
+
 Target: a standard cPanel account with **Setup Node.js App**, **MySQL Databases**, **phpMyAdmin**,
-**Terminal** (or SSH) and **Cron Jobs**. No root access, no Docker, no build step.
+**Run NPM Install** and restart controls. SSH/Terminal is not required. No root access, no Docker, no frontend build step.
 
 | Requirement | Value |
 | --- | --- |

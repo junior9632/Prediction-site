@@ -45,6 +45,17 @@ No Next.js, React, Vercel, Firebase, Supabase, MongoDB, Tailwind, PHP or Python 
 
 ---
 
+## Production deployment — cPanel only
+
+Use **[CPANEL-START-HERE.md](CPANEL-START-HERE.md)** and the ready-built
+`GoalPredict-cPanel-deployment.zip`. Upload with File Manager, install dependencies
+with **Run NPM Install**, use phpMyAdmin for confirmed SQL migrations, and click
+**Restart**. No SSH, Terminal, Git clone or production build command is required.
+The host must provide Node.js/Passenger and panel-managed dependency installation.
+Keep existing production secrets, encryption keys and data unchanged.
+
+The commands below are for local development, not required cPanel deployment steps.
+
 ## Quick start (local)
 
 ```bash

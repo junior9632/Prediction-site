@@ -41,6 +41,8 @@ test('deployment zip: it contains everything the host needs and nothing it does 
 
   // the deployment entry points and the whole application
   for (const required of [
+    'CPANEL-START-HERE.md',
+    'server/database/credentialGrants.js',
     'server.js',
     'package.json',
     'package-lock.json',

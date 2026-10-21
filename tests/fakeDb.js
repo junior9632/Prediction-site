@@ -41,6 +41,7 @@ function install(overrides = {}) {
     /* Read-only storage diagnostic: a per-table column map, and the grant text.
        null grants makes SHOW GRANTS fail like a restricted shared host. */
     schema: overrides.schema || null,
+    databaseName: overrides.databaseName || 'testdb',
     grants: overrides.grants === undefined ? 'GRANT SELECT, INSERT, UPDATE, DELETE ON `testdb`.* TO `test`@`localhost`' : overrides.grants,
     /* Named read failures, so the storage diagnostic can be exercised per area. */
     failQueries: overrides.failQueries || {},
@@ -494,14 +495,14 @@ function install(overrides = {}) {
       }
       return rows;
     }
-    if (/^SELECT DATABASE\(\) AS databaseName$/i.test(s)) return [{ databaseName: 'testdb' }];
+    if (/^SELECT DATABASE\(\) AS databaseName$/i.test(s)) return [{ databaseName: store.databaseName }];
     if (/^SHOW GRANTS FOR CURRENT_USER/.test(s)) {
       if (store.grants === null) {
         const err = new Error('Access denied; you need the SHOW GRANTS privilege');
         err.code = 'ER_SPECIFIC_ACCESS_DENIED_ERROR';
         throw err;
       }
-      return [{ 'Grants for test@localhost': store.grants }];
+      return (Array.isArray(store.grants) ? store.grants : [store.grants]).map((grant) => ({ 'Grants for test@localhost': grant }));
     }
     if (/^SHOW TABLES/.test(s)) return [];
     if (/^SELECT 1/.test(s)) return [{ 1: 1 }];
