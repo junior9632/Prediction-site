@@ -43,6 +43,9 @@
     PROVIDER_UNAVAILABLE: 'red',
     CONFIG_INCOMPLETE: 'amber',
     REQUEST_REJECTED: 'red',
+    // The key is fine; the account's IP allowlist is refusing this server.
+    IP_NOT_ALLOWED: 'red',
+    IP_BLOCKED: 'red',
     SUBSCRIPTION_INACTIVE: 'amber',
     CREDENTIAL_UNREADABLE: 'red',
     ENCRYPTION_KEY_MISSING: 'red',

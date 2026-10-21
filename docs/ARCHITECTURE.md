@@ -121,6 +121,7 @@ a stable reason code with a label **and the fix**:
 | `QUOTA_EXCEEDED` | the plan's **daily** request budget is spent | raise the plan, lower `sync_days_ahead`/`sync_history_days`, space the cron jobs; requests resume after 00:00 UTC |
 | `RATE_LIMITED` | the **per-minute** limit was hit (Free = 10/min) | lower `API_FOOTBALL_RATE_PER_MINUTE` (the client also adopts the limit the provider advertises) |
 | `AUTH_REJECTED` / `REQUEST_REJECTED` | HTTP failures or HTTP 200 with nonempty `errors`, retaining the provider's safe message | check key ↔ host pairing, plan coverage of the endpoint |
+| `IP_NOT_ALLOWED` | HTTP 200 with `errors.Ip`: the account's IP/domain allowlist does not contain the address this server calls from (the key and plan are fine) | add the address the app reports at `https://dashboard.api-football.com/profile?access` (both families if dual-stack), or empty the list; see `utils/egressIp.js` |
 | `PROVIDER_UNAVAILABLE` / `NETWORK_ERROR` / `TIMEOUT` | 5xx, outbound network failure, timeout | nothing to change (retried) / check outbound HTTPS and `npm run api:check` |
 | `CIRCUIT_OPEN` | the breaker opened after repeated upstream failures | read the earlier failure, it half-opens by itself |
 | `QUOTA_RESERVED` | background sync paused to keep `api_quota_reserve` requests for a manual generation | nothing — it is the guard doing its job |

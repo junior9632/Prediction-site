@@ -48,6 +48,9 @@ function unavailableResult(job, err, extra = {}) {
     hint: info.hint,
     httpStatus: info.httpStatus,
     resetAt: info.resetAt,
+    // Present only for an allowlist rejection: the address(es) to add to the
+    // provider dashboard, so the operator does not have to hunt for it.
+    egressIp: info.egressIp,
     ...extra,
   };
 }
@@ -419,11 +422,14 @@ async function syncOdds(options = {}) {
         const d = (err && err.details) || {};
         const status = Number(d.status);
         const authRejected = status === 401 || status === 403;
+        // An IP-allowlist refusal is never about one date, so it must abort the
+        // job with its own reason instead of being reported as ten rejected
+        // dates and then collapsed into a generic REQUEST_REJECTED.
         const dateOnlyRejection =
           err instanceof ApiFootballUnavailable &&
           !authRejected &&
           status !== 429 &&
-          !['QUOTA_EXCEEDED', 'RATE_LIMITED'].includes(d.reason) &&
+          !['QUOTA_EXCEEDED', 'RATE_LIMITED', 'IP_NOT_ALLOWED'].includes(d.reason) &&
           Number.isFinite(status) &&
           status >= 400 &&
           status < 500;
@@ -441,11 +447,14 @@ async function syncOdds(options = {}) {
       const first = skipped[0] || {};
       const firstDetails = first.details || {};
       throw new ApiFootballUnavailable(first.error || 'API-Football request rejected', {
-        reason: 'REQUEST_REJECTED',
+        // Keep the provider's own reason (a rejection is not always a bad
+        // parameter) instead of flattening every skipped date into one code.
+        reason: firstDetails.reason || 'REQUEST_REJECTED',
         status: firstDetails.status || null,
         endpoint: firstDetails.endpoint || null,
         errors: firstDetails.errors || null,
         hint: firstDetails.hint || null,
+        egressIp: firstDetails.egressIp || null,
         skipped,
       });
     }
@@ -544,7 +553,19 @@ async function syncAll(options = {}) {
   results.results = await syncResults(options);
   const unavailable = Object.values(results).some((r) => r && r.status === 'DATA_SOURCE_UNAVAILABLE');
   const quotaPaused = Object.values(results).some((r) => r && r.status === 'SKIPPED');
-  return { ...results, dataSourceAvailable: !unavailable, quotaPaused };
+  // The "sync all" panel renders one object. Repeat the FIRST real failure at
+  // the top level so the reason, the fix and (for an allowlist refusal) this
+  // server's address are readable without opening three nested jobs.
+  const failed = ['fixtures', 'odds', 'results']
+    .map((job) => results[job])
+    .find((result) => result && result.status === 'DATA_SOURCE_UNAVAILABLE') || null;
+  return {
+    ...results,
+    dataSourceAvailable: !unavailable,
+    quotaPaused,
+    // A healthy run keeps exactly the shape it always had.
+    ...(failed ? { reason: failed.reason, label: failed.label, hint: failed.hint, egressIp: failed.egressIp } : {}),
+  };
 }
 
 /** Health / quota information for the admin "API Status" panel. */

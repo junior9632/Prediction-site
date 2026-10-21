@@ -85,6 +85,21 @@ const config = {
   },
 
   /**
+   * The address this server calls providers from, used ONLY to explain an
+   * "IP not allowed" rejection (`errors.Ip` in an API-Football answer). Nothing
+   * here changes the network: it either reads a declared value or performs one
+   * bounded lookup so the dashboard can print the address to allowlist.
+   */
+  serverAddress: {
+    /** Set it when the host's egress address is known/static (no lookup). */
+    declaredIp: str('SERVER_PUBLIC_IP', ''),
+    /** Set SERVER_IP_LOOKUP=0 on a host that must not make that extra call. */
+    lookupEnabled: bool('SERVER_IP_LOOKUP', true),
+    lookupUrl: str('SERVER_IP_LOOKUP_URL', 'https://api.ipify.org?format=json'),
+    timeoutMs: int('SERVER_IP_LOOKUP_TIMEOUT_MS', 4000),
+  },
+
+  /**
    * Admin-managed API credentials (the API Management screen).
    *
    * The master key for AES-256-GCM at rest comes from the server environment
