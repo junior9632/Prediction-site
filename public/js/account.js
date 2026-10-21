@@ -25,6 +25,33 @@
     node.classList.remove('hidden');
   }
 
+  /**
+   * A human message for a failed request.
+   *
+   * The server answers a rejected field with `message: "Invalid request
+   * parameters"` plus `details: { newPassword: "newPassword is too short" }`.
+   * Showing only the headline left the member with no idea what to change, so
+   * the field detail is appended (or replaces the generic headline when there
+   * is one).
+   */
+  function fieldError(err) {
+    const base = (err && err.message) || 'Request failed';
+    const details = err && err.details && typeof err.details === 'object' && !Array.isArray(err.details) ? err.details : null;
+    const first = details ? Object.values(details).find((value) => typeof value === 'string' && value.trim()) : null;
+    if (!first) return base;
+    return /invalid request parameters/i.test(base) ? first : `${base} — ${first}`;
+  }
+
+  /** The password rules the server enforces (authController.userChangePassword). */
+  const MIN_PASSWORD_LENGTH = 8;
+  function passwordProblem(current, next) {
+    if (!current) return 'Enter your current password.';
+    if (!next) return 'Enter a new password.';
+    if (next.length < MIN_PASSWORD_LENGTH) return `The new password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
+    if (current === next) return 'The new password must be different from the current one.';
+    return null;
+  }
+
   function busy(btnSel, isBusy, idleLabel) {
     const btn = $(btnSel);
     btn.disabled = isBusy;
@@ -102,7 +129,7 @@
         // A pending application gets an amber notice, not a red error: the
         // credentials may be fine, the account simply awaits approval.
         const kind = err.code === 'ACCOUNT_PENDING' ? 'warn' : 'error';
-        flash('#loginAlert', '#loginAlertText', kind, err.message || 'Sign in failed');
+        flash('#loginAlert', '#loginAlertText', kind, fieldError(err) || 'Sign in failed');
         busy('#loginBtn', false, 'Sign in');
       }
     });
@@ -128,7 +155,7 @@
         flash('#registerAlert', '#registerAlertText', 'info', (result && result.message) || 'Your account has been submitted for approval. You will be able to access your dashboard once an administrator approves your account.');
         busy('#registerBtn', false, 'Create account');
       } catch (err) {
-        flash('#registerAlert', '#registerAlertText', 'error', err.message || 'Registration failed');
+        flash('#registerAlert', '#registerAlertText', 'error', fieldError(err) || 'Registration failed');
         busy('#registerBtn', false, 'Create account');
       }
     });
@@ -137,16 +164,22 @@
   function bindPassword() {
     $('#passwordForm').addEventListener('submit', async (event) => {
       event.preventDefault();
+      const current = $('#curPassword').value;
+      const next = $('#newPassword').value;
+      // Check the rules before the round trip: the same rules the server
+      // enforces, so the member is told exactly which one failed.
+      const problem = passwordProblem(current, next);
+      if (problem) {
+        flash('#passwordAlert', '#passwordAlertText', 'warn', problem);
+        return;
+      }
       busy('#passwordBtn', true);
       try {
-        await API.post('/auth/change-password', {
-          currentPassword: $('#curPassword').value,
-          newPassword: $('#newPassword').value,
-        });
+        await API.post('/auth/change-password', { currentPassword: current, newPassword: next });
         flash('#passwordAlert', '#passwordAlertText', 'success', 'Password changed.');
         $('#passwordForm').reset();
       } catch (err) {
-        flash('#passwordAlert', '#passwordAlertText', 'error', err.message || 'Password change failed');
+        flash('#passwordAlert', '#passwordAlertText', 'error', fieldError(err) || 'Password change failed');
       }
       busy('#passwordBtn', false, 'Change password');
     });

@@ -134,13 +134,40 @@
     return lines.join('');
   }
 
+  /**
+   * Watch one generation run.
+   *
+   * A failed poll used to silently clear the interval: the panel stayed on
+   * "Starting generation…" and the Generate button stayed disabled for the rest
+   * of the session, so the operator could neither see the result nor start
+   * again. A transient read error is now reported and retried a few times, and
+   * the button is always released — a lost progress feed must never lock the
+   * console.
+   */
+  const MAX_POLL_FAILURES = 4;
   function startPolling(runId) {
     const version = viewVersion;
+    let failures = 0;
     clearInterval(pollTimer);
+    const note = (html) => {
+      const box = $('#progressBox');
+      if (!box) return;
+      let line = box.querySelector('#pollNote');
+      if (!line) {
+        box.insertAdjacentHTML('beforeend', `<div id="pollNote"></div>`);
+        line = box.querySelector('#pollNote');
+      }
+      if (line) line.innerHTML = html;
+    };
+    const release = () => {
+      const btn = $('#genBtn');
+      if (btn) btn.disabled = false;
+    };
     pollTimer = setInterval(async () => {
       try {
         const progress = await API.get(`/admin/generation-progress?run_id=${runId}`);
         if (version !== viewVersion) return;
+        failures = 0;
         const box = $('#progressBox');
         if (box) {
           box.innerHTML = progressHtml(progress);
@@ -164,8 +191,21 @@
           }
           setTimeout(() => { if (version === viewVersion) setView(currentView, false); }, 1500);
         }
-      } catch (_) {
+      } catch (err) {
+        if (version !== viewVersion) return;
+        failures += 1;
+        // Keep watching (the run continues on the server) but never leave the
+        // operator with a dead panel and a disabled button.
+        release();
+        if (failures < MAX_POLL_FAILURES) {
+          note(`<div class="alert warn" style="margin-top:10px;">${icons.alert}<div><b>Progress could not be read</b> — ${escapeHtml(err.message || 'request failed')}. Retrying (${failures}/${MAX_POLL_FAILURES})…</div></div>`);
+          return;
+        }
         clearInterval(pollTimer);
+        const box = $('#progressBox');
+        if (box) {
+          box.insertAdjacentHTML('beforeend', `<div class="alert error" style="margin-top:10px;">${icons.alert}<div><b>Stopped watching this run</b> — ${escapeHtml(err.message || 'the progress endpoint failed')}. Generation continues on the server: open <a href="#today">Today's Ticket</a> or reload the console to see the result. You can start a new generation once the running one has finished.</div></div>`);
+        }
       }
     }, 900);
   }

@@ -21,11 +21,23 @@
       </div>
       <div class="row">${state}</div>
     </div>
-    <details class="pick-detail"><summary>${icons.chevronDown} Transparent breakdown</summary><div class="detail-body" id="detail-${p.fixtureId}"><div class="tiny muted">Loading…</div></div></details>`;
+    <details class="pick-detail" data-fixture-id="${escapeHtml(p.fixtureId)}" id="detail-${escapeHtml(p.fixtureId)}"><summary>${icons.chevronDown} Transparent breakdown</summary><div class="detail-body" id="detail-body-${escapeHtml(p.fixtureId)}"><div class="tiny muted">Loading…</div></div></details>`;
   }
 
+  /**
+   * Load the stored breakdown for one fixture.
+   *
+   * The fixture id used to live only on the inner <div>, while the toggle
+   * handler read it from the <details> element — so every panel requested
+   * /predictions/NaN (HTTP 400) and stayed on "Loading…" forever. The id is now
+   * on the <details> that is actually listened to, and a failed request clears
+   * the "loaded" guard so re-opening the panel retries instead of showing a
+   * dead spinner for the rest of the session.
+   */
   async function loadDetail(fixtureId) {
-    const box = document.getElementById(`detail-${fixtureId}`);
+    const id = Number(fixtureId);
+    if (!Number.isSafeInteger(id) || id <= 0) return;
+    const box = document.getElementById(`detail-body-${id}`);
     if (!box || box.dataset.loaded) return;
     box.dataset.loaded = '1';
     try {
@@ -43,7 +55,8 @@
         ${data.scoreBreakdown.map((s) => `<tr><td>${escapeHtml(s.component)}</td><td>${fmt.num(s.score)}</td><td>${fmt.num(s.weight, 3)}</td><td>${fmt.num(s.contribution, 3)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No components stored.</td></tr>'}
       </tbody></table></div>`;
     } catch (err) {
-      box.innerHTML = `<div class="alert error">${escapeHtml(err.message)}</div>`;
+      delete box.dataset.loaded;
+      box.innerHTML = `<div class="alert error">${escapeHtml(err.message)}<div class="tiny muted">Close and re-open this panel to retry.</div></div>`;
     }
   }
 
@@ -59,9 +72,10 @@
       $('#countLabel').textContent = `${data.total} analysed · breakdown: ${Object.entries(data.rejectionBreakdown || {}).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`;
       if (!data.items.length) box.innerHTML = emptyState('target', 'No analysis stored', 'Run a sync and a generation to populate the analysis for this date.');
       else box.innerHTML = data.items.map(cardRow).join('');
-      box.querySelectorAll('details.pick-detail').forEach((d) => {
-        d.addEventListener('toggle', () => {
-          if (d.open) loadDetail(Number(d.id.replace('detail-', '')));
+      box.querySelectorAll('details.pick-detail').forEach((details) => {
+        details.addEventListener('toggle', () => {
+          if (!details.open) return;
+          loadDetail(details.dataset.fixtureId);
         });
       });
     } catch (err) {
