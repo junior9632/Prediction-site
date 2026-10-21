@@ -30,6 +30,7 @@ if (!process.env.LOG_LEVEL) process.env.LOG_LEVEL = 'silent';
 
 const { resolveActiveCredential } = require('../server/services/apiCredentialService');
 const { ApiFootballClient, describeUnavailable, reasonInfo, UNAVAILABLE_REASONS } = require('../server/services/apiFootball');
+const { discoverServerAddresses } = require('../server/utils/egressIp');
 const pool = require('../server/database/connection');
 
 const asJson = process.argv.includes('--json');
@@ -57,6 +58,7 @@ function line(label, value) {
     plan: null,
     httpStatus: null,
     latencyMs: null,
+    egressIp: null,
   };
 
   if (resolved.error) {
@@ -91,10 +93,23 @@ function line(label, value) {
     report.plan = probe.plan || null;
     report.httpStatus = probe.httpStatus;
     report.latencyMs = probe.latencyMs;
+    // The address to allowlist, when the provider refused this server's IP.
+    report.egressIp = probe.egressIp || null;
     if (probe.ok) report.hint = null;
     else {
       const info = describeUnavailable({ message: probe.message, details: { reason: probe.reason, status: probe.httpStatus } });
       if (!report.hint) report.hint = info.hint;
+    }
+  }
+
+  // A failed check is exactly when an operator needs to know which address the
+  // provider saw ("This IP is not allowed to call the API"). Discovery is
+  // best-effort and cached: it never changes the verdict or the exit code.
+  if (!report.ok && !report.egressIp) {
+    try {
+      report.egressIp = await discoverServerAddresses({});
+    } catch (_err) {
+      report.egressIp = null;
     }
   }
 
@@ -109,6 +124,10 @@ function line(label, value) {
     line('Provider said', report.message);
     line('HTTP status', report.httpStatus);
     line('Transport code', report.networkCode);
+    if (report.egressIp && report.egressIp.ips && report.egressIp.ips.length) {
+      line('Server address', `${report.egressIp.ips.join(', ')} (${report.egressIp.source})`);
+      if (report.reason === 'IP_NOT_ALLOWED') line('Allowlist', 'https://dashboard.api-football.com/profile?access');
+    }
     line('Latency', report.latencyMs === null ? null : `${report.latencyMs} ms`);
     if (report.quota) line('Requests used today', `${report.quota.current}${report.quota.limitDay ? ` / ${report.quota.limitDay}` : ''}`);
     if (report.plan && report.plan.name) line('Plan', `${report.plan.name}${report.plan.active === false ? ' (inactive)' : ''}`);

@@ -16,7 +16,17 @@ const logger = require('../utils/logger');
 const { AppError } = require('../utils/errors');
 const { normalizeHost, baseUrlForHost, normalizeApiKey, redactSecret, unquote } = require('../utils/providerConfig');
 const { createProviderDispatcher, networkFailure } = require('../utils/providerTransport');
+const { discoverServerAddresses, formatAddresses } = require('../utils/egressIp');
 const providerDispatcher = createProviderDispatcher(config.apiFootball.ipFamily);
+
+/**
+ * How long the client stops calling after the provider has refused this
+ * server's IP address. An allowlist rejection is neither an outage nor a
+ * transient error, so retrying cannot help — but the operator may add the
+ * address at any second, and every rejected call still reaches the provider.
+ * "Test connection" (`bypassCircuit`) is never held back by this.
+ */
+const IP_BLOCK_COOLDOWN_MS = 5 * 60 * 1000;
 
 const log = logger.child('api-football');
 
@@ -37,6 +47,7 @@ const CONNECTION_STATES = Object.freeze({
   CONNECTED: 'CONNECTED',
   INVALID_KEY: 'INVALID_KEY',
   REQUEST_REJECTED: 'REQUEST_REJECTED',
+  IP_NOT_ALLOWED: 'IP_NOT_ALLOWED',
   SUBSCRIPTION_INACTIVE: 'SUBSCRIPTION_INACTIVE',
   QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
   RATE_LIMITED: 'RATE_LIMITED',
@@ -53,6 +64,7 @@ const CONNECTION_LABELS = Object.freeze({
   CONNECTED: 'Connection successful',
   INVALID_KEY: 'Invalid API key or unauthorized',
   REQUEST_REJECTED: 'Provider rejected the request',
+  IP_NOT_ALLOWED: 'This server’s IP is not on the provider allowlist',
   SUBSCRIPTION_INACTIVE: 'API subscription required or inactive',
   QUOTA_EXCEEDED: 'Daily quota exceeded',
   RATE_LIMITED: 'Rate limit exceeded',
@@ -84,6 +96,7 @@ const UNAVAILABLE_REASONS = Object.freeze({
   RATE_LIMITED: 'RATE_LIMITED',
   AUTH_REJECTED: 'AUTH_REJECTED',
   REQUEST_REJECTED: 'REQUEST_REJECTED',
+  IP_NOT_ALLOWED: 'IP_NOT_ALLOWED',
   PROVIDER_UNAVAILABLE: 'PROVIDER_UNAVAILABLE',
   NETWORK_ERROR: 'NETWORK_ERROR',
   TIMEOUT: 'TIMEOUT',
@@ -135,6 +148,21 @@ const REASON_INFO = Object.freeze({
     label: 'the provider rejected the request',
     hint: 'The plan may not include this endpoint/season, or the request parameters are outside the plan\'s range.',
   },
+  /**
+   * API-Football answers HTTP 200 with `errors.Ip` when the account's IP/domain
+   * allowlist does not contain the caller. Nothing about the key, the plan or
+   * the season is wrong, and no retry can fix it: only adding the address (or
+   * emptying the list) can. That is why this is its own reason with the exact
+   * dashboard screen — the generic "parameters outside the plan's range" hint
+   * sent operators looking in the wrong place.
+   */
+  IP_NOT_ALLOWED: {
+    label: 'this server’s IP address is not allowed by the provider',
+    hint:
+      'The API key is valid, but the account has an IP/domain allowlist and this server is not on it. Open https://dashboard.api-football.com/profile?access, ' +
+      'add the address this server calls from and click ADD — changes apply immediately; an empty list means no restriction at all. ' +
+      'Add the IPv6 address as well when the host uses both families, then run Test connection in Admin → API Management (or `npm run api:check`).',
+  },
   PROVIDER_UNAVAILABLE: {
     label: 'the provider is temporarily unavailable',
     hint: 'API-Football answered with a server error. Nothing to change on your side — the client retries by itself.',
@@ -172,11 +200,27 @@ function reasonInfo(reason) {
 }
 
 /**
+ * The fix for an allowlist rejection, naming the address this server uses when
+ * it could be discovered. Without an address the operator still gets the exact
+ * dashboard screen, so the message is never a dead end.
+ *
+ * @param {{ips: string[], source: string}|null} addresses
+ */
+function ipNotAllowedHint(addresses) {
+  const base = reasonInfo(UNAVAILABLE_REASONS.IP_NOT_ALLOWED).hint;
+  const list = formatAddresses(addresses);
+  if (!list) return base;
+  const how = addresses && addresses.source ? ` (${addresses.source})` : '';
+  return `${base} This server reports ${list}${how} — add ${addresses.ips.length > 1 ? 'those addresses' : 'that address'} to the list.`;
+}
+
+/**
  * Turn any `ApiFootballUnavailable` into the structured report the dashboard,
  * the sync log and the CLI diagnostics all render. Pure — no side effects.
  *
  * @returns {{reason: string|null, label: string, hint: string|null, detail: string|null,
- *   httpStatus: number|null, resetAt: string|null, quota: object|null}}
+ *   httpStatus: number|null, resetAt: string|null, quota: object|null,
+ *   egressIp: {ips: string[], source: string}|null}}
  */
 function describeUnavailable(err) {
   const details = (err && err.details) || {};
@@ -191,6 +235,9 @@ function describeUnavailable(err) {
     httpStatus: details.status != null && Number.isFinite(Number(details.status)) ? Number(details.status) : null,
     resetAt: details.resetAt || null,
     quota: details.quota || null,
+    // Only present for an allowlist rejection: the address(es) the operator
+    // must add. Null when nothing could be learned — never a guess.
+    egressIp: details.egressIp || null,
   };
 }
 
@@ -222,6 +269,12 @@ function classifyProviderError({ httpStatus = null, errors = null, message = '' 
   if (/per minute|rate.?limit|too many requests/.test(text) || (errors && errors.rateLimit)) return CONNECTION_STATES.RATE_LIMITED;
   if ((errors && errors.requests) || /daily|quota|limit for the day|requests? limit|reached the limit/.test(text)) return CONNECTION_STATES.QUOTA_EXCEEDED;
   if (httpStatus && (httpStatus >= 500 || httpStatus === 499 || httpStatus === 408 || httpStatus === 425)) return CONNECTION_STATES.PROVIDER_UNAVAILABLE;
+  // The account's IP/domain allowlist refused the CALLER (HTTP 200 + errors.Ip).
+  // Decided BEFORE the generic auth/rejection fallbacks: the key was accepted,
+  // and "not allowed" must not be read as "not authorized". The refusal word is
+  // required, so an unrelated "IP address could not be resolved" message is not
+  // mistaken for an allowlist decision.
+  if (/\bip\b[^.]{0,80}\b(?:not allowed|blocked|denied|not permitted|not authorised|not authorized)\b|\bnot allowed to call\b|\ballowed ips?\b/.test(text)) return CONNECTION_STATES.IP_NOT_ALLOWED;
   // RapidAPI also uses HTTP 403 for a missing API subscription.
   // Its explicit message must win over the generic 401/403 auth fallback.
   if (/\bnot subscribed\b|\bunsubscribed\b|\bno active subscription\b|\bsubscription\b[^.{}]*\b(expired|inactive|not active|required)\b|\b(expired|inactive) subscription\b/.test(text)) return CONNECTION_STATES.SUBSCRIPTION_INACTIVE;
@@ -290,6 +343,13 @@ class ApiFootballClient {
     // (e.g. the encryption key is missing). Requests then fail loudly instead
     // of silently falling back to a different credential.
     this.credentialError = null;
+
+    // Used ONLY to name this server's address in an IP-allowlist rejection
+    // (see utils/egressIp.js). `false` disables even that diagnostic request.
+    this.serverAddressLookup =
+      options.serverAddressLookup === false ? null : options.serverAddressLookup || discoverServerAddresses;
+    this._ipBlockedUntil = 0;
+    this._ipBlock = null;
 
     this._callTimestamps = [];
     this._cache = new Map();
@@ -370,6 +430,9 @@ class ApiFootballClient {
       this.stats.lastSuccessAt = null;
       this.stats.lastCallAt = null;
       this._rateLimitedUntil = 0;
+      // a different credential may have a different allowlist
+      this._ipBlockedUntil = 0;
+      this._ipBlock = null;
       log.info('API credential changed', {
         source: this.credentialSource,
         host: this.host,
@@ -523,6 +586,42 @@ class ApiFootballClient {
     return this.quotaState();
   }
 
+  /* ------------------------------------------------------------------ */
+  /* IP allowlist rejections                                             */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * This server's address, for the operator who has to add it to the
+   * provider's allowlist. Never throws; `null` when it cannot be learned.
+   * The lookup is cached by utils/egressIp.js, so repeated sync jobs in the
+   * same process cost nothing.
+   */
+  async _serverAddresses() {
+    if (!this.serverAddressLookup) return null;
+    try {
+      return await this.serverAddressLookup({ dispatcher: this.dispatcher });
+    } catch (err) {
+      log.warn('unable to determine this server’s public address', { message: err && err.message });
+      return null;
+    }
+  }
+
+  /**
+   * Stop calling the provider for a few minutes after it refused this
+   * server's address. The reason is RETAINED (unlike the circuit breaker,
+   * which reports its own generic state): every surface keeps saying
+   * IP_NOT_ALLOWED with the address and the fix, and "Test connection" can
+   * verify the repair immediately.
+   */
+  _blockIp(addresses) {
+    this._ipBlockedUntil = Date.now() + IP_BLOCK_COOLDOWN_MS;
+    this._ipBlock = addresses || null;
+    log.warn('the provider refuses this server’s IP address — calls paused', {
+      addresses: addresses ? addresses.ips.join(', ') : null,
+      retryAt: new Date(this._ipBlockedUntil).toISOString(),
+    });
+  }
+
   /** Circuit breaker: are we allowed to call the API right now? */
   isAvailable() {
     if (!this.configured) return false;
@@ -567,6 +666,31 @@ class ApiFootballClient {
         hint: reasonInfo(UNAVAILABLE_REASONS.QUOTA_EXCEEDED).hint,
         resetsAt: quota.resetsAt,
         retryInMs: Math.max(0, new Date(quota.resetsAt).getTime() - Date.now()),
+        quota: this.stats.quota,
+        quotaState: quota,
+        consecutiveFailures: this._breaker.failures,
+        calls: this.stats.calls,
+        failures: this.stats.failures,
+        cacheHits: this.stats.cacheHits,
+        lastCallAt: this.stats.lastCallAt,
+        lastError: this.stats.lastError,
+      };
+    }
+    // The provider refused this server's address. The key, the plan and the
+    // network are fine, so the circuit breaker is untouched — but no call can
+    // succeed until the address is allowlisted, which `available:false` says.
+    if (Date.now() < this._ipBlockedUntil) {
+      return {
+        ...observation,
+        state: 'IP_BLOCKED',
+        available: false,
+        callable: false,
+        reason: UNAVAILABLE_REASONS.IP_NOT_ALLOWED,
+        label: reasonInfo(UNAVAILABLE_REASONS.IP_NOT_ALLOWED).label,
+        hint: ipNotAllowedHint(this._ipBlock),
+        egressIp: this._ipBlock,
+        resetsAt: new Date(this._ipBlockedUntil).toISOString(),
+        retryInMs: Math.max(0, this._ipBlockedUntil - Date.now()),
         quota: this.stats.quota,
         quotaState: quota,
         consecutiveFailures: this._breaker.failures,
@@ -705,6 +829,16 @@ class ApiFootballClient {
     if (Date.now() < this._rateLimitedUntil) {
       throw new ApiFootballUnavailable('API-Football rate limit cooldown is active', { reason: 'RATE_LIMITED', resetAt: new Date(this._rateLimitedUntil).toISOString() });
     }
+    // The provider told us this address is not allowed. Keep saying exactly
+    // that (and how to fix it) instead of spending another request on a call
+    // that cannot succeed yet. A real credential test always gets through.
+    if (!bypassCircuit && Date.now() < this._ipBlockedUntil) {
+      const retryAt = new Date(this._ipBlockedUntil).toISOString();
+      throw new ApiFootballUnavailable(
+        `API-Football still refuses this server’s IP address (next attempt after ${retryAt}; add the address in the provider dashboard)`,
+        { reason: 'IP_NOT_ALLOWED', endpoint, hint: ipNotAllowedHint(this._ipBlock), egressIp: this._ipBlock, retryAt }
+      );
+    }
     const cacheKey = this._cacheKey(endpoint, params);
     const cached = ttl > 0 ? this._cacheGet(cacheKey) : null;
     if (cached) { this.stats.cacheHits += 1; return cached; }
@@ -742,7 +876,17 @@ class ApiFootballClient {
         let body;
         try { body = text ? JSON.parse(redactSecret(text, apiKey)) : null; } catch (_err) { body = null; }
         if (res.status === 204 && endpoint !== '/status') body = { errors: [], response: [], results: 0 };
-        const errors = body && body.errors;
+        // API-Sports documents soft errors inside `errors`, but its IP-allowlist
+        // refusal has also been seen at the top level as `{"Ip": "..."}` with
+        // HTTP 200. Both shapes are a provider rejection — never zero data.
+        const errors =
+          body && body.errors
+            ? body.errors
+            : body && typeof body.Ip === 'string'
+              ? { Ip: body.Ip }
+              : body && typeof body.ip === 'string'
+                ? { Ip: body.ip }
+                : null;
         const hasErrors = errors && (typeof errors !== 'object' || Object.keys(errors).length > 0);
         if (!res.ok || hasErrors) {
           const state = classifyProviderError({ httpStatus: res.status, errors, message: body && body.message || '' });
@@ -754,10 +898,23 @@ class ApiFootballClient {
           if (actualReason === 'QUOTA_EXCEEDED' && isCurrent()) q = this._markQuotaExhausted(summary || 'daily request quota exhausted');
           const transient = actualReason === 'PROVIDER_UNAVAILABLE';
           const rate = actualReason === 'RATE_LIMITED';
+          // HTTP 200 + `errors.Ip` is not an outage, a bad key, a plan problem
+          // or a bad parameter: the account's allowlist refused this server.
+          // Report the address to allowlist and stop repeating the call.
+          let addresses = null;
+          let hint = reasonInfo(actualReason).hint;
+          let ipMessage = '';
+          if (actualReason === 'IP_NOT_ALLOWED') {
+            addresses = await this._serverAddresses();
+            hint = ipNotAllowedHint(addresses);
+            const list = formatAddresses(addresses);
+            ipMessage = `API-Football refuses this server’s IP address (HTTP ${res.status} on ${endpoint}${summary ? `: ${summary}` : ''})${list ? ` — this server is ${list}` : ''}`;
+            if (isCurrent()) this._blockIp(addresses);
+          }
           lastError = new ApiFootballUnavailable(
-            transient ? 'API-Football is temporarily unavailable' : actualReason === 'QUOTA_EXCEEDED' ? 'API-Football daily request quota exhausted' : `API-Football request rejected (HTTP ${res.status} on ${endpoint}${summary ? `: ${summary}` : ''})`,
+            transient ? 'API-Football is temporarily unavailable' : actualReason === 'QUOTA_EXCEEDED' ? 'API-Football daily request quota exhausted' : actualReason === 'IP_NOT_ALLOWED' ? ipMessage : `API-Football request rejected (HTTP ${res.status} on ${endpoint}${summary ? `: ${summary}` : ''})`,
             { reason: actualReason, status: res.status, endpoint, errors: errors || null,
-              hint: reasonInfo(actualReason).hint, quota: q,
+              hint, quota: q, egressIp: addresses,
               resetAt: actualReason === 'QUOTA_EXCEEDED' ? q.resetsAt : null }
           );
           recordFailure(lastError, transient);
@@ -853,6 +1010,7 @@ class ApiFootballClient {
       quota: null,
       plan: null,
       errors: null,
+      egressIp: null,
     };
 
     if (!this.configured) {
@@ -872,10 +1030,16 @@ class ApiFootballClient {
 
       if (data.errors && (Array.isArray(data.errors) ? data.errors.length : Object.keys(data.errors).length)) {
         const state = classifyProviderError({ httpStatus: null, errors: data.errors });
+        const addresses = state === CONNECTION_STATES.IP_NOT_ALLOWED ? await this._serverAddresses() : null;
         return {
           ...base,
           state,
           label: CONNECTION_LABELS[state] || state,
+          // The reason and its fix must travel with the verdict, exactly as
+          // they do for the thrown errors — a bare state is not a diagnosis.
+          reason: state === CONNECTION_STATES.INVALID_KEY ? UNAVAILABLE_REASONS.AUTH_REJECTED : state,
+          hint: addresses ? ipNotAllowedHint(addresses) : reasonInfo(state).hint,
+          egressIp: addresses,
           latencyMs,
           message: `The provider rejected this request: ${summarizeProviderError(data.errors) || state}`,
           errors: summarizeProviderError(data.errors),
@@ -936,6 +1100,7 @@ class ApiFootballClient {
       else if (reason === UNAVAILABLE_REASONS.QUOTA_EXCEEDED) state = CONNECTION_STATES.QUOTA_EXCEEDED;
       else if (reason === UNAVAILABLE_REASONS.RATE_LIMITED) state = CONNECTION_STATES.RATE_LIMITED;
       else if (reason === UNAVAILABLE_REASONS.AUTH_REJECTED) state = CONNECTION_STATES.INVALID_KEY;
+      else if (reason === UNAVAILABLE_REASONS.IP_NOT_ALLOWED) state = CONNECTION_STATES.IP_NOT_ALLOWED;
       else if (reason === UNAVAILABLE_REASONS.PROVIDER_UNAVAILABLE) state = CONNECTION_STATES.PROVIDER_UNAVAILABLE;
       else if (reason === UNAVAILABLE_REASONS.NETWORK_ERROR) state = CONNECTION_STATES.NETWORK_ERROR;
       else if (reason === UNAVAILABLE_REASONS.EMPTY_RESPONSE) state = CONNECTION_STATES.PROVIDER_UNAVAILABLE;
@@ -954,6 +1119,7 @@ class ApiFootballClient {
         reason: described.reason,
         hint: described.hint,
         networkCode: described.networkCode,
+        egressIp: described.egressIp,
         resetAt: described.resetAt,
         httpStatus,
         latencyMs,
@@ -1073,5 +1239,6 @@ module.exports = {
   nextDailyReset,
   classifyProviderError,
   summarizeProviderError,
+  ipNotAllowedHint,
   CREDENTIAL_REFRESH_MS,
 };

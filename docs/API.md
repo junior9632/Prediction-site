@@ -90,8 +90,9 @@ Only these two. Everything else under `/api` needs a session.
   "database": "ok" | "unavailable",
   // reason/label/hint/resetsAt explain WHY an unavailable source is unusable
   // (NO_API_KEY, CREDENTIAL_UNREADABLE, CIRCUIT_OPEN, QUOTA_EXCEEDED,
-  //  RATE_LIMITED, AUTH_REJECTED, PROVIDER_UNAVAILABLE, NETWORK_ERROR, TIMEOUT)
-  "dataSource": { "configured": true, "available": true, "state": "OK" | "DEGRADED" | "QUOTA_EXHAUSTED" | "OPEN" | "UNCONFIGURED",
+  //  RATE_LIMITED, AUTH_REJECTED, IP_NOT_ALLOWED, PROVIDER_UNAVAILABLE,
+  //  NETWORK_ERROR, TIMEOUT)
+  "dataSource": { "configured": true, "available": true, "state": "OK" | "DEGRADED" | "QUOTA_EXHAUSTED" | "IP_BLOCKED" | "OPEN" | "UNCONFIGURED",
                    "reason": null, "label": null, "hint": null, "resetsAt": null,
                    "quota": { "current": 120, "limit_day": 100 } | null },
   "market": { "key": "over_1_5", "label": "Over 1.5 Goals", "goalLine": 1.5 },

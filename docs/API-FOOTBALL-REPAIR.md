@@ -43,6 +43,44 @@ failures; subscription failures are not retried automatically and keys are never
 This change cannot grant an API subscription or validate/replace a production key. Correct the
 provider account/key pairing in the protected admin page, never in chat or a public source file.
 
+## HTTP 200 “This IP is not allowed to call the API” (2026-10-21)
+
+API-Football can restrict an API key to a list of IP addresses/domains
+(`https://dashboard.api-football.com/profile?access`). When the calling server is not on that
+list, **every** endpoint answers `HTTP 200` with a soft error instead of data:
+
+```json
+{"get": null, "parameters": [], "errors": {"Ip": "This IP is not allowed to call the API, check the list of allowed IPs in the dashboard."}, "results": 0, "response": []}
+```
+
+That previously landed in the generic `REQUEST_REJECTED` bucket, whose hint says *“the plan may not
+include this endpoint/season, or the request parameters are outside the plan's range”* — a wrong
+trail: the key, the plan, the season and the parameters are all fine.
+
+It is now its own reason, `IP_NOT_ALLOWED`, with its own label, fix and address:
+
+- **The verdict.** Sync jobs, the admin fixtures panel, `/api/health`, the generation report,
+  `npm run api:check` and API Management all say *“this server's IP address is not allowed by the
+  provider”* instead of *“the provider rejected the request”*.
+- **The fix.** The hint names the exact screen (`dashboard.api-football.com/profile?access`), how to
+  add the address (ADD, effective immediately, an **empty list means no restriction at all**), and
+  that IPv6 must be added too when the host is dual-stack.
+- **The address.** The server reports the address(es) it calls from, so the operator does not have to
+  find them: `SERVER_PUBLIC_IP` if declared, otherwise one bounded lookup of the egress address
+  (default `https://api.ipify.org?format=json`), otherwise this machine's own public interface
+  addresses. Private/loopback/CGNAT addresses are never offered. No address is ever invented; without
+  one, the hint still names the screen to fix.
+- **No hammering, no lost reason.** A refusal is not an outage: the circuit breaker is untouched.
+  Background calls into the provider pause for five minutes and keep answering `IP_NOT_ALLOWED` (with
+  the address and retry time) instead of a generic `CIRCUIT_OPEN`, while **Test connection** /
+  `npm run api:check` bypass that pause so a repair can be verified immediately.
+- **No collapsed odds job.** An allowlist refusal is never treated as “this date has no odds”, so the
+  odds sync no longer turns ten refused dates into one misleading generic rejection.
+
+This change cannot add an address to your provider account. Until the address is listed (or the list
+is emptied), no sync or ticket generation can use the data source — by design, the platform never
+replaces missing provider data with guesses.
+
 ## Safe dashboard workflow
 
 1. Open **Admin → API Management**.
@@ -77,6 +115,7 @@ npm run api:check -- --json
 | `TIMEOUT` | Check routing/provider availability; adjust `API_FOOTBALL_TIMEOUT_MS` only if appropriate. |
 | `AUTH_REJECTED` / `INVALID_KEY` | Use the key issued for the selected host; check revocation/account restrictions. |
 | `SUBSCRIPTION_INACTIVE` | For “not subscribed”, subscribe to API-Football on the issuing RapidAPI account/app; for an expired plan, renew in its dashboard. API-Sports keys must use the direct host. |
+| `IP_NOT_ALLOWED` | The account's IP/domain allowlist does not contain this server. Add the address the app reports at `https://dashboard.api-football.com/profile?access` (both families if dual-stack), or empty the list. Nothing else in the key/plan needs changing. |
 | `REQUEST_REJECTED` | Read the provider's parameter/season/plan message. Do not replace missing data with guesses. |
 | `QUOTA_EXCEEDED` / `RATE_LIMITED` | Wait for the advertised reset/backoff; reduce request frequency/range or change the plan. |
 

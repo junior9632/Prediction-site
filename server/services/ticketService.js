@@ -51,6 +51,8 @@ function dataSourceReport(reason, err = null, extra = {}) {
     hint: info ? info.hint : null,
     httpStatus: info ? info.httpStatus : null,
     resetAt: info ? info.resetAt : null,
+    // Only for an IP-allowlist rejection: the address the operator must add.
+    egressIp: info ? info.egressIp : null,
     ...extra,
   };
 }
