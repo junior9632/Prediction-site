@@ -38,6 +38,7 @@ const connection = require('../database/connection');
 const db = require('../database/queries');
 const vault = require('../utils/credentialVault');
 const { AppError } = require('../utils/errors');
+const { parseCredentialGrants } = require('../database/credentialGrants');
 
 const MIGRATION_FILE = '003-api-credential-management.sql';
 
@@ -226,33 +227,7 @@ async function inspectPermissions() {
     return { checked: false, code: 'NO_GRANTS_RETURNED', message: 'The database returned no grant information.', select: null, insert: null, update: null, delete: null, all: null };
   }
 
-  const databaseName = String(database.value.databaseName).toLowerCase();
-  const privileges = new Set();
-  const all = [];
-  const normalizeIdentifier = (value) => String(value).replace(/^`|`$/g, '').replace(/``/g, '`').toLowerCase();
-  for (const line of lines) {
-    const match = line.match(/^GRANT\s+(.+?)\s+ON\s+(.+?)\s+TO\s+/i);
-    if (!match) continue;
-    const scope = match[2].trim();
-    const parts = scope.split('.');
-    const globalScope = scope === '*.*';
-    const databaseScope = parts.length === 2 && normalizeIdentifier(parts[0]) === databaseName && parts[1] === '*';
-    const credentialTableScope = parts.length === 2 && normalizeIdentifier(parts[0]) === databaseName &&
-      normalizeIdentifier(parts[1]) === 'api_credentials';
-    if (!globalScope && !databaseScope && !credentialTableScope) continue;
-    const granted = match[1].split(',').map((name) => name.trim().toUpperCase());
-    if (granted.some((name) => name === 'ALL' || name === 'ALL PRIVILEGES')) all.push(true);
-    for (const name of granted) privileges.add(name);
-  }
-  const has = (privilege) => all.length > 0 || privileges.has(privilege);
-  return {
-    checked: true,
-    select: has('SELECT'),
-    insert: has('INSERT'),
-    update: has('UPDATE'),
-    delete: has('DELETE'),
-    all: all.length > 0,
-  };
+  return parseCredentialGrants(lines, String(database.value.databaseName));
 }
 
 /**

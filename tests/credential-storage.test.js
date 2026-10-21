@@ -478,3 +478,35 @@ test('storage classification: driver errors map to distinct, safe states', () =>
     assert.ok(!/database password|SELECT \*|GRANT .* TO /i.test(info.message), 'classification never includes SQL or a secret');
   }
 });
+
+test('storage diagnostic: cPanel escaped database grant is not a false denial', async () => {
+  await withDb({ databaseName: 'account_goalpredict', grants: [
+    'GRANT USAGE ON *.* TO `app`@`localhost`',
+    'GRANT ALL PRIVILEGES ON `account\\_goalpredict`.* TO `app`@`localhost`',
+  ] }, async () => {
+    const res = await req('GET', '/api/admin/api-management/storage-diagnostics', { token: adminBearer });
+    assert.equal(res.json.data.state, 'READY');
+    assert.equal(res.json.data.canSave, true);
+    assert.equal(res.json.data.permissions.select, true);
+    assert.ok(!res.text.includes('GRANT '));
+    assert.ok(!res.text.includes('account_goalpredict'));
+  });
+});
+
+for (const grants of [
+  'unrecognized metadata',
+  'GRANT `writer_role` TO `app`@`localhost`',
+  'GRANT SELECT (id), UPDATE (host) ON `testdb`.`api_credentials` TO `app`@`localhost`',
+  'GRANT ALL PRIVILEGES ON `test%`.* TO `app`@`localhost`',
+  ['GRANT ALL PRIVILEGES ON *.* TO `app`@`localhost`', 'REVOKE INSERT ON `testdb`.* FROM `app`@`localhost`'],
+]) {
+  test(`storage diagnostic: unsupported grant metadata is unknown (${JSON.stringify(grants)})`, async () => {
+    await withDb({ grants }, async () => {
+      const res = await req('GET', '/api/admin/api-management/storage-diagnostics', { token: adminBearer });
+      assert.equal(res.json.data.state, 'PERMISSIONS_UNVERIFIED');
+      assert.equal(res.json.data.canSave, null);
+      assert.equal(res.json.data.canRead, true);
+      assert.equal(res.json.data.permissions.checked, false);
+    });
+  });
+}
